@@ -5,8 +5,6 @@
 // @description  RP 로그 클리너 EPUB 변환 및 다운로드 기능
 // @author       eun033
 // @match        https://chyoyam-alt.github.io/rp-log-cleaner/
-// @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/main/RpCleanerEpub-downloader.v.1.20260714.js
-// @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/main/RpCleanerEpub-downloader.v.1.20260714.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js
 // ==/UserScript==
