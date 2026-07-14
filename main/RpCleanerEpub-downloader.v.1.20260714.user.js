@@ -17,18 +17,45 @@
 (function() {
     'use strict';
 
+    // 현재 날짜시간을 yyyyMMddHHmmss 형식으로 반환하는 함수
+    function getFormattedTimestamp() {
+        const now = new Date();
+        const yyyy = now.getFullYear();
+        const MM = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const HH = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        return `${yyyy}${MM}${dd}${HH}${mm}${ss}`;
+    }
+
+    // 파일명 추출 함수 (제안해주신 <br> 태그 검증 로직 반영)
     function getDefaultFileName() {
         const fileList = document.querySelector('div#fileList');
-        if (fileList && fileList.children.length > 0) {
-            const firstFileText = fileList.children[0].innerText || fileList.children[0].textContent;
-            if (firstFileText.includes('— ')) {
-                const afterHyphen = firstFileText.split('-')[1].trim();
-                return afterHyphen.replace(/\.[^/.]+$/, ""); 
+        let targetText = "";
+
+        if (fileList) {
+            // 1. <br> 태그 존재 여부에 따라 분기 처리
+            if (fileList.innerHTML.includes('<br>')) {
+                // <br> 기준으로 쪼개어 첫 번째 파일명 추출
+                const parts = fileList.innerHTML.split(/<br\s*\/?>/i);
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = parts[0];
+                targetText = tempDiv.textContent || tempDiv.innerText;
             } else {
-                return firstFileText.trim().replace(/\.[^/.]+$/, "");
+                // <br>이 없으면 전체 innerHTML을 파싱
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = fileList.innerHTML;
+                targetText = tempDiv.textContent || tempDiv.innerText;
             }
+
+            // 앞뒤 공백 및 맨 앞의 대시 기호 정리
+            targetText = targetText.trim().replace(/^[—\-\s]+/, "");
         }
-        return "clean_log";
+
+        // 2. 파일명이 추출되었다면 확장자 제거 후 날짜 붙이기, 실패 시 기본값 "clean_log_날짜"
+        const baseName = targetText ? targetText.replace(/\.[^/.]+$/, "") : "clean_log";
+        return `${baseName}_${getFormattedTimestamp()}`;
     }
 
     function createModal() {
