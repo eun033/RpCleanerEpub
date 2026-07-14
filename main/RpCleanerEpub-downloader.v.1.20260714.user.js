@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP 로그 클리너 EPUB 다운로더
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  EPUB 변환 및 다운로드 기능
 // @author       eun033
 // @match        https://chyoyam-alt.github.io/rp-log-cleaner/
