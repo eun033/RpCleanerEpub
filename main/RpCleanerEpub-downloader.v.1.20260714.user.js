@@ -57,7 +57,11 @@
         const htmlContent = `<html><body><pre style="white-space: pre-wrap;">${text}</pre></body></html>`;
         zip.file("OEBPS/content.html", htmlContent);
         
-        const blob = await zip.generateAsync({type: "blob"});
+        //const blob = await zip.generateAsync({type: "blob"});
+        const blob = await zip.generateAsync({
+            type: "blob",
+            mimeType: "application/epub+zip" // EPUB 파일임을 명시
+        });
         saveAs(blob, "clean_log.epub");
     }
 
