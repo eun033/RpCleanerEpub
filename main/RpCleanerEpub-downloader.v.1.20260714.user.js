@@ -76,10 +76,10 @@
             </div>
             <div style="margin-bottom:20px;">
                 <label style="display:block; margin-bottom:20px; cursor:pointer; font-size:13px;">
-                    <input type="checkbox" id="trans-option" checked> 다국어 대화에서 한글만 남기기 EX) "Hello" (안녕) -> "안녕"
+                    <input type="checkbox" id="trans-option"> 다국어 대화에서 한글만 남기기 EX) "Hello" (안녕) -> "안녕"
                 </label>
                 <label style="display:block; cursor:pointer; font-size:13px;">
-                    <input type="checkbox" id="user-option" checked> [User] 태그 및 줄바꿈 제거
+                    <input type="checkbox" id="user-option"> [User] 태그 및 줄바꿈 제거
                 </label>
             </div>
             <div style="text-align:right;">
