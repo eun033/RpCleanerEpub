@@ -6,8 +6,8 @@
 // @author       eun033
 // @match        https://chyoyam-alt.github.io/rp-log-cleaner/
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/main/RpCleanerEpub.user.js
-// @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/main/RpCleanerEpub.user.js
+// @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/RpCleanerEpub-downloader.v.1.20260714.user.js
+// @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/RpCleanerEpub-downloader.v.1.20260714.user.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js
 // ==/UserScript==
