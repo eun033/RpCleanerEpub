@@ -74,9 +74,14 @@
                 <label style="display:block; margin-bottom:5px; font-size:13px; font-weight:bold;">파일 이름</label>
                 <input type="text" id="epub-filename" value="${defaultName}" style="width:100%; padding:6px; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;">
             </div>
-            <label style="display:block; margin-bottom:20px; cursor:pointer; font-size:13px;">
-                <input type="checkbox" id="trans-option" checked> 다국어 대화에서 한글만 남기기 EX) "Hello" (안녕) -> "안녕"
-            </label>
+            <div style="margin-bottom:20px;">
+                <label style="display:block; margin-bottom:20px; cursor:pointer; font-size:13px;">
+                    <input type="checkbox" id="trans-option" checked> 다국어 대화에서 한글만 남기기 EX) "Hello" (안녕) -> "안녕"
+                </label>
+                <label style="display:block; cursor:pointer; font-size:13px;">
+                    <input type="checkbox" id="user-option" checked> [User] 태그 및 줄바꿈 제거
+                </label>
+            </div>
             <div style="text-align:right;">
                 <button id="btn-cancel" style="margin-right:10px; background:#eee; border:none; padding:6px 12px; border-radius:4px; cursor:pointer;">취소</button>
                 <button id="btn-confirm" style="background:#ff6b6b; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:bold;">변환 시작</button>
@@ -86,16 +91,17 @@
 
         document.getElementById('btn-cancel').onclick = () => modal.style.display = 'none';
         document.getElementById('btn-confirm').onclick = () => {
-            const isOptionChecked = document.getElementById('trans-option').checked;
+            const isMultiLang = document.getElementById('trans-option').checked;
+            const isUserTag = document.getElementById('user-option').checked;
             let fileName = document.getElementById('epub-filename').value.trim();
-            if (!fileName) fileName = "clean_log";
+            if (!fileName) fileName = `clean_log_${getFormattedTimestamp()}`;
             
-            generateEpub(isOptionChecked, fileName);
+            generateEpub(isMultiLang, isUserTag, fileName);
             modal.style.display = 'none';
         };
     }
 
-    async function generateEpub(isClean, fileName) {
+    async function generateEpub(isMultiLang, isUserTag, fileName) {
         const textArea = document.querySelector('#cleanOutput');
         let text = textArea ? textArea.value : "";
 
@@ -104,8 +110,14 @@
             return;
         }
 
-        if (isClean) {
-            text = text.replace(/"[a-zA-Z\s]+"\s*\(([^)]+)\)/g, "($1)");
+        // 1. [User] 태그 및 줄바꿈 제거
+        if (isUserTag) {
+            text = text.replace(/\[User\]\s*/g, "");
+        }
+
+        // 2. 다국어 대화 한글만 남기기
+        if (isMultiLang) {
+            text = text.replace(/"[^"]*"\s*\(([^)]+)\)/g, "($1)");
         }
 
         const zip = new JSZip();
