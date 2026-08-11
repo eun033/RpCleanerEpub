@@ -9,8 +9,8 @@
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
-// @updateURL    https://gist.github.com/zxklkj12/8c10b4a97eb56e5d79b834339cdff5b4/raw/cracksafe.with.epub.user.js
-// @downloadURL  https://gist.github.com/zxklkj12/8c10b4a97eb56e5d79b834339cdff5b4/raw/cracksafe.with.epub.user.js
+// @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/cracksafe.with.epub.user.js
+// @downloadURL  https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/cracksafe.with.epub.user.js
 // @require      https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js
