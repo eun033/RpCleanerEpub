@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.2.11
+// @version      5.3.1
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억과 최신 에리 로어를 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -12,6 +12,7 @@
 // @grant        unsafeWindow
 // @connect      generativelanguage.googleapis.com
 // @connect      api.deepseek.com
+// @connect      openrouter.ai
 // ==/UserScript==
 
 (function () {
@@ -25,6 +26,7 @@
   const REFERENCE_CACHE_MS = 30000;
   const TOKEN_RECOMMENDED = 80000;
   const TOKEN_MODEL_LIMITS = Object.freeze({
+    "gemini-3.8-flash": 1048576,
     "gemini-3.7-flash": 1048576,
     "gemini-3.6-flash": 1048576,
     "gemini-3.5-flash": 1048576,
@@ -34,6 +36,7 @@
     "gemini-2.5-flash": 1048576,
     "deepseek-v4-flash": 1000000,
     "deepseek-v4-pro": 1000000,
+    "openai/gpt-5.6-sol": 1050000,
   });
   const REFERENCE_GUIDANCE = `[선택 참고자료 운용 — 관련성 판정과 근거 있는 확장]
 아래 장기 기억과 에리 로어는 현재 채팅방에서 읽어 온 사실 자료다. 자료 자체를 설명하거나 전부 소비하는 것이 목표가 아니다. 먼저 최근 실제 대화와 현재 입력으로 장면의 시간·장소·등장인물·주제·감정 흐름을 파악한 뒤, 지금 반응에 직접 도움이 되는 일부만 선별한다.
@@ -147,9 +150,17 @@
   const CRACK_MARKDOWN_INSTRUCTION = "[Crack Markdown 렌더링 운용 지침 — 활성화됨]\n- 이 지침이 켜져 있는 동안에는 앞선 [출력 형식]의 '평문 본문 위주' 기본값보다 이 마크다운 운용 지침을 우선 적용하십시오. 일반 서술은 평문으로 자연스럽게 쓰되, 화면에서 분리되어 보일수록 살아나는 구간(문자·채팅·공지·기록·문서·상태창·시스템 메시지·강조 인용 등)에는 Crack에서 실제 렌더되는 Markdown을 망설이지 말고 적극적으로 사용하십시오.\n- 현재 채팅방이 지금까지 평문 위주였더라도, 위와 같은 구간이 나오면 마크다운을 새로 도입해도 됩니다. '이 방은 평소 마크다운을 안 쓰니 나도 안 쓴다'는 식으로 위축되지 마십시오. 다만 한 답변 안에서 제목·표·코드블록을 의미 없이 도배하지는 말고, 분리 표현이 정말 어울리는 곳에만 쓰십시오.\n- 정보의 성격에 맞는 컨테이너를 고르십시오. 본문과 분리된 발화(인용·문자·채팅·공지)는 blockquote(>), 장면 구분·문서 제목은 heading(#), 항목 정리는 list, 비교·스탯·일정·요약은 table, 원문 보존이 필요한 기록·로그·문서·시스템 출력은 codeblock을 쓰십시오.\n- 답변 전체를 하나의 코드블록으로 감싸지 마십시오. 코드블록은 '본문 속에 삽입된 별도 자료(극중 문서·로그·보고서·안내문·시스템 메시지)'로 읽혀야 하는 구간에만 쓰십시오.\n- Crack에서 실제 렌더되는 Markdown만 사용하십시오: #~###### 제목(# 뒤 공백 필요), > / >> / >>> 인용과 중첩 인용, 인용 안 제목·이미지·리스트·체크박스, **굵게**, *기울임*, ***굵은 기울임***, ~~취소선~~, 링크, 이미지, 목록, 체크박스, GFM 표, inline code, 언어명 코드블록, --- / *** / ___ 가로선, $...$ / $$...$$ 수식, [^1] 각주.\n- HTML 태그, x^2^, H~2~O, ==하이라이트== 처럼 Crack에서 렌더되지 않는 문법은 그대로 글자로 노출되므로 쓰지 말고 지원되는 문법으로 대체하십시오.\n- 이미지·링크는 사용자 입력이나 이전 맥락에 실제로 존재하는 URL만 재사용하고, 없는 주소를 추측해 새로 만들지 마십시오.\n- 출력 전, 굵게/기울임/취소선/코드블록/수식/각주/링크/이미지의 여닫는 기호를 모두 닫았는지, 표의 헤더·구분선·열 수가 맞는지, 코드블록 fence가 짝지어졌는지 점검하십시오.";
 
   // API 요금 계산용 모델별 가격 (USD / 1M tokens)
-  // Gemini 가격은 기존 확프의 기준값을 USD 표시로 사용한다.
-  // DeepSeek V4 가격은 공식 API 문서 기준: cache hit / cache miss / output.
+  // 기존 Gemini 가격은 기존 확프의 기준값을 유지한다.
+  // 3.8은 Developer API / Firebase Vertex global의 Standard 유료 단가 (2026-09-03 확인).
+  // https://ai.google.dev/gemini-api/docs/pricing
+  // https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing
+  // DeepSeek V4와 GPT-5.6 Sol 가격은 각 공식 API의 표준 단가 기준이다.
   const MODEL_PRICING = {
+    "gemini-3.8-flash": {
+      input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75,
+      standardFrom: "2027-01-01T00:00:00Z",
+      standard: { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite: 1.5 },
+    },
     "gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0.25 },
     "gemini-3-flash-preview": { input: 0.5, output: 3.0, cacheRead: 0.05, cacheWrite: 0.5 },
     "gemini-3.5-flash": { input: 1.5, output: 9.0, cacheRead: 0.15, cacheWrite: 1.5 },
@@ -160,6 +171,7 @@
     "gemini-3.1-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
     "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
     "deepseek-v4-pro": { input: 0.435, output: 0.87, cacheRead: 0.003625, cacheWrite: 0.435 },
+    "openai/gpt-5.6-sol": { input: 5.0, output: 30.0, cacheRead: 0.5, cacheWrite: 5.0 },
   };
 
   const MODEL_ID_MIGRATIONS = {
@@ -174,6 +186,7 @@
   const PROVIDER_MODEL_OPTIONS = {
     google: [
       ["gemini-3.5-flash", "Gemini 3.5 Flash"],
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
       ["gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite"],
       ["gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"],
       ["gemini-2.5-pro", "Gemini 2.5 Pro"],
@@ -181,6 +194,7 @@
     ],
     firebase: [
       ["gemini-3.7-flash", "Gemini 3.7 Flash"],
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
       ["gemini-3.6-flash", "Gemini 3.6 Flash"],
       ["gemini-3.5-flash", "Gemini 3.5 Flash"],
       ["gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite"],
@@ -192,10 +206,89 @@
       ["deepseek-v4-flash", "DeepSeek V4 Flash"],
       ["deepseek-v4-pro", "DeepSeek V4 Pro"],
     ],
+    openrouter: [
+      ["openai/gpt-5.6-sol", "GPT-5.6 Sol (OpenRouter)"],
+    ],
   };
 
   function getProviderKeyName(provider) {
-    return provider === "deepseek" ? "deepSeekApiKey" : "apiKey";
+    if (provider === "deepseek") return "deepSeekApiKey";
+    if (provider === "openrouter") return "openRouterApiKey";
+    return "apiKey";
+  }
+
+  function getGeminiThinkingLevels(model) {
+    return normalizeModelId(model) === "gemini-3.8-flash"
+      ? ["low", "medium", "high"]
+      : ["minimal", "low", "medium", "high"];
+  }
+
+  function normalizeGeminiThinkingLevel(model, value) {
+    if (normalizeModelId(model) !== "gemini-3.8-flash") return value;
+    const level = String(value || "medium").trim().toLowerCase();
+    if (level === "minimal") return "low";
+    return getGeminiThinkingLevels(model).includes(level) ? level : "medium";
+  }
+
+  function getGeminiThinkingLevel(model, useVisible = false) {
+    const saved = GM_getValue("thinkLevel_" + model, "medium");
+    const visible = useVisible && document.getElementById("cfg-model")?.value === model
+      ? document.getElementById("cfg-think-val")?.value
+      : "";
+    return normalizeGeminiThinkingLevel(model, visible || saved);
+  }
+
+  function resolveFirebaseSdkVersion(model, version) {
+    if (normalizeModelId(model) !== "gemini-3.8-flash") return version;
+    const [major, minor] = String(version).split(".").map(Number);
+    // Thinking Level은 Firebase JS 12.8+에서 지원한다. 구형 복사본에만 기존 기본 SDK 적용.
+    // https://firebase.google.com/support/release-notes/js#version_1280_-_january_14_2026
+    return !Number.isFinite(major) || major < 12 || (major === 12 && (!Number.isFinite(minor) || minor < 8))
+      ? "12.12.0"
+      : version;
+  }
+
+  function firebaseGenerationConfig(model, config) {
+    if (normalizeModelId(model) !== "gemini-3.8-flash") return config;
+    // Firebase ThinkingLevel enum은 대문자이며 Google REST 예제는 소문자를 사용한다.
+    return {
+      ...config,
+      thinkingConfig: {
+        ...config.thinkingConfig,
+        thinkingLevel: normalizeGeminiThinkingLevel(model, config.thinkingConfig?.thinkingLevel).toUpperCase(),
+      },
+    };
+  }
+
+  function getModelPricing(model, now = Date.now()) {
+    const pricing = MODEL_PRICING[model];
+    return pricing?.standardFrom && now >= Date.parse(pricing.standardFrom)
+      ? pricing.standard
+      : pricing;
+  }
+
+  function extractGeminiResponseText(data, status = 200) {
+    if (data?.error || status < 200 || status >= 300) {
+      throw new Error(data?.error?.message || `Gemini API HTTP ${status}`);
+    }
+    const candidate = data?.candidates?.[0];
+    const finish = candidate?.finishReason || "";
+    if (finish === "MAX_TOKENS") {
+      throw new Error("Gemini 최대 출력 한도에 도달해 응답이 잘렸습니다. 추론 강도나 요청 분량을 줄여주세요.");
+    }
+    if (finish && finish !== "STOP") {
+      throw new Error(`Gemini 응답이 완료되지 않았습니다. (사유: ${finish})`);
+    }
+    const text = (candidate?.content?.parts || [])
+      .filter((part) => !part.thought && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("")
+      .trim();
+    if (!text) {
+      const reason = data?.promptFeedback?.blockReason || finish || "본문 없음";
+      throw new Error(`Gemini 응답 본문이 비어 있습니다. (사유: ${reason})`);
+    }
+    return text;
   }
 
   function normalizeUsage(raw) {
@@ -216,10 +309,89 @@
 
     u.inputTokens = pick(["inputTokens", "input_tokens", "promptTokenCount", "prompt_token_count", "promptTokens", "prompt_tokens"]);
     u.outputTokens = pick(["outputTokens", "output_tokens", "candidatesTokenCount", "candidates_token_count", "completion_tokens", "completionTokens"]);
-    u.cacheReadInputTokens = pick(["cacheReadInputTokens", "cache_read_input_tokens", "cachedContentTokenCount", "cached_content_token_count", "prompt_cache_hit_tokens", "promptCacheHitTokens"]);
+    u.cacheReadInputTokens = pick(["cacheReadInputTokens", "cache_read_input_tokens", "cachedContentTokenCount", "cached_content_token_count", "prompt_cache_hit_tokens", "promptCacheHitTokens", "prompt_tokens_details.cached_tokens"]);
     u.cacheMissInputTokens = pick(["cacheMissInputTokens", "cache_miss_input_tokens", "prompt_cache_miss_tokens", "promptCacheMissTokens"]);
     u.thoughtsTokenCount = pick(["thoughtsTokenCount", "thoughts_token_count", "thinking_tokens", "reasoning_tokens", "completion_tokens_details.reasoning_tokens"]);
+    // Gemini candidatesTokenCount에는 thoughtsTokenCount가 포함되지 않는다.
+    // OpenAI 호환 completion_tokens는 추론 토큰을 포함하므로 기존 차감 방식을 유지한다.
+    u.outputIncludesThoughts = raw.candidatesTokenCount == null && raw.candidates_token_count == null;
     return u;
+  }
+
+  function getOpenRouterReasoningEffort(model) {
+    const allowed = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
+    const providerEl = document.getElementById("cfg-api-provider");
+    const modelEl = document.getElementById("cfg-model");
+    const liveValue = providerEl?.value === "openrouter" && modelEl?.value === model
+      ? document.getElementById("cfg-think-val")?.value
+      : "";
+    const savedValue = GM_getValue("thinkOpenRouter_" + model, "medium");
+    const effort = String(liveValue || savedValue || "medium");
+    return allowed.has(effort) ? effort : "medium";
+  }
+
+  function extractOpenRouterText(content) {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((part) => typeof part === "string" ? part : part?.text || part?.content || "")
+      .join("");
+  }
+
+  function requestOpenRouterChat(model, sysPrompt, userContent, options = {}) {
+    const providerEl = document.getElementById("cfg-api-provider");
+    const visibleKey = providerEl?.value === "openrouter"
+      ? document.getElementById("cfg-api-key")?.value?.trim() || ""
+      : "";
+    const key = options.key || visibleKey || GM_getValue("openRouterApiKey", "");
+    if (!key) return Promise.reject(new Error("설정에서 OpenRouter API 키를 먼저 입력해주세요."));
+
+    const payload = {
+      model,
+      messages: [
+        { role: "system", content: sysPrompt },
+        { role: "user", content: userContent },
+      ],
+      stream: false,
+      reasoning: {
+        effort: getOpenRouterReasoningEffort(model),
+        exclude: true,
+      },
+    };
+
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method: "POST",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+        "X-Title": "Crack Muse Writer",
+      },
+      data: JSON.stringify(payload),
+      onload: (res) => {
+        try {
+          const data = JSON.parse(res.responseText || "{}");
+          const choice = data.choices?.[0];
+          const apiError = data.error || choice?.error;
+          if (res.status < 200 || res.status >= 300 || apiError) {
+            const detail = apiError?.message || `HTTP ${res.status || "오류"}`;
+            return reject(new Error(`OpenRouter API 오류: ${detail}`));
+          }
+          if (data.usage) updateCostUI(data.usage, model, options.kind || "writer");
+          const raw = extractOpenRouterText(choice?.message?.content).trim();
+          if (!raw) {
+            return reject(new Error(`OpenRouter 응답 본문이 비어 있습니다. (사유: ${choice?.finish_reason || "알 수 없음"})`));
+          }
+          resolve(raw);
+        } catch (error) {
+          reject(error instanceof SyntaxError
+            ? new Error("OpenRouter 응답 분석 실패")
+            : error);
+        }
+      },
+      onerror: () => reject(new Error("OpenRouter 네트워크 오류")),
+      ontimeout: () => reject(new Error("OpenRouter 요청 시간이 초과되었습니다.")),
+    }));
   }
 
   function calculateCost(usage, modelOverride = "") {
@@ -227,7 +399,7 @@
     if (!u) return null;
 
     const modelIdRaw = u.model || modelOverride;
-    const pricing = MODEL_PRICING[modelIdRaw] || MODEL_PRICING[modelOverride] || MODEL_PRICING["gemini-3.5-flash"];
+    const pricing = getModelPricing(modelIdRaw) || getModelPricing(modelOverride) || MODEL_PRICING["gemini-3.5-flash"];
     if (!pricing) return null;
 
     const thoughtsTokens = u.thoughtsTokenCount || 0;
@@ -235,7 +407,8 @@
     const cacheMissTokens = u.cacheMissInputTokens || 0;
     const totalInputTokens = u.inputTokens || cacheReadTokens + cacheMissTokens || 0;
     const totalOutputTokens = u.outputTokens || 0;
-    const actualOutputTokens = thoughtsTokens > 0 && totalOutputTokens >= thoughtsTokens ? totalOutputTokens - thoughtsTokens : totalOutputTokens;
+    const actualOutputTokens = u.outputIncludesThoughts && thoughtsTokens > 0 && totalOutputTokens >= thoughtsTokens
+      ? totalOutputTokens - thoughtsTokens : totalOutputTokens;
     const uncachedInputTokens = cacheMissTokens > 0 ? cacheMissTokens : Math.max(0, totalInputTokens - cacheReadTokens);
 
     const readCost = (cacheReadTokens * (pricing.cacheRead ?? pricing.input)) / 1000000;
@@ -752,11 +925,17 @@
         ? { value: "off", label: "OFF", note: "짧은 맥락은 비추론으로도 충분할 가능성이 높음" }
         : { value: "on", label: "ON · High", note: "긴 기억·로어 선별과 연속성 판단에 추론 권장" };
     }
+    if (modelId.startsWith("openai/gpt-5.6")) {
+      const effort = tokens <= 15000 ? "low" : tokens <= 80000 ? "medium" : tokens <= 220000 ? "high" : "xhigh";
+      const labels = { low: "Low", medium: "Medium", high: "High", xhigh: "XHigh" };
+      return { value: effort, label: labels[effort], note: "GPT-5.6 추론 강도 추천 · 장면 복잡도에 따라 조절 가능" };
+    }
     if (modelId.includes("gemini-3")) {
       const isPro = modelId.includes("pro");
       let level;
       if (isPro) level = tokens <= 20000 ? "low" : tokens <= 80000 ? "medium" : "high";
       else level = tokens <= 12000 ? "minimal" : tokens <= 45000 ? "low" : tokens <= 100000 ? "medium" : "high";
+      level = normalizeGeminiThinkingLevel(modelId, level);
       const labels = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High" };
       return { value: level, label: labels[level], note: "토큰량 기준 추천 · 장면 복잡도에 따라 한 단계 조절 가능" };
     }
@@ -772,7 +951,7 @@
     const recommendation = getThinkingRecommendation(lastTokenEstimate.total, lastTokenEstimate.model);
     const input = document.getElementById("cfg-think-val");
     if (!input) return;
-    input.value = recommendation.value;
+    input.value = normalizeGeminiThinkingLevel(document.getElementById("cfg-model")?.value || lastTokenEstimate.model, recommendation.value);
     input.dispatchEvent(new Event("change", { bubbles: true }));
     input.dispatchEvent(new Event("input", { bubbles: true }));
     const btn = document.getElementById("token-apply-thinking");
@@ -1975,6 +2154,7 @@
                         <option value="google">Google (기본 API)</option>
                         <option value="firebase">Firebase (Vertex API)</option>
                         <option value="deepseek">DeepSeek API</option>
+                        <option value="openrouter">OpenRouter API</option>
                     </select>
                 </div>
                 <div class="setting-group">
@@ -1986,6 +2166,7 @@
                     <span class="setting-label">AI 모델 선택</span>
                     <select id="cfg-model" class="expand-input">
                         <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+                        <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
                         <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
                         <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
                         <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
@@ -2041,6 +2222,23 @@
     const container = document.getElementById("thinking-ui-container");
     if (!container) return;
 
+    if (provider === "openrouter") {
+      const saved = getOpenRouterReasoningEffort(currentModel);
+      container.innerHTML = `
+              <span class="setting-label" style="color: var(--text_action_blue_primary);">🧠 OpenRouter 추론 강도 (Reasoning Effort)</span>
+              <select id="cfg-think-val" class="expand-input" style="margin-top: 6px;">
+                  <option value="none" ${saved === "none" ? "selected" : ""}>None</option>
+                  <option value="low" ${saved === "low" ? "selected" : ""}>Low</option>
+                  <option value="medium" ${saved === "medium" ? "selected" : ""}>Medium</option>
+                  <option value="high" ${saved === "high" ? "selected" : ""}>High</option>
+                  <option value="xhigh" ${saved === "xhigh" ? "selected" : ""}>XHigh</option>
+                  <option value="max" ${saved === "max" ? "selected" : ""}>Max</option>
+              </select>
+              <div style="font-size:10px; color:var(--text_secondary); margin-top:4px; line-height:1.5;">OpenRouter의 통합 reasoning.effort 형식으로 전송합니다.<br>위 키 입력칸에는 sk-or-… 키만 넣으세요. Vertex 서비스 계정 JSON은 OpenRouter BYOK 설정에 등록하며, GPT-5.6 Sol에는 Vertex 경로가 적용되지 않습니다.</div>
+          `;
+      return;
+    }
+
     if (provider === "deepseek" || currentModel.startsWith("deepseek-")) {
       const saved = GM_getValue("thinkDeepSeek_" + currentModel, "on");
       container.innerHTML = `
@@ -2054,7 +2252,7 @@
       return;
     }
 
-    const savedLevel = GM_getValue("thinkLevel_" + currentModel, "medium");
+    const savedLevel = getGeminiThinkingLevel(currentModel);
     let savedBudget = parseInt(GM_getValue("thinkBudget_" + currentModel, 1024));
     if (isNaN(savedBudget) || savedBudget < 128) savedBudget = 1024;
 
@@ -2062,10 +2260,7 @@
       container.innerHTML = `
               <span class="setting-label" style="color: var(--text_action_blue_primary);">🧠 추론 강도 (Thinking Level)</span>
               <select id="cfg-think-val" class="expand-input" style="margin-top: 6px;">
-                  <option value="minimal" ${savedLevel === "minimal" ? "selected" : ""}>Minimal</option>
-                  <option value="low" ${savedLevel === "low" ? "selected" : ""}>Low</option>
-                  <option value="medium" ${savedLevel === "medium" ? "selected" : ""}>Medium</option>
-                  <option value="high" ${savedLevel === "high" ? "selected" : ""}>High</option>
+                  ${getGeminiThinkingLevels(currentModel).map((level) => `<option value="${level}" ${savedLevel === level ? "selected" : ""}>${level[0].toUpperCase() + level.slice(1)}</option>`).join("")}
               </select>
           `;
     } else {
@@ -2089,7 +2284,7 @@
       const actualInput = read + input;
       if (
         kind === "writer" &&
-        modelId?.startsWith("deepseek-") &&
+        (modelId?.startsWith("deepseek-") || modelId?.startsWith("openai/")) &&
         actualInput > 0 &&
         lastTokenEstimate?.model === modelId &&
         lastTokenEstimate.estimatedTotal > 0 &&
@@ -2471,7 +2666,11 @@
     } else {
       keyInput.style.display = "block";
       document.getElementById("cfg-firebase-script").style.display = "none";
-      document.getElementById("cfg-key-label").innerText = provider === "deepseek" ? "DEEPSEEK API KEY" : "GEMINI API KEY";
+      document.getElementById("cfg-key-label").innerText = provider === "deepseek"
+        ? "DEEPSEEK API KEY"
+        : provider === "openrouter"
+          ? "OPENROUTER API KEY"
+          : "GEMINI API KEY";
       keyInput.value = GM_getValue(getProviderKeyName(provider), "");
     }
 
@@ -3685,10 +3884,12 @@
       // 현재 모델에 해당하는 추론 설정도 같은 저장 묶음에 포함한다.
       const thinkInput = document.getElementById("cfg-think-val");
       if (thinkInput) {
-        if (currentModel.startsWith("deepseek-")) {
+        if (currentProvider === "openrouter") {
+          addEntry("thinkOpenRouter_" + currentModel, thinkInput.value);
+        } else if (currentModel.startsWith("deepseek-")) {
           addEntry("thinkDeepSeek_" + currentModel, thinkInput.value);
         } else if (currentModel.includes("gemini-3")) {
-          addEntry("thinkLevel_" + currentModel, thinkInput.value);
+          addEntry("thinkLevel_" + currentModel, normalizeGeminiThinkingLevel(currentModel, thinkInput.value));
         } else {
           let parsedBudget = parseInt(thinkInput.value, 10) || 1024;
           if (parsedBudget < 128) parsedBudget = 128;
@@ -4189,7 +4390,7 @@
 
   function advisorGenerationConfig(model) {
     if (model.includes("gemini-3")) {
-      return { thinkingConfig: { thinkingLevel: GM_getValue("thinkLevel_" + model, "medium") } };
+      return { thinkingConfig: { thinkingLevel: getGeminiThinkingLevel(model) } };
     }
     return {
       temperature: 0.55,
@@ -4280,6 +4481,11 @@ ${refs.loreText || "없음"}
 [나침반 상담 대화]
 ${conversation}`;
 
+    if (provider === "openrouter") {
+      const raw = await requestOpenRouterChat(model, sysPrompt, userContent, { kind: "advisor" });
+      return parseAdvisorResponse(raw);
+    }
+
     if (provider === "deepseek") {
       const key = document.getElementById("cfg-api-key")?.value?.trim() || GM_getValue("deepSeekApiKey", "");
       if (!key) throw new Error("설정에서 DeepSeek API 키를 먼저 입력해주세요.");
@@ -4321,6 +4527,7 @@ ${conversation}`;
         const fallbackMatch = configRaw.match(/({[\s\S]*?apiKey[\s\S]*?appId[\s\S]*?})/);
         configObj = new Function("return " + (match?.[1] || fallbackMatch?.[1]))();
       } catch (_) { throw new Error("Firebase 코드를 해독하지 못했습니다."); }
+      fbVersion = resolveFirebaseSdkVersion(model, fbVersion);
       const appUrl = `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-app.js`;
       const majorVersion = parseInt(fbVersion.split(".")[0], 10);
       const aiUrl = majorVersion >= 12
@@ -4335,11 +4542,11 @@ ${conversation}`;
       const generativeModel = sdk.getGenerativeModel(ai, {
         model,
         systemInstruction: { parts: [{ text: sysPrompt }] },
-        generationConfig: advisorGenerationConfig(model),
+        generationConfig: firebaseGenerationConfig(model, advisorGenerationConfig(model)),
       });
       const result = await generativeModel.generateContent(userContent);
       if (result.response?.usageMetadata) updateCostUI(result.response.usageMetadata, model, "advisor");
-      return parseAdvisorResponse(result.response.text());
+      return parseAdvisorResponse(extractGeminiResponseText(result.response));
     }
 
     const key = document.getElementById("cfg-api-key")?.value?.trim() || GM_getValue("apiKey", "");
@@ -4356,10 +4563,9 @@ ${conversation}`;
       onload: (res) => {
         try {
           const data = JSON.parse(res.responseText);
-          if (data.error) return reject(new Error(data.error.message || "Gemini API 오류"));
           if (data.usageMetadata) updateCostUI(data.usageMetadata, model, "advisor");
-          resolve(data.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "");
-        } catch (_) { reject(new Error("Gemini 상담 응답 분석 실패")); }
+          resolve(extractGeminiResponseText(data, res.status));
+        } catch (error) { reject(error instanceof SyntaxError ? new Error("Gemini 상담 응답 분석 실패") : error); }
       },
       onerror: () => reject(new Error("Gemini 상담 네트워크 오류")),
     }));
@@ -4415,12 +4621,8 @@ ${conversation}`;
 
       const currentThinkingInput = document.getElementById("cfg-think-val");
       if (!model.startsWith("deepseek-")) {
-        const savedLevel = GM_getValue("thinkLevel_" + model, "medium");
         const savedBudget = parseInt(GM_getValue("thinkBudget_" + model, 1024), 10);
-        const applyLevel =
-          currentThinkingInput && model.includes("gemini-3")
-            ? currentThinkingInput.value
-            : savedLevel;
+        const applyLevel = getGeminiThinkingLevel(model, true);
         let applyBudget =
           currentThinkingInput && !model.includes("gemini-3")
             ? parseInt(currentThinkingInput.value, 10)
@@ -4439,6 +4641,19 @@ ${conversation}`;
         .trim()
         .replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, "$1")
         .trim();
+
+      if (provider === "openrouter") {
+        try {
+          const raw = await requestOpenRouterChat(model, sysPrompt, userContent, {
+            kind: "writer",
+            key: options.key,
+          });
+          resolve(cleanResult(raw));
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
 
       if (provider === "deepseek") {
         const key = GM_getValue("deepSeekApiKey", "");
@@ -4508,6 +4723,7 @@ ${conversation}`;
           return reject(new Error("Firebase 코드를 해독하지 못했습니다. 파이어베이스 홈페이지에서 준 <script> 태그 포함 코드를 그대로 넣어주세요."));
         }
 
+        fbVersion = resolveFirebaseSdkVersion(model, fbVersion);
         try {
           const appUrl = `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-app.js`;
           const majorVersion = parseInt(fbVersion.split(".")[0], 10);
@@ -4533,7 +4749,7 @@ ${conversation}`;
               model,
               safetySettings: safetySettingsFor(HarmCategory, HarmBlockThreshold),
               systemInstruction: { parts: [{ text: sysPrompt }] },
-              generationConfig: genConfig,
+              generationConfig: firebaseGenerationConfig(model, genConfig),
             });
           } else {
             const { HarmBlockThreshold, HarmCategory, getVertexAI, getGenerativeModel } = await import(aiUrl);
@@ -4543,13 +4759,13 @@ ${conversation}`;
               model,
               safetySettings: safetySettingsFor(HarmCategory, HarmBlockThreshold),
               systemInstruction: { parts: [{ text: sysPrompt }] },
-              generationConfig: genConfig,
+              generationConfig: firebaseGenerationConfig(model, genConfig),
             });
           }
 
           const result = await generativeModel.generateContent(userContent);
           if (result.response?.usageMetadata) updateCostUI(result.response.usageMetadata, model);
-          const raw = cleanResult(result.response?.text?.());
+          const raw = cleanResult(extractGeminiResponseText(result.response));
           if (!raw) return reject(new Error("Firebase 번역 응답 본문이 비어 있습니다."));
           resolve(raw);
         } catch (error) {
@@ -4573,13 +4789,12 @@ ${conversation}`;
         onload: (res) => {
           try {
             const data = JSON.parse(res.responseText);
-            if (data.error) return reject(new Error(data.error.message));
             if (data.usageMetadata) updateCostUI(data.usageMetadata, model);
-            const raw = cleanResult(data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join(""));
+            const raw = cleanResult(extractGeminiResponseText(data, res.status));
             if (!raw) return reject(new Error("Gemini 번역 응답 본문이 비어 있습니다."));
             resolve(raw);
-          } catch (_) {
-            reject(new Error("번역 응답 분석 실패"));
+          } catch (error) {
+            reject(error instanceof SyntaxError ? new Error("번역 응답 분석 실패") : error);
           }
         },
         onerror: () => reject(new Error("번역 네트워크 오류")),
@@ -4929,13 +5144,9 @@ ${styleInstruction}`);
 
       const currentThinkingInput = document.getElementById("cfg-think-val");
       if (!model.startsWith("deepseek-")) {
-        const savedLevel = GM_getValue("thinkLevel_" + model, "medium");
         const savedBudget = parseInt(GM_getValue("thinkBudget_" + model, 1024));
 
-        const applyLevel =
-          currentThinkingInput && model.includes("gemini-3")
-            ? currentThinkingInput.value
-            : savedLevel;
+        const applyLevel = getGeminiThinkingLevel(model, true);
         let applyBudget =
           currentThinkingInput && !model.includes("gemini-3")
             ? parseInt(currentThinkingInput.value)
@@ -4948,6 +5159,23 @@ ${styleInstruction}`);
         } else {
           genConfig.thinkingConfig = { thinkingBudget: applyBudget };
         }
+      }
+
+      if (provider === "openrouter") {
+        try {
+          const raw = await requestOpenRouterChat(model, sysPrompt, userContent, {
+            kind: "writer",
+            key: options.key,
+          });
+          const cleaned = String(raw || "")
+            .trim()
+            .replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, "$1")
+            .trim();
+          resolve(finalizeGeneratedMemoryHooks(cleaned, referenceContext));
+        } catch (error) {
+          reject(error);
+        }
+        return;
       }
 
       if (provider === "deepseek") {
@@ -5034,6 +5262,7 @@ ${styleInstruction}`);
           );
         }
 
+        fbVersion = resolveFirebaseSdkVersion(model, fbVersion);
         try {
           const appUrl = `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-app.js`;
           const majorVersion = parseInt(fbVersion.split(".")[0]);
@@ -5068,7 +5297,7 @@ ${styleInstruction}`);
               model: model,
               safetySettings,
               systemInstruction: { parts: [{ text: sysPrompt }] },
-              generationConfig: genConfig,
+              generationConfig: firebaseGenerationConfig(model, genConfig),
             });
           } else {
             const {
@@ -5092,7 +5321,7 @@ ${styleInstruction}`);
               model: model,
               safetySettings,
               systemInstruction: { parts: [{ text: sysPrompt }] },
-              generationConfig: genConfig,
+              generationConfig: firebaseGenerationConfig(model, genConfig),
             });
           }
 
@@ -5102,7 +5331,7 @@ ${styleInstruction}`);
             updateCostUI(result.response.usageMetadata, model);
           }
 
-          let rawResult = result.response.text().trim();
+          let rawResult = extractGeminiResponseText(result.response);
           rawResult = rawResult.replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, "$1").trim();
           resolve(finalizeGeneratedMemoryHooks(rawResult, referenceContext));
         } catch (e) {
@@ -5125,18 +5354,14 @@ ${styleInstruction}`);
           onload: (res) => {
             try {
               const data = JSON.parse(res.responseText);
-              if (data.error) reject(new Error(data.error.message));
-              else {
-                if (data.usageMetadata) {
-                  updateCostUI(data.usageMetadata, model);
-                }
-
-                let raw = data.candidates[0].content.parts[0].text.trim();
-                raw = raw.replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, "$1").trim();
-                resolve(finalizeGeneratedMemoryHooks(raw, referenceContext));
+              if (data.usageMetadata) {
+                updateCostUI(data.usageMetadata, model);
               }
+              let raw = extractGeminiResponseText(data, res.status);
+              raw = raw.replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, "$1").trim();
+              resolve(finalizeGeneratedMemoryHooks(raw, referenceContext));
             } catch (e) {
-              reject(new Error("응답 분석 실패"));
+              reject(e instanceof SyntaxError ? new Error("응답 분석 실패") : e);
             }
           },
           onerror: () => reject(new Error("네트워크 오류")),
