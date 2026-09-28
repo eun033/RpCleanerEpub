@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Firebase Backup Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      0.1.0
-// @description  Wish RP Manager Core v1.0.6에 Firebase 전체 백업 업로드·목록·복원·삭제를 추가하는 동반 패치입니다.
+// @version      0.5.1
+// @description  Wish RP Manager Core v1.3.1의 클라우드 백업에 Firebase를 추가하고 ChatGPT 재구축 전송을 제공하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
 // @match        https://crack.wrtn.ai/stories/*/episodes/*
 // @match        https://crack.wrtn.ai/characters/*/chats/*
 // @match        https://crack.wrtn.ai/u/*/c/*
+// @match        https://chatgpt.com/*
+// @match        https://www.chatgpt.com/*
+// @match        https://chat.openai.com/*
 // @connect      identitytoolkit.googleapis.com
 // @connect      securetoken.googleapis.com
 // @connect      *.firebaseio.com
@@ -16,6 +19,12 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_openInTab
+// @grant        GM_getTab
+// @grant        GM_saveTab
+// @grant        GM_getTabs
+// @grant        window.focus
 // @grant        unsafeWindow
 // @run-at       document-start
 // @noframes
@@ -24,17 +33,27 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.1.0';
+  const PATCH_VERSION = '0.5.1';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
   const SETTINGS_KEY = 'WISH_RP_FIREBASE_PATCH_SETTINGS_V1';
   const SESSION_KEY = 'WISH_RP_FIREBASE_PATCH_SESSION_V1';
   const RESTORE_NOTICE_KEY = 'WISH_RP_FIREBASE_PATCH_RESTORED_V1';
+  const CLOUD_PROVIDER_KEY = 'WISH_RP_CLOUD_PROVIDER_V1';
+  const CHAT_TRANSFER_KEY = 'WISH_RP_CHATGPT_TRANSFER_V1';
+  const CHAT_CHECKPOINT_KEY = 'WISH_RP_CHATGPT_CHECKPOINTS_V1';
+  const CHAT_ROOM_URL_KEY = 'WISH_RP_CHATGPT_ROOM_URLS_V1';
+  const CHAT_FOCUS_KEY = 'WISH_RP_CHATGPT_FOCUS_V1';
+  const CHAT_RECENT_TAB_KEY = 'WISH_RP_CHATGPT_RECENT_TAB_V1';
+  const CHAT_TITLE_PENDING_KEY = 'WISH_RP_CHATGPT_TITLE_PENDING_V1';
+  const CHAT_TRANSFER_TTL = 12 * 60 * 60 * 1000;
+  const CHAT_TRANSFER_MESSAGE = '파일 내용 확인 후 지침 실행해줘';
+  const IS_CHATGPT = /^(?:www\.)?chatgpt\.com$|^chat\.openai\.com$/i.test(location.hostname);
   const DEFAULTS = Object.freeze({
-    apiKey: 'AIza------',
-    databaseURL: 'https://----.firebaseio.com',
-    email: '-----',
+    apiKey: 'AIzaSyCQrPub65vN9LVDCO9Owfcm5ql5DP51hjA',
+    databaseURL: 'https://eluocnc-gg.firebaseio.com',
+    email: 'eun033@naver.com',
   });
   const META_ROOT = 'rpManagerBackupMeta';
   const DATA_ROOT = 'rpManagerBackupData';
@@ -63,6 +82,22 @@
 
   let busy = false;
   let scanQueued = false;
+  let activeTransferCapture = null;
+  let chatTransferCache;
+  let chatAttachBusy = false;
+  let chatTabToken = '';
+  let chatTabData = null;
+  let chatLastFocusedAt = Date.now();
+  let lastFocusRequestId = '';
+  let titleRenameBusy = false;
+  let titleRetryAfter = 0;
+  let pendingChatTitle = null;
+  try { pendingChatTitle = JSON.parse(sessionStorage.getItem(CHAT_TITLE_PENDING_KEY) || 'null'); } catch (_) {}
+  let cloudProvider = gmRead(CLOUD_PROVIDER_KEY, 'koofr') === 'firebase' ? 'firebase' : 'koofr';
+  let cloudRows = [];
+  let cloudError = '';
+  let cloudLoaded = false;
+  let cloudLoading = false;
   const apiDrafts = new Map();
 
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
@@ -90,6 +125,681 @@
   function gmWrite(key, value) {
     try { GM_setValue(key, value == null ? null : JSON.stringify(value)); return true; }
     catch (_) { return false; }
+  }
+
+  function transferKindForName(filename) {
+    const name = String(filename || '');
+    if (/^Wish-2차재구축-전체\.txt$/i.test(name)) return 'secondary';
+    if (/^Wish-재구축-\d+of\d+\.txt$/i.test(name)) return 'full';
+    return '';
+  }
+  function validTransfer(value) {
+    if (!value || !Array.isArray(value.files) || !value.files.length) return null;
+    if (value.ready === false) return null;
+    if (Number(value.expiresAt || 0) <= Date.now()) {
+      gmWrite(CHAT_TRANSFER_KEY, null);
+      return null;
+    }
+    return value;
+  }
+  function loadChatTransfer() { return validTransfer(gmRead(CHAT_TRANSFER_KEY, null)); }
+  function currentApiChatId() {
+    const patterns = [/^\/stories\/[^/]+\/episodes\/([^/?#]+)/, /^\/characters\/[^/]+\/chats\/([^/?#]+)/, /^\/u\/[^/]+\/c\/([^/?#]+)/];
+    for (const pattern of patterns) { const match = location.pathname.match(pattern); if (match) return decodeURIComponent(match[1]); }
+    return '';
+  }
+  function currentRoomDisplayName() {
+    const visible = document.querySelector('#wish-rp-root .m3-room-titlebar strong')?.textContent?.trim();
+    if (visible) return visible;
+    const rid = currentApiChatId();
+    try {
+      const saved = JSON.parse(localStorage.getItem('WISH_RP_room_display_names_v1') || '{}');
+      const alias = saved?.aliases?.[rid];
+      if (typeof alias === 'string' && alias.trim()) return alias.trim();
+    } catch (_) {}
+    return `RP_${rid.slice(-8) || 'chat'}`;
+  }
+  function safeFilenamePart(value) {
+    return String(value || 'RP').normalize('NFKC').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').replace(/[. ]+$/g, '').replace(/\s+/g, ' ').trim().slice(0, 100) || 'RP';
+  }
+  function crackToken() {
+    const row = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('access_token='));
+    return row ? decodeURIComponent(row.slice('access_token='.length)) : '';
+  }
+  function crackJson(url) {
+    const token = crackToken();
+    if (!token) return Promise.reject(new Error('크랙 로그인 토큰을 찾지 못했습니다.'));
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method:'GET', url, timeout:20000,
+      headers:{ Authorization:`Bearer ${token}`, Accept:'application/json, text/plain, */*', platform:'web', 'wrtn-locale':'ko-KR' },
+      onload:response => {
+        let data;
+        try { data = JSON.parse(String(response.responseText || '')); } catch (_) {}
+        if (response.status >= 200 && response.status < 300 && data) resolve(data);
+        else reject(Object.assign(new Error(`크랙 대화 조회 실패 (HTTP ${response.status || 0})`), { status:Number(response.status || 0) }));
+      },
+      onerror:() => reject(new Error('크랙 대화 조회 네트워크 오류')),
+      ontimeout:() => reject(new Error('크랙 대화 조회 시간 초과')),
+    }));
+  }
+  async function currentCompletedTurnCount() {
+    const rid = currentApiChatId();
+    if (!rid) throw new Error('현재 채팅방 ID를 찾지 못했습니다.');
+    let cursor = '', crackFallback = false;
+    const roles = [], seen = new Set(), cursors = new Set();
+    for (;;) {
+      const suffix = `${encodeURIComponent(rid)}/messages?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      let payload;
+      try { payload = await crackJson(`${crackFallback?'https://crack-api.wrtn.ai/crack-gen/v3/chats/':'https://contents-api.wrtn.ai/character-chat/v3/chats/'}${suffix}`); }
+      catch (error) {
+        if (!crackFallback && !roles.length && [404, 405].includes(error.status)) { crackFallback = true; continue; }
+        throw error;
+      }
+      const data = payload?.data || payload || {}, page = data.messages;
+      if (!Array.isArray(page)) throw new Error('크랙 대화 목록 형식을 확인하지 못했습니다.');
+      for (const message of page) {
+        const id = String(message?._id || message?.id || message?.messageId || '');
+        const role = String(message?.role || message?.speaker || '');
+        if (!id || !['user','assistant','system'].includes(role) || seen.has(id)) continue;
+        seen.add(id); roles.push(role);
+      }
+      const next = data.nextCursor == null ? '' : String(data.nextCursor);
+      if (!next) break;
+      if (cursors.has(next)) throw new Error('크랙 대화 cursor가 반복됐습니다.');
+      cursors.add(next); cursor = next;
+    }
+    roles.reverse();
+    let waiting = false, count = 0;
+    for (const role of roles) {
+      if (role === 'user') waiting = true;
+      else if (role === 'assistant' && waiting) { count++; waiting = false; }
+    }
+    return count;
+  }
+  function visibleCompletedTurnCount() {
+    const roots = [...document.querySelectorAll('[data-message-id],[data-message-group-id]')];
+    let waiting = false, count = 0;
+    for (const root of roots) {
+      const role = String(root.getAttribute('data-message-author-role') || root.dataset?.role || root.getAttribute('data-role') || '').toLowerCase();
+      if (role === 'user') waiting = true;
+      else if (role === 'assistant' && waiting) { count++; waiting = false; }
+    }
+    return count;
+  }
+  function checkpointForRoom(chatId) {
+    return Math.max(0, Number(gmRead(CHAT_CHECKPOINT_KEY, {})?.[chatId]) || 0);
+  }
+  function saveCheckpoint(chatId, turn) {
+    const all = gmRead(CHAT_CHECKPOINT_KEY, {}) || {};
+    all[chatId] = Math.max(Number(all[chatId]) || 0, turn);
+    if (!gmWrite(CHAT_CHECKPOINT_KEY, all)) throw new Error('마지막 전송 턴을 저장하지 못했습니다.');
+  }
+  function chatRoomUrl(chatId) { return String(gmRead(CHAT_ROOM_URL_KEY, {})?.[chatId] || ''); }
+  function validChatRoomUrl(value) {
+    const raw = String(value || '').trim();
+    let url;
+    try { url = new URL(raw); } catch (_) { throw new Error('기존 ChatGPT 대화 주소를 입력해 주세요.'); }
+    if (url.protocol !== 'https:' || !/^(?:www\.)?chatgpt\.com$|^chat\.openai\.com$/i.test(url.hostname) || !/\/c\/[^/]+/.test(url.pathname))
+      throw new Error('기존 ChatGPT 대화의 /c/ 주소를 입력해 주세요.');
+    return `${url.origin}${url.pathname}`;
+  }
+  function rememberChatRoomUrl(chatId, url) {
+    if (!chatId || !/\/c\/[^/]+/.test(new URL(url).pathname)) return;
+    const all = gmRead(CHAT_ROOM_URL_KEY, {}) || {};
+    const clean = validChatRoomUrl(url);
+    if (all[chatId] !== clean) { all[chatId] = clean; gmWrite(CHAT_ROOM_URL_KEY, all); }
+  }
+  function beginTransferCapture(kind, options = {}) {
+    gmWrite(CHAT_TRANSFER_KEY, null);
+    const capture = activeTransferCapture = {
+      id:`wish_gpt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      kind:kind === 'secondary' ? 'secondary' : 'full',
+      mode:options.mode === 'incremental' ? 'incremental' : 'full',
+      chatId:currentApiChatId(),
+      startTurn:Number(options.startTurn) || 1,
+      previousJsonText:String(options.previousJsonText || ''),
+      targetUrl:String(options.targetUrl || ''),
+      createdAt:Date.now(),
+      expiresAt:Date.now() + CHAT_TRANSFER_TTL,
+      message:options.mode === 'incremental'
+        ? '이전 결과 JSON을 기준으로 새 RP TXT의 턴만 반영해 전체 형식의 최종 JSON 하나를 만들어줘. TXT의 최신 SOURCE 값을 그대로 사용해줘.'
+        : CHAT_TRANSFER_MESSAGE,
+      expected:kind === 'secondary' ? 1 : 0,
+      roomName:currentRoomDisplayName(),
+      turnCountPromise:kind === 'secondary' ? currentCompletedTurnCount().catch(() => null) : null,
+      suppressDownload:true,
+      files:[],
+    };
+    setTimeout(() => { if (activeTransferCapture === capture) activeTransferCapture = null; }, 5 * 60 * 1000);
+  }
+  function transferFileIndex(filename) {
+    const match = String(filename || '').match(/-(\d+)of\d+\.txt$/i);
+    return match ? Number(match[1]) : 1;
+  }
+  function parseExportTurns(files) {
+    const ordered = [...files].sort((a, b) => a.index - b.index);
+    const blocks = [], ranges = [];
+    let turn = 0;
+    for (const file of ordered) {
+      const text = String(file.text || '').replace(/\r\n/g, '\n');
+      // Restrict matching to Core's actual RP section, not example text in the guide.
+      const section = /\n\[RP \d+\/\d+ · 지침 제외 [^\n]*\]\n/.exec(text);
+      if (!section) throw new Error(`${file.sourceName || file.name}에서 Core RP 본문을 찾지 못했습니다.`);
+      const body = text.slice(section.index + section[0].length);
+      const matches = [...body.matchAll(/^\[완료 RP \d+\]\[USER\]\n/gm)];
+      if (!matches.length) throw new Error('TXT의 확정 RP 턴 구분을 확인하지 못했습니다.');
+      const fileBlocks = [];
+      for (let i = 0; i < matches.length; i++) {
+        const raw = body.slice(matches[i].index, matches[i + 1]?.index ?? body.length).trimEnd();
+        const assistantAt = raw.indexOf('\n\n[ASSISTANT]\n');
+        if (assistantAt < 0) throw new Error('TXT에 완성되지 않은 RP 턴이 있습니다.');
+        const intro = !blocks.length && !raw.slice(matches[i][0].length, assistantAt).trim();
+        if (!intro) turn++;
+        const block = { turn:intro ? 0 : turn, sourceIndex:file.index, text:raw.replace(/^\[완료 RP \d+\]/, `[완료 RP ${intro ? 0 : turn}]`) };
+        blocks.push(block); fileBlocks.push(block);
+      }
+      ranges.push({ file, start:fileBlocks.find(block => block.turn > 0)?.turn || 0, end:fileBlocks[fileBlocks.length - 1].turn });
+    }
+    return { blocks, ranges, end:turn };
+  }
+  function transferMessage(capture) {
+    const end = Number(capture.endTurn), start = capture.mode === 'incremental' ? capture.startTurn : (end ? 1 : 0);
+    const base = safeFilenamePart(capture.roomName);
+    const finalRange = end ? `T1-T${end}` : 'T0 (인트로만 있음)';
+    const lines = [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${capture.roomName}`, `이번 첨부 턴 범위: T${start}-T${end}`];
+    if (capture.kind === 'secondary') {
+      lines.push(`현재 대화 기준 턴 범위: ${finalRange}`, '이번 파일은 저장된 자료의 2차 재구축용이다. 턴 범위는 내보내기 시점의 대화 기준이며, 저장 자료가 모든 턴을 반영했다는 뜻은 아니다. 실제 자료에 없는 턴의 반영을 완료했다고 주장하지 말고 원래 2차 재구축 지침을 실행해줘.');
+    } else {
+      lines.push(`최종 결과에 반영할 누적 턴 범위: ${finalRange}`, '인트로는 T0으로 취급하고 확정 RP 턴수에 더하지 마. 파일명에 표시된 턴 범위는 전체 대화 기준이다.');
+      if (capture.mode === 'incremental') lines.push(start > 1
+        ? `이전 결과 JSON의 T1-T${start - 1} 내용을 보존하고 이번 T${start}-T${end}을 합쳐 완결된 전체 JSON 하나를 만들어줘.`
+        : `이전 결과 JSON의 유효한 내용을 참고하고 이번 T1-T${end} 전체 RP를 다시 검토해 완결된 전체 JSON 하나를 만들어줘.`);
+      lines.push('TXT의 최신 SOURCE 값을 사용하고 원래 JSON 스키마를 지켜줘. 턴 범위를 넣기 위해 JSON에 임의 필드를 추가하지 마.');
+    }
+    lines.push(`최종 결과 JSON의 파일명은 ${base}_T${end ? 1 : 0}-T${end}${capture.kind === 'secondary' ? '_2차재구축' : ''}.json 으로 해줘.`);
+    return lines.join('\n');
+  }
+  function chatConversationPath(value) {
+    try {
+      const url = new URL(value, 'https://chatgpt.com');
+      if (url.protocol !== 'https:' || !/^(?:www\.)?chatgpt\.com$|^chat\.openai\.com$/i.test(url.hostname)) return '';
+      return url.pathname.match(/\/(?:c)\/[^/]+/)?.[0] || '';
+    } catch (_) { return ''; }
+  }
+  function chooseChatTab(tabs, targetUrl = '') {
+    const target = chatConversationPath(targetUrl);
+    const eligible = tabs.filter(tab => tab?.token && /^https:\/\/(?:(?:www\.)?chatgpt\.com|chat\.openai\.com)(?:\/|$)/i.test(tab.url || ''));
+    eligible.sort((a, b) => Number(b.lastFocusedAt || 0) - Number(a.lastFocusedAt || 0));
+    if (target) return eligible.find(tab => chatConversationPath(tab.url) === target) || eligible.find(tab => tab.isNew && !tab.hasDraft) || null;
+    return eligible[0] || null;
+  }
+  async function registeredChatTabs() {
+    if (typeof GM_getTabs === 'function') {
+      const tabs = await new Promise(resolve => {
+        const timer = setTimeout(() => resolve(null), 1500);
+        try { GM_getTabs(value => { clearTimeout(timer); resolve(value); }); } catch (_) { clearTimeout(timer); resolve(null); }
+      });
+      if (tabs) return Object.values(tabs).map(tab => tab?.wishChatGPT).filter(Boolean);
+    }
+    const recent = gmRead(CHAT_RECENT_TAB_KEY, null);
+    return recent && Date.now() - Number(recent.seenAt) < 90000 ? [recent] : [];
+  }
+  async function openChatGPTAfterTransfer(targetUrl = '') {
+    const tab = chooseChatTab(await registeredChatTabs(), targetUrl);
+    if (tab) {
+      gmWrite(CHAT_FOCUS_KEY, { id:`focus_${Date.now()}_${Math.random()}`, token:tab.token, targetUrl, createdAt:Date.now() });
+      notify('열려 있는 ChatGPT 탭으로 이동을 요청했습니다. 모바일에서 전환되지 않으면 해당 탭을 눌러 주세요.', 'info', 6500);
+      return true;
+    }
+    const url = targetUrl ? validChatRoomUrl(targetUrl) : 'https://chatgpt.com/';
+    try {
+      if (typeof GM_openInTab === 'function') { GM_openInTab(url, { active:true, setParent:true }); return true; }
+    } catch (_) {}
+    try {
+      const popup = window.open(url, '_blank');
+      if (popup) { try { popup.opener = null; popup.focus(); } catch (_) {} return true; }
+    } catch (_) {}
+    notify('브라우저가 ChatGPT 열기를 막았습니다. ChatGPT 탭을 직접 열면 준비한 파일을 받을 수 있습니다.', 'warn', 8000);
+    return false;
+  }
+  function incrementalExport(capture) {
+    const sourceFiles = [...capture.files].sort((a, b) => a.index - b.index);
+    const first = sourceFiles[0]?.text || '';
+    const section = /\r?\n\[RP \d+\/\d+ · 지침 제외 [^\n]*\]\r?\n/.exec(first);
+    if (!section) throw new Error('전체 재구축 TXT에서 RP 본문을 찾지 못했습니다.');
+    const prefix = first.slice(0, section.index).trimEnd();
+    const { blocks, end:turn } = parseExportTurns(sourceFiles);
+    const start = capture.startTurn;
+    if (!Number.isSafeInteger(start) || start < 1 || start > turn) throw new Error(`시작 턴은 1~${turn} 사이여야 합니다.`);
+    const selected = blocks.filter(block => block.turn >= start);
+    if (!selected.length) throw new Error('선택한 시작 턴 이후의 확정 RP가 없습니다.');
+    const groups = new Map();
+    for (const block of selected) {
+      if (!groups.has(block.sourceIndex)) groups.set(block.sourceIndex, []);
+      groups.get(block.sourceIndex).push(block);
+    }
+    const base = safeFilenamePart(capture.roomName);
+    const note = `\n\n[이어서 재구축 · 이번 입력 범위 T${start}-T${turn}]\n첨부한 이전 결과 JSON은 앞서 처리한 RP의 전체 상태 스냅샷이다. 아래 RP는 이번에 보낼 확정 턴이다. 이전 JSON의 유효한 상태·사건·인물·인지·자료·호칭·말투·관계를 보존하고, 새 RP에서 직접 변경된 부분만 갱신한다. 이전 JSON에 없다는 이유만으로 삭제하지 않는다. 최종 출력은 기존 결과와 새 턴을 합친 완전한 wish-rp-rebuild-2.3 JSON 하나여야 한다. source.last_message_id와 source.sha256은 이 TXT의 [SOURCE] 최신 값을 그대로 복사한다. 이전 JSON의 source 값은 복사하지 않는다. 기존 근거 인용은 이전 JSON과 이번 TXT에 실제 있는 경우에만 유지하고, 새로운 근거는 이번 RP 원문에서만 선택한다.\n`;
+    const files = [{ sourceName:'previous-result', name:`${base}_previous_result.json`, text:capture.previousJsonText, bytes:new Blob([capture.previousJsonText]).size, index:0 }];
+    let index = 1;
+    for (const group of groups.values()) {
+      const begin = group[0].turn, end = group.at(-1).turn;
+      const body = `${prefix}${note}\n[신규 RP T${begin}-T${end}]\n${group.map(block => block.text).join('\n\n')}`;
+      files.push({ sourceName:`incremental-${index}`, name:`${base}_T${begin}-T${end}.txt`, turnStart:begin, turnEnd:end, text:body, bytes:new Blob([body]).size, index:index++ });
+    }
+    capture.files = files;
+    capture.endTurn = turn;
+    capture.previousJsonText = '';
+  }
+  async function renameTransferFiles(capture) {
+    if (capture.mode === 'incremental') return;
+    const base = safeFilenamePart(capture.roomName);
+    if (capture.kind === 'secondary') {
+      const resolved = await capture.turnCountPromise;
+      let end = resolved;
+      if (!Number.isSafeInteger(end) || end < 0) {
+        const entered = prompt('2차 재구축의 기준 마지막 RP 턴을 자동 확인하지 못했습니다. 마지막 턴 숫자를 입력해 주세요. (인트로만 있으면 0)', '');
+        if (entered == null || !/^\d+$/.test(entered.trim())) throw new Error('기준 턴 확인이 취소되었습니다. 다시 ChatGPT 전송을 눌러 주세요.');
+        end = Number(entered);
+        if (!Number.isSafeInteger(end)) throw new Error('기준 턴 숫자가 너무 큽니다.');
+      }
+      capture.endTurn = end;
+      for (const file of capture.files) { file.turnStart = end ? 1 : 0; file.turnEnd = end; file.name = `${base}_T${file.turnStart}-T${end}.txt`; }
+      return;
+    }
+    const parsed = parseExportTurns(capture.files);
+    capture.endTurn = parsed.end;
+    for (const { file, start, end } of parsed.ranges) {
+      file.turnStart = start;
+      file.turnEnd = end;
+      file.name = `${base}_T${file.turnStart}-T${file.turnEnd}.txt`;
+    }
+  }
+  async function captureTransferDownload(anchor, preparedText = null) {
+    const filename = String(anchor?.download || '').trim();
+    const kind = transferKindForName(filename);
+    if (!kind || (preparedText == null && !anchor?.href)) return;
+    if (!activeTransferCapture || activeTransferCapture.kind !== kind || Date.now() - activeTransferCapture.createdAt > 30 * 60 * 1000) return;
+    const capture = activeTransferCapture;
+    const totalMatch = filename.match(/of(\d+)\.txt$/i);
+    if (totalMatch) capture.expected = Math.max(capture.expected || 0, Number(totalMatch[1]) || 0);
+    try {
+      let text = preparedText;
+      if (text == null) {
+        const response = await fetch(anchor.href);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        text = await response.text();
+      }
+      if (!text.trim()) throw new Error('TXT 내용이 비어 있습니다.');
+      const processCapture = async () => {
+      const file = { sourceName:filename, name:filename, text, bytes:new Blob([text]).size, index:transferFileIndex(filename) };
+      capture.files = capture.files.filter(item => item.sourceName !== filename).concat(file).sort((a, b) => a.index - b.index || a.sourceName.localeCompare(b.sourceName));
+      const complete = capture.expected > 0 && capture.files.length >= capture.expected;
+      if (complete) {
+        if (capture.mode === 'incremental') incrementalExport(capture);
+        await renameTransferFiles(capture);
+        capture.message = transferMessage(capture);
+      }
+      capture.updatedAt = Date.now();
+      capture.expiresAt = Date.now() + CHAT_TRANSFER_TTL;
+      capture.ready = complete;
+      const { turnCountPromise, endTurnPromise, writeQueue, previousJsonText, suppressDownload, ...stored } = capture;
+      if (!gmWrite(CHAT_TRANSFER_KEY, stored)) throw new Error('템퍼몽키 임시 저장소에 기록하지 못했습니다.');
+      notify(complete
+        ? `ChatGPT 전송 준비 완료 · 파일 ${capture.files.length}개 · 다운로드 없음`
+        : `ChatGPT 전송 파일 준비 중 · ${capture.files.length}/${capture.expected || '?'}개`, 'success', complete ? 7000 : 4300);
+      if (complete && !capture.chatOpened) {
+        capture.chatOpened = true;
+        if (activeTransferCapture === capture) activeTransferCapture = null;
+        void openChatGPTAfterTransfer(capture.targetUrl).catch(error => notify(`ChatGPT 탭 이동 실패: ${error.message}`, 'error'));
+      }
+      };
+      capture.writeQueue = (capture.writeQueue || Promise.resolve()).then(processCapture);
+      await capture.writeQueue;
+    } catch (error) {
+      if (activeTransferCapture === capture) activeTransferCapture = null;
+      notify(`ChatGPT 전달용 TXT 보관 실패: ${error.message}`, 'error', 7500);
+    }
+  }
+  function installTransferCapture() {
+    document.addEventListener('click', event => {
+      const anchor = event.target.closest?.('a[download]');
+      const kind = anchor && transferKindForName(anchor.download);
+      if (!kind || !activeTransferCapture || activeTransferCapture.kind !== kind) return;
+      if (Date.now() - activeTransferCapture.createdAt > 5 * 60 * 1000) { activeTransferCapture = null; return; }
+      if (activeTransferCapture.suppressDownload) { event.preventDefault(); event.stopImmediatePropagation(); }
+      void captureTransferDownload(anchor);
+    }, true);
+  }
+  if (typeof WISH_COMBINED_TRANSFER_BRIDGE !== 'undefined') {
+    WISH_COMBINED_TRANSFER_BRIDGE.captureText = (filename, text) => {
+      const capture = activeTransferCapture;
+      if (!capture || transferKindForName(filename) !== capture.kind || Date.now() - capture.createdAt > 5 * 60 * 1000) return false;
+      void captureTransferDownload({ download:filename }, String(text ?? ''));
+      return true;
+    };
+    WISH_COMBINED_TRANSFER_BRIDGE.captureList = files => {
+      const capture = activeTransferCapture;
+      if (!capture || !Array.isArray(files) || !files.length ||
+          !files.every(file => transferKindForName(file?.filename) === capture.kind && typeof file?.text === 'string')) return false;
+      for (const file of files) WISH_COMBINED_TRANSFER_BRIDGE.captureText(file.filename, file.text);
+      return true;
+    };
+  }
+
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function findChatGPTFileInput() {
+    const inputs = [...document.querySelectorAll('input[type="file"]')].filter(input => !input.disabled);
+    return inputs.find(input => {
+      const accept = String(input.accept || '').toLowerCase();
+      return !accept || accept.includes('text') || accept.includes('.txt') || accept.includes('application');
+    }) || null;
+  }
+  async function getChatGPTFileInput() {
+    let input = findChatGPTFileInput();
+    if (input) return input;
+    const plus = document.querySelector('button[data-testid="composer-plus-btn"],button[aria-label*="파일 첨부"],button[aria-label*="파일 추가"],button[aria-label*="Add files"],button[aria-label*="Attach"]');
+    if (plus && !plus.disabled) {
+      plus.click();
+      for (let attempt = 0; attempt < 8 && !input; attempt++) { await wait(150); input = findChatGPTFileInput(); }
+    }
+    return input;
+  }
+  function findChatGPTComposer() {
+    return document.querySelector('#prompt-textarea,textarea[data-testid="prompt-textarea"],form textarea,div[contenteditable="true"][data-lexical-editor="true"],main div[contenteditable="true"]');
+  }
+  function composerText() {
+    const element = findChatGPTComposer();
+    return String(element && ('value' in element ? element.value : element.innerText || element.textContent) || '').trim();
+  }
+  function isNewChatPage() {
+    return !chatConversationPath(location.href) && /^\/(?:g\/[^/]+\/?)?$/.test(location.pathname) &&
+      !new URL(location.href).searchParams.has('temporary-chat') && !document.querySelector('[data-message-author-role="user"]');
+  }
+  function publishChatTab() {
+    if (!chatTabToken) return;
+    const value = { token:chatTabToken, url:location.origin + location.pathname, seenAt:Date.now(), lastFocusedAt:chatLastFocusedAt,
+      isNew:isNewChatPage(), hasDraft:!!composerText() || !!document.querySelector('[data-testid*="attachment"],[data-testid*="file-preview"]') };
+    if (chatTabData && typeof GM_saveTab === 'function') {
+      chatTabData.wishChatGPT = value;
+      try { GM_saveTab(chatTabData); } catch (_) {}
+    }
+    if (document.visibilityState === 'visible') gmWrite(CHAT_RECENT_TAB_KEY, value);
+  }
+  function receiveChatFocus() {
+    const command = gmRead(CHAT_FOCUS_KEY, null);
+    if (!command || command.token !== chatTabToken || command.id === lastFocusRequestId || Date.now() - Number(command.createdAt) > 120000) return;
+    lastFocusRequestId = command.id;
+    try { window.focus(); } catch (_) {}
+    const target = chatConversationPath(command.targetUrl);
+    if (target && target !== chatConversationPath(location.href)) {
+      // Only an empty new page may be navigated to the requested existing conversation.
+      if (isNewChatPage() && !composerText() && !document.querySelector('[data-testid*="attachment"],[data-testid*="file-preview"]')) location.assign(validChatRoomUrl(command.targetUrl));
+      else notify('이어서 보낼 대화 주소가 다릅니다. 전달함의 파일을 첨부하기 전에 해당 대화로 이동해 주세요.', 'warn', 8000);
+    }
+  }
+  async function registerChatTab() {
+    if (typeof GM_getTab === 'function' && typeof GM_saveTab === 'function') {
+      chatTabData = await new Promise(resolve => {
+        const timer = setTimeout(() => resolve(null), 1500);
+        try { GM_getTab(value => { clearTimeout(timer); resolve(value || {}); }); } catch (_) { clearTimeout(timer); resolve(null); }
+      });
+    }
+    chatTabToken = chatTabData?.wishChatGPT?.token || `wish_tab_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    publishChatTab();
+    if (typeof GM_addValueChangeListener === 'function') GM_addValueChangeListener(CHAT_FOCUS_KEY, receiveChatFocus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') chatLastFocusedAt = Date.now();
+      publishChatTab(); receiveChatFocus();
+    });
+    window.addEventListener('focus', () => { chatLastFocusedAt = Date.now(); publishChatTab(); });
+    setInterval(() => { publishChatTab(); receiveChatFocus(); }, 5000);
+    receiveChatFocus();
+  }
+  function savePendingTitle(value) {
+    pendingChatTitle = value;
+    try { if (value) sessionStorage.setItem(CHAT_TITLE_PENDING_KEY, JSON.stringify(value)); else sessionStorage.removeItem(CHAT_TITLE_PENDING_KEY); } catch (_) {}
+  }
+  function normalizedText(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
+  function findConversationLink(path) {
+    return [...document.querySelectorAll('nav a[href],aside a[href],[role="navigation"] a[href],a[data-testid^="history-item"],[data-testid="sidebar"] a[href]')].find(link => chatConversationPath(link.href) === path) || null;
+  }
+  function titleMatches(link, title) {
+    if (!link) return false;
+    const wanted = normalizedText(title);
+    return [link.getAttribute('title'), link.getAttribute('aria-label'), link.textContent,
+      ...[...link.querySelectorAll('span,[dir="auto"],.truncate')].map(node => node.textContent)].some(value => normalizedText(value) === wanted);
+  }
+  async function waitForElement(read, timeout = 3500) {
+    const until = Date.now() + timeout;
+    do { const found = read(); if (found) return found; await wait(150); } while (Date.now() < until);
+    return null;
+  }
+  function armChatTitleOnSend(event) {
+    const pending = pendingChatTitle;
+    if (!pending || pending.path || Date.now() - pending.createdAt > CHAT_TRANSFER_TTL || !isNewChatPage() || !normalizedText(composerText()).includes(pending.signature)) return;
+    if (event.type === 'keydown') {
+      if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
+      const composer = findChatGPTComposer();
+      if (!composer || (event.target !== composer && !composer.contains(event.target))) return;
+    } else {
+      const button = event.target.closest?.('button');
+      if (!button || button.disabled || !(button.getAttribute('data-testid') === 'send-button' || /^(?:send(?: message| prompt)?|보내기|전송|메시지 보내기|프롬프트 보내기)$/i.test(button.getAttribute('aria-label') || ''))) return;
+    }
+    savePendingTitle({ ...pending, submittedAt:Date.now() });
+  }
+  function bindNewConversationTitle() {
+    const pending = pendingChatTitle;
+    if (!pending || pending.path || !pending.submittedAt || Date.now() - pending.submittedAt > 5 * 60 * 1000) return;
+    const path = chatConversationPath(location.href);
+    const messages = [...document.querySelectorAll('[data-message-author-role="user"]')];
+    if (!path || messages.length !== 1 || !normalizedText(messages[0].textContent).includes(pending.signature)) return;
+    savePendingTitle({ ...pending, path, boundAt:Date.now(), status:'pending' });
+    if (pending.chatId) rememberChatRoomUrl(pending.chatId, location.href);
+  }
+  async function applyNewConversationTitle(manual = false) {
+    const pending = pendingChatTitle;
+    if (!pending || !pending.path || pending.status === 'done' || Date.now() - pending.createdAt > CHAT_TRANSFER_TTL || titleRenameBusy ||
+        chatConversationPath(location.href) !== pending.path || document.visibilityState !== 'visible') return;
+    if (!manual && (Date.now() < titleRetryAfter || pending.attempted)) return;
+    if (!manual && (Date.now() - Number(pending.boundAt || 0) < 8000 || !document.querySelector('[data-message-author-role="assistant"]'))) return;
+    if (document.querySelector('[data-testid="stop-button"],button[aria-label="Stop streaming"],button[aria-label="응답 중지"],[role="menu"],[role="dialog"]')) return;
+    if (!manual && composerText()) return;
+    titleRenameBusy = true;
+    titleRetryAfter = Date.now() + 15000;
+    let sidebarOpened = false;
+    try {
+      let link = findConversationLink(pending.path);
+      if (!link) {
+        const toggle = document.querySelector('[data-testid="open-sidebar-button"],button[aria-label="Open sidebar"],button[aria-label="사이드바 열기"]');
+        if (toggle) { toggle.click(); sidebarOpened = true; link = await waitForElement(() => findConversationLink(pending.path)); }
+      }
+      if (!link) throw new Error('대화 목록을 열고 “대화 이름 적용”을 눌러 주세요.');
+      if (!titleMatches(link, pending.roomName)) {
+        const rows = [link.closest('li,[data-testid^="history-item"],[data-sidebar-item]'), link, link.parentElement].filter(Boolean);
+        const row = rows.find(node => node.querySelector('button[aria-haspopup="menu"],button[data-testid$="-options"]'));
+        const options = row?.querySelector('button[aria-haspopup="menu"],button[data-testid$="-options"]');
+        if (!options) throw new Error('이 대화의 이름 변경 메뉴를 찾지 못했습니다.');
+        options.click();
+        const rename = await waitForElement(() => [...document.querySelectorAll('[role="menuitem"]')].find(item => /^(?:rename|이름 바꾸기|이름 변경)$/i.test(item.textContent.trim())));
+        if (!rename) throw new Error('이름 변경 메뉴를 찾지 못했습니다.');
+        rename.click();
+        const input = await waitForElement(() => document.querySelector('[role="dialog"] input:not([type="hidden"]):not([type="search"])') || row.querySelector('input:not([type="hidden"])'));
+        if (!input) throw new Error('대화 이름 입력칸을 찾지 못했습니다.');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        if (setter) setter.call(input, pending.roomName); else input.value = pending.roomName;
+        input.dispatchEvent(new Event('input', { bubbles:true }));
+        input.dispatchEvent(new Event('change', { bubbles:true }));
+        const dialog = input.closest('[role="dialog"]');
+        const save = dialog && [...dialog.querySelectorAll('button')].find(button => /^(?:save|저장|확인)$/i.test(button.textContent.trim()) && !button.disabled);
+        if (save) save.click();
+        else { input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true })); input.dispatchEvent(new KeyboardEvent('keyup', { key:'Enter', code:'Enter', bubbles:true })); }
+        const verified = await waitForElement(() => titleMatches(findConversationLink(pending.path), pending.roomName), 4500);
+        if (!verified) throw new Error('대화 이름 저장을 확인하지 못했습니다. 목록에서 이름을 확인해 주세요.');
+      }
+      savePendingTitle({ ...pending, attempted:true, status:'done' });
+      notify(`새 ChatGPT 대화 이름을 “${pending.roomName}”으로 적용했습니다.`, 'success');
+      if (sidebarOpened) document.querySelector('[data-testid="close-sidebar-button"],button[aria-label="Close sidebar"],button[aria-label="사이드바 닫기"]')?.click();
+    } catch (error) {
+      savePendingTitle({ ...pending, attempted:true, status:'retry', error:error.message });
+      notify(`대화 이름: ${error.message}`, 'warn', 8000);
+    } finally { titleRenameBusy = false; renderChatGPTBridge(); }
+  }
+  function putChatGPTMessage(element, message) {
+    if (!element) throw new Error('ChatGPT 메시지 입력창을 찾지 못했습니다.');
+    const current = String('value' in element ? element.value : element.innerText || element.textContent || '').trim();
+    if (current.includes(message)) return;
+    const addition = `${current ? '\n\n' : ''}${message}`;
+    element.focus();
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (setter) setter.call(element, `${current}${addition}`); else element.value = `${current}${addition}`;
+      element.dispatchEvent(new Event('input', { bubbles:true }));
+      element.dispatchEvent(new Event('change', { bubbles:true }));
+      return;
+    }
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const inserted = document.execCommand?.('insertText', false, addition);
+    if (!inserted) element.textContent = `${current}${addition}`;
+    element.dispatchEvent(new InputEvent('input', { bubbles:true, inputType:'insertText', data:addition }));
+  }
+  async function attachTransferToChat(transfer) {
+    if (transfer.mode === 'incremental' && chatConversationPath(location.href) !== chatConversationPath(transfer.targetUrl))
+      throw new Error('이어서 보내기는 지정한 기존 ChatGPT 대화에서 실행해 주세요.');
+    if (typeof DataTransfer !== 'function') throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. TXT 저장 버튼을 사용해 주세요.');
+    const newConversation = isNewChatPage();
+    const message = transfer.message || transferMessage(transfer);
+    let input = await getChatGPTFileInput();
+    if (!input) throw new Error('파일 입력기를 찾지 못했습니다. 입력창의 + 버튼을 한 번 연 뒤 다시 시도해 주세요.');
+    const assign = (target, items) => {
+      const data = new DataTransfer();
+      for (const item of items) data.items.add(new File([String(item.text || '')], String(item.name || 'Wish-재구축.txt'), { type:/\.json$/i.test(item.name || '')?'application/json':'text/plain', lastModified:Number(transfer.updatedAt || Date.now()) }));
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
+      if (setter) setter.call(target, data.files); else target.files = data.files;
+      if (target.files?.length !== items.length) throw new Error('브라우저가 파일 자동 첨부를 허용하지 않았습니다. 전달함의 저장 버튼으로 파일을 받아 첨부해 주세요.');
+      target.dispatchEvent(new Event('input', { bubbles:true }));
+      target.dispatchEvent(new Event('change', { bubbles:true }));
+    };
+    if (input.multiple || transfer.files.length === 1) assign(input, transfer.files);
+    else {
+      for (const item of transfer.files) {
+        input = await getChatGPTFileInput();
+        if (!input) throw new Error(`${item.name}을 첨부할 파일 입력기를 찾지 못했습니다.`);
+        assign(input, [item]);
+        await wait(350);
+      }
+    }
+    await wait(650);
+    putChatGPTMessage(findChatGPTComposer(), message);
+    if (newConversation) savePendingTitle({ transferId:transfer.id, chatId:transfer.chatId, roomName:transfer.roomName,
+      signature:normalizedText(message), createdAt:Date.now(), submittedAt:0, path:'', status:'waiting' });
+    const marked = { ...transfer, lastAttachedAt:Date.now(), lastAttachedPath:location.pathname, lastAttachedTab:chatTabToken };
+    gmWrite(CHAT_TRANSFER_KEY, marked);
+    chatTransferCache = marked;
+    if (transfer.chatId && /\/c\/[^/]+/.test(location.pathname)) rememberChatRoomUrl(transfer.chatId, location.href);
+  }
+  function downloadTransferFiles(transfer) {
+    for (const item of transfer.files) {
+      const url = URL.createObjectURL(new Blob([String(item.text || '')], { type:/\.json$/i.test(item.name || '')?'application/json':'text/plain;charset=utf-8' }));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = String(item.name || 'Wish-재구축.txt');
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    }
+    notify(`전달 파일 ${transfer.files.length}개 저장 요청 완료`, 'success');
+  }
+  function renderChatGPTBridge() {
+    if (!document.body) return;
+    const transfer = validTransfer(chatTransferCache === undefined ? (chatTransferCache = gmRead(CHAT_TRANSFER_KEY, null)) : chatTransferCache);
+    let widget = document.getElementById('wish-gpt-transfer-widget');
+    if (!transfer) { chatTransferCache = null; widget?.remove(); return; }
+    if (chatAttachBusy && widget) return;
+    if (!widget) {
+      widget = document.createElement('div');
+      widget.id = 'wish-gpt-transfer-widget';
+      document.body.appendChild(widget);
+    }
+    bindNewConversationTitle();
+    const titleForThis = pendingChatTitle?.transferId === transfer.id ? pendingChatTitle : null;
+    const attachedHere = transfer.lastAttachedTab === chatTabToken && Number(transfer.lastAttachedAt || 0) >= Number(transfer.updatedAt || 0) &&
+      (transfer.lastAttachedPath === location.pathname || (titleForThis?.path && titleForThis.path === chatConversationPath(location.href)));
+    if (attachedHere && transfer.chatId && /\/c\/[^/]+/.test(location.pathname)) rememberChatRoomUrl(transfer.chatId, location.href);
+    const kind = transfer.mode === 'incremental' ? `이어서 T${transfer.startTurn}-T${transfer.endTurn}` : transfer.kind === 'secondary' ? '2차 재구축' : '전체 재구축';
+    const checkpointed = Number(transfer.endTurn || 0) > 0 && checkpointForRoom(transfer.chatId) >= Number(transfer.endTurn);
+    const signature = `${transfer.id}:${transfer.updatedAt}:${transfer.lastAttachedAt || 0}:${location.pathname}:${checkpointed}:${titleForThis?.status || ''}`;
+    if (widget.dataset.renderSignature === signature) return;
+    widget.dataset.renderSignature = signature;
+    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 ${attachedHere?'이 방에 다시 첨부':'이 방으로 전송'}</b><small>${kind} · 파일 ${transfer.files.length}개 · 문구 포함</small></button>${transfer.kind === 'full' && transfer.endTurn > 0 ? `<button type="button" class="wish-gpt-checkpoint" ${attachedHere && !checkpointed?'':'disabled'}>${checkpointed?`T${transfer.endTurn} 저장됨`:`T${transfer.endTurn}까지 전송 완료`}</button>` : ''}<button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
+    widget.querySelector('.wish-gpt-send').onclick = async event => {
+      if (chatAttachBusy) return;
+      chatAttachBusy = true;
+      const button = event.currentTarget;
+      button.disabled = true;
+      const before = button.innerHTML;
+      button.innerHTML = '<b>첨부하는 중…</b><small>잠시 기다려 주세요</small>';
+      try {
+        await attachTransferToChat(transfer);
+        notify('파일과 요청 문구를 입력했습니다. ChatGPT 전송 버튼을 직접 눌러 주세요.', 'success', 7500);
+      } catch (error) {
+        notify(`ChatGPT 첨부 실패: ${error.message}`, 'error', 8500);
+        button.innerHTML = before;
+      } finally { chatAttachBusy = false; button.disabled = false; widget.dataset.renderSignature = ''; renderChatGPTBridge(); }
+    };
+    if (titleForThis?.path && titleForThis.path === chatConversationPath(location.href) && titleForThis.status !== 'done') {
+      const titleButton = document.createElement('button');
+      titleButton.type = 'button';
+      titleButton.className = 'wish-gpt-title';
+      titleButton.textContent = titleRenameBusy ? '대화 이름 적용 중…' : '대화 이름 적용';
+      titleButton.title = titleForThis.roomName;
+      titleButton.disabled = titleRenameBusy;
+      titleButton.onclick = () => { void applyNewConversationTitle(true); };
+      widget.appendChild(titleButton);
+    }
+    const checkpointButton = widget.querySelector('.wish-gpt-checkpoint');
+    if (checkpointButton) checkpointButton.onclick = () => {
+      if (!attachedHere || !transfer.chatId || !transfer.endTurn) return;
+      if (!confirm(`ChatGPT에서 실제 전송하고 결과를 확인했나요?\n확인하면 ${transfer.endTurn}턴까지 전송 완료로 저장합니다.`)) return;
+      try { saveCheckpoint(transfer.chatId, Number(transfer.endTurn)); notify(`T${transfer.endTurn}까지 전송 완료로 저장했습니다.`, 'success'); renderChatGPTBridge(); }
+      catch (error) { notify(error.message, 'error'); }
+    };
+    widget.querySelector('.wish-gpt-save').onclick = () => downloadTransferFiles(transfer);
+    widget.querySelector('.wish-gpt-clear').onclick = () => {
+      if (!confirm('ChatGPT 전달함의 임시 TXT를 지울까요? 원래 다운로드 파일과 RP Manager 자료는 지워지지 않습니다.')) return;
+      gmWrite(CHAT_TRANSFER_KEY, null);
+      if (pendingChatTitle?.transferId === transfer.id) savePendingTitle(null);
+      chatTransferCache = null;
+      widget.remove();
+      notify('ChatGPT 임시 전달 파일을 지웠습니다.', 'success');
+    };
+  }
+  function installChatGPTBridge() {
+    const start = async () => {
+      await registerChatTab();
+      document.body?.classList.add('wish-gpt-bridge-page');
+      document.addEventListener('click', armChatTitleOnSend, true);
+      document.addEventListener('keydown', armChatTitleOnSend, true);
+      chatTransferCache = gmRead(CHAT_TRANSFER_KEY, null);
+      renderChatGPTBridge();
+      if (typeof GM_addValueChangeListener === 'function') {
+        GM_addValueChangeListener(CHAT_TRANSFER_KEY, (_key, _oldValue, newValue) => {
+          try { chatTransferCache = typeof newValue === 'string' ? JSON.parse(newValue) : newValue; }
+          catch (_) { chatTransferCache = gmRead(CHAT_TRANSFER_KEY, null); }
+          renderChatGPTBridge();
+        });
+      }
+      setInterval(() => { chatTransferCache = gmRead(CHAT_TRANSFER_KEY, null); renderChatGPTBridge(); }, 5000);
+      setInterval(() => { renderChatGPTBridge(); bindNewConversationTitle(); void applyNewConversationTitle(); }, 2500);
+    };
+    if (document.body) start(); else document.addEventListener('DOMContentLoaded', start, { once:true });
   }
 
   function notify(message, type = 'info', duration = 4300) {
@@ -237,7 +947,7 @@
   }
   async function databaseRequest(settings, method, path, body, retry = true) {
     let session = await getSession(settings);
-    if (!session) throw new Error('Firebase 로그인이 필요합니다. API 설정의 Firebase 서버 백업에서 먼저 연결해 주세요.');
+    if (!session) throw new Error('Firebase 로그인이 필요합니다. 클라우드 백업에서 Firebase를 선택하고 연결해 주세요.');
     const safePath = String(path || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
     const silent = String(method).toUpperCase() === 'GET' ? '' : '&print=silent';
     try {
@@ -262,8 +972,7 @@
     validateSettings(settings);
     const session = await getSession(settings);
     if (!session) {
-      document.querySelector('#wish-rp-root [data-act="api"]')?.click();
-      throw new Error('API 설정의 Firebase 서버 백업에서 비밀번호를 입력하고 연결해 주세요.');
+      throw new Error('클라우드 백업에서 Firebase를 선택한 뒤 비밀번호를 입력하고 연결해 주세요.');
     }
     return { settings, session };
   }
@@ -475,23 +1184,57 @@
     } finally { db.close(); }
   }
 
-  async function uploadBackup() {
+  function selectedCoreBackup(raw, roomIds, includeSettings) {
+    const ids = new Set(roomIds.map(String));
+    const data = sanitizeBackup(clone(raw));
+    data.rooms = data.rooms.filter(room => ids.has(String(room.chatId))).map(room => ({ ...room, pending:null }));
+    const apiIds = new Set(data.rooms.map(apiChatIdOf).filter(Boolean).map(String));
+    const links = new Set(data.rooms.flatMap(room => [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId, `lore:auto:${room.chatId}`].filter(Boolean)).map(String));
+    data.characterLibraries = data.characterLibraries.filter(item => ids.has(String(item.ownerChatId || '')) || links.has(String(item.scopeId || '')));
+    data.cognitionRooms = (data.cognitionRooms || []).filter(item => apiIds.has(String(item.id || '')));
+    data.runtime = (data.runtime || []).filter(item => ids.has(String(item.chatId || '')));
+    data.autoHistory = (data.autoHistory || []).filter(item => !item.backup && ids.has(String(item.chatId || '')));
+    if (!includeSettings) for (const key of ['guides','defaultExtraPreset','cognitionSettings']) delete data[key];
+    return validateCoreBackup(data);
+  }
+  async function openFirebaseBackupRoomPicker() {
     if (busy) return;
-    const label = prompt('서버 백업 이름을 입력하세요.', `Wish 전체 백업 ${new Date().toLocaleString('ko-KR')}`);
-    if (label === null) return;
+    try {
+      const snapshot = await createCoreBackup();
+      const modal = createModal('Firebase에 백업할 방 선택', 'Koofr와 별도 저장소입니다. 선택한 방과 연결 자료만 Firebase에 올립니다.');
+      modal.body.innerHTML = `<label class="wish-inc-field"><span>백업 이름</span><input type="text" data-fbp-backup-label maxlength="80" value="${esc(`Wish 백업 ${new Date().toLocaleString('ko-KR')}`)}"></label><div class="wish-fbp-actions"><button type="button" data-fbp-current>현재 방만</button><button type="button" data-fbp-all>전체 선택</button><button type="button" data-fbp-none>선택 해제</button></div>${snapshot.rooms.map(room => `<label class="m3-cbx wish-fbp-room-row"><input type="checkbox" data-fbp-room value="${esc(room.chatId)}" ${String(apiChatIdOf(room)) === currentApiChatId() ? 'checked' : ''}><span class="m3-box"></span><span class="m3-t"><b>${esc(room.backupDisplayName || room.label || room.chatId)}</b><small>ID ${esc(room.chatId)}</small></span></label>`).join('') || '<p class="m3-muted">백업할 방이 없습니다.</p>'}<label class="m3-cbx wish-fbp-room-row"><input type="checkbox" data-fbp-global checked><span class="m3-box"></span><span class="m3-t">공용 지침·설정도 함께 저장</span></label>`;
+      modal.footer.innerHTML = '<button type="button" data-fbp-cancel>취소</button><span></span><button type="button" class="primary" data-fbp-upload>선택한 방 백업</button>';
+      modal.body.querySelector('[data-fbp-current]').onclick = () => modal.body.querySelectorAll('[data-fbp-room]').forEach(input => { input.checked = snapshot.rooms.some(room => String(room.chatId) === input.value && String(apiChatIdOf(room)) === currentApiChatId()); });
+      modal.body.querySelector('[data-fbp-all]').onclick = () => modal.body.querySelectorAll('[data-fbp-room]').forEach(input => { input.checked = true; });
+      modal.body.querySelector('[data-fbp-none]').onclick = () => modal.body.querySelectorAll('[data-fbp-room]').forEach(input => { input.checked = false; });
+      modal.footer.querySelector('[data-fbp-cancel]').onclick = modal.close;
+      modal.footer.querySelector('[data-fbp-upload]').onclick = async event => {
+        const ids = [...modal.body.querySelectorAll('[data-fbp-room]:checked')].map(input => input.value);
+        if (!ids.length) { notify('백업할 방을 한 개 이상 선택해 주세요.', 'warn'); return; }
+        event.currentTarget.disabled = true;
+        const payload = selectedCoreBackup(snapshot, ids, modal.body.querySelector('[data-fbp-global]').checked);
+        const label = modal.body.querySelector('[data-fbp-backup-label]').value;
+        modal.close();
+        await uploadBackup({ payload, label });
+        await refreshFirebaseCloud();
+      };
+    } catch (error) { notify(`백업할 방 준비 실패: ${error.message}`, 'error', 7600); }
+  }
+  async function uploadBackup({ payload, label } = {}) {
+    if (busy) return;
     busy = true;
     try {
       const ready = await ensureReady();
-      notify('전체 백업을 구성해 Firebase에 올리는 중…', 'info', 2600);
-      const payload = await createCoreBackup();
+      notify('선택한 방의 백업을 Firebase에 올리는 중…', 'info', 2600);
+      payload ||= await createCoreBackup();
       const id = `W${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       const meta = {
         id,
         manager:MANAGER_ID,
-        source:'companion-patch',
-        label:String(label || '').trim().slice(0, 80) || `Wish 전체 백업 ${new Date().toLocaleString('ko-KR')}`,
+        source:typeof WISH_COMBINED_TRANSFER_BRIDGE !== 'undefined' ? 'integrated' : 'companion-patch',
+        label:String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`,
         createdAt:payload.exportedAt,
-        version:String(payload.version || '1.0.6'),
+        version:String(payload.version || '1.3.1'),
         patchVersion:PATCH_VERSION,
         roomCount:payload.rooms.length,
         libraryCount:payload.characterLibraries.length,
@@ -530,6 +1273,45 @@
     overlay.querySelector('[data-fbp-close]').onclick = close;
     overlay.onclick = event => { if (event.target === overlay) close(); };
     return { overlay, body:overlay.querySelector('.wish-fbp-body'), footer:overlay.querySelector('footer'), close };
+  }
+  function openIncrementalTransferDialog() {
+    const chatId = currentApiChatId();
+    if (!chatId) { notify('현재 채팅방 ID를 찾지 못했습니다.', 'error'); return; }
+    const checkpoint = checkpointForRoom(chatId);
+    const modal = createModal('이어서 ChatGPT 전송', '이전 결과 JSON과 선택한 시작 턴 이후의 새 RP만 같은 ChatGPT 대화에 보냅니다.');
+    modal.body.innerHTML = `<div class="wish-fbp-note">기존 “지침 + TXT 받기”와 “ChatGPT 전송”의 전체 로그 기능은 그대로 유지됩니다. 이전 결과 JSON은 이 채팅방의 완결된 전체 재구축 결과를 선택하세요.</div><label class="wish-inc-field"><span>시작 턴 · 이 턴부터 포함</span><input type="number" min="1" step="1" data-inc-start value="${checkpoint + 1}"><small data-inc-count>확정 RP 턴 수 확인 중… · 마지막 저장 턴 ${checkpoint}</small></label><label class="wish-inc-field"><span>이전 결과 JSON 파일</span><input type="file" accept=".json,application/json" data-inc-file></label><label class="wish-inc-field"><span>또는 이전 결과 JSON 붙여넣기</span><textarea data-inc-json rows="4" placeholder="JSON 파일을 선택했다면 비워 두세요"></textarea></label><label class="wish-inc-field"><span>이어서 보낼 기존 ChatGPT 대화 주소</span><input type="url" data-inc-url value="${esc(chatRoomUrl(chatId))}" placeholder="https://chatgpt.com/c/..."></label>`;
+    modal.footer.innerHTML = '<button type="button" data-inc-cancel>취소</button><span></span><button type="button" class="primary" data-inc-send>새 턴 준비·전송</button>';
+    modal.footer.querySelector('[data-inc-cancel]').onclick = modal.close;
+    const countPromise = currentCompletedTurnCount().catch(() => visibleCompletedTurnCount());
+    void countPromise.then(count => { const label = modal.body.querySelector('[data-inc-count]'); if (label) label.textContent = `현재 확인된 확정 RP ${count || '?'}턴 · 마지막 저장 턴 ${checkpoint}`; });
+    modal.footer.querySelector('[data-inc-send]').onclick = async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const startTurn = Number(modal.body.querySelector('[data-inc-start]').value);
+        if (!Number.isSafeInteger(startTurn) || startTurn < 1) throw new Error('시작 턴을 1 이상의 정수로 입력해 주세요.');
+        const count = await countPromise;
+        if (count > 0 && startTurn > count) throw new Error(`시작 턴이 현재 확정된 ${count}턴보다 큽니다.`);
+        if (checkpoint > 0 && startTurn !== checkpoint + 1 && !confirm(`저장된 마지막 전송 턴은 T${checkpoint}입니다. T${startTurn}부터 다시 보내면 구간이 겹치거나 빠질 수 있습니다. 계속할까요?`)) { button.disabled = false; return; }
+        const file = modal.body.querySelector('[data-inc-file]').files?.[0];
+        if (file && file.size > 25 * 1024 * 1024) throw new Error('이전 결과 JSON 파일은 25MB 이하여야 합니다.');
+        const previousJsonText = String(modal.body.querySelector('[data-inc-json]').value || '').trim() || (file ? await file.text() : '');
+        if (!previousJsonText || previousJsonText.length > 25 * 1024 * 1024) throw new Error('이전 결과 JSON을 파일로 선택하거나 붙여넣어 주세요 (25MB 이하).');
+        let previous;
+        try { previous = JSON.parse(previousJsonText); } catch (_) { throw new Error('이전 결과 JSON을 읽지 못했습니다.'); }
+        if (previous?.format !== 'wish-rp-rebuild-2.3' || !previous?.source?.last_message_id || !previous?.source?.sha256 || !Array.isArray(previous.stateSections) || !Array.isArray(previous.events))
+          throw new Error('Wish 전체 재구축 결과 JSON이 아닙니다.');
+        if (!confirm(`선택한 이전 JSON이 ${startTurn > 1 ? `T${startTurn - 1}까지의 내용` : '이전 상태'}을 포함하고 있나요? 잘못된 JSON이면 과거 설정·기억이 빠질 수 있습니다.`)) { button.disabled = false; return; }
+        const targetUrl = validChatRoomUrl(modal.body.querySelector('[data-inc-url]').value);
+        const source = document.querySelector('#wish-rp-root [data-key="external"] [data-act="rebuildExport"]');
+        if (!source || source.disabled) throw new Error('전체 재구축 TXT 버튼을 찾지 못했습니다. 자료 관리 화면을 다시 열어 주세요.');
+        rememberChatRoomUrl(chatId, targetUrl);
+        beginTransferCapture('full', { mode:'incremental', startTurn, previousJsonText, targetUrl });
+        modal.close();
+        notify(`새 RP ${startTurn}턴부터 ChatGPT 전송용으로 준비합니다. 다운로드 없음`, 'info', 6500);
+        source.click();
+      } catch (error) { notify(error.message, 'error', 7600); button.disabled = false; }
+    };
   }
   async function openBackupList() {
     if (busy) return;
@@ -618,7 +1400,7 @@
   function injectApiSettings(dialog) {
     const body = dialog.querySelector('.m3-dialog-body');
     if (!body || body.querySelector('[data-wish-fbp-settings]')) return;
-    const id = String(dialog.dataset.dlg || 'api');
+    const id = String(dialog.dataset.dlg || 'cloud');
     const saved = loadSettings();
     const draft = apiDrafts.get(id) || { ...saved, password:'' };
     apiDrafts.set(id, draft);
@@ -659,29 +1441,202 @@
       notify('Firebase 서버 백업 로그아웃 완료', 'success');
     };
   }
-  function injectBackupButtons(root) {
-    const actions = root.querySelector('[data-key="backup"] .m3-card-actions');
-    if (!actions || actions.querySelector('[data-wish-fbp-upload]')) return;
-    const upload = document.createElement('button');
-    upload.type = 'button';
-    upload.className = 'm3-btn mini wish-fbp-main-button';
-    upload.setAttribute('data-wish-fbp-upload', '');
-    upload.textContent = '☁ 서버에 올리기';
-    upload.onclick = uploadBackup;
-    const list = document.createElement('button');
-    list.type = 'button';
-    list.className = 'm3-btn mini wish-fbp-main-button';
-    list.setAttribute('data-wish-fbp-list', '');
-    list.textContent = '☁ 서버 백업 목록';
-    list.onclick = openBackupList;
-    actions.append(upload, list);
+  function renderFirebaseCloudPanel(dialog) {
+    const panel = dialog.querySelector('[data-wish-fbp-cloud]');
+    if (!panel) return;
+    const ready = connected();
+    const signature = JSON.stringify({ ready, loading:cloudLoading, busy, error:cloudError, loaded:cloudLoaded, rows:cloudRows });
+    if (panel.dataset.signature === signature) return;
+    panel.dataset.signature = signature;
+    const rows = cloudRows.map(item => `<div class="m3-cloud-row" data-key="firebase-${esc(item.id)}"><div class="m3-cloud-info m3-cbx m3-cloud-pick" style="padding:0;margin:0"><span class="m3-box" aria-hidden="true"></span><span class="m3-t"><b>${esc(item.label || '이름 없는 백업')}</b><small>${esc(item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '생성 시각 미상')} · 방 ${Number(item.roomCount || 0)}개 · 자료집 ${Number(item.libraryCount || 0)}개 · v${esc(item.version || '?')}</small></span></div><div class="m3-row m3-cloud-actions"><button type="button" class="m3-btn mini" data-fbp-cloud-restore="${esc(item.id)}" ${busy ? 'disabled' : ''}>복원</button><button type="button" class="m3-btn mini danger" data-fbp-cloud-delete="${esc(item.id)}" ${busy ? 'disabled' : ''}>삭제</button></div></div>`).join('');
+    panel.innerHTML = `<section class="m3-panel" data-key="firebase-cloud-head"><b>${ready ? 'Firebase 연결됨' : 'Firebase 연결 설정이 필요합니다'}</b><div class="m3-muted">Firebase Realtime Database · 계정별 개인 백업 · 암호화하지 않은 JSON</div><div class="m3-status m3-topgap">수동 저장·불러오기 · Koofr 백업과 별도 목록</div><div class="m3-row m3-card-actions"><button type="button" class="m3-btn mini primary" data-fbp-cloud-upload ${!ready || busy || cloudLoading ? 'disabled' : ''}>방 골라 백업</button><button type="button" class="m3-btn mini" data-fbp-cloud-refresh ${!ready || busy || cloudLoading ? 'disabled' : ''}>목록 새로고침</button></div></section>${cloudError ? `<section class="m3-panel m3-alert"><b>Firebase 목록 오류</b><p>${esc(cloudError)}</p></section>` : ''}${cloudLoading ? '<p class="m3-muted" role="status">Firebase 목록 확인 중…</p>' : rows ? `<div class="m3-cloud-group"><div class="m3-cloud-title">내 Firebase 백업<small>${cloudRows.length}개</small></div>${rows}</div>` : `<p class="m3-muted">${cloudLoaded ? '저장된 Firebase 백업이 없습니다.' : '목록 새로고침을 눌러 저장된 백업을 확인하세요.'}</p>`}`;
+    panel.querySelector('[data-fbp-cloud-upload]').onclick = () => { void openFirebaseBackupRoomPicker(); };
+    panel.querySelector('[data-fbp-cloud-refresh]').onclick = () => { void refreshFirebaseCloud(); };
+    panel.querySelectorAll('[data-fbp-cloud-restore]').forEach(button => { button.onclick = () => { void restoreFirebaseCloudItem(button.dataset.fbpCloudRestore); }; });
+    panel.querySelectorAll('[data-fbp-cloud-delete]').forEach(button => { button.onclick = () => { void deleteFirebaseCloudItem(button.dataset.fbpCloudDelete); }; });
+  }
+  function currentCloudDialog() { return [...document.querySelectorAll('#wish-rp-root .m3-dialog')].find(dialog => dialog.querySelector('[data-wish-fbp-cloud]')) || null; }
+  async function refreshFirebaseCloud() {
+    if (busy || cloudLoading) return;
+    cloudLoading = true; cloudError = ''; renderFirebaseCloudPanel(currentCloudDialog() || document.createElement('div'));
+    try { const listed = await fetchBackups(); cloudRows = listed.items; cloudLoaded = true; }
+    catch (error) { cloudError = error.message; notify(`Firebase 목록 실패: ${error.message}`, 'error', 7600); }
+    finally { cloudLoading = false; const dialog = currentCloudDialog(); if (dialog) renderFirebaseCloudPanel(dialog); }
+  }
+  async function restoreFirebaseCloudItem(id) {
+    if (busy) return;
+    busy = true; const dialog = currentCloudDialog(); if (dialog) renderFirebaseCloudPanel(dialog);
+    try {
+      const listed = await fetchBackups();
+      if (!listed.items.some(item => item.id === id)) throw new Error('백업 목록을 다시 확인해 주세요.');
+      const raw = await databaseRequest(listed.settings, 'GET', `${DATA_ROOT}/${listed.session.localId}/${id}`);
+      await openRestoreSelection(validateCoreBackup(raw));
+    } catch (error) { notify(`Firebase 복원 준비 실패: ${error.message}`, 'error', 7600); }
+    finally { busy = false; const current = currentCloudDialog(); if (current) renderFirebaseCloudPanel(current); }
+  }
+  async function deleteFirebaseCloudItem(id) {
+    if (busy) return;
+    const item = cloudRows.find(row => row.id === id);
+    if (!item || !confirm(`Firebase 백업을 영구 삭제할까요?\n\n${item.label || '이름 없는 백업'}\n\nKoofr와 로컬 자료는 그대로 남습니다.`)) return;
+    busy = true; const dialog = currentCloudDialog(); if (dialog) renderFirebaseCloudPanel(dialog);
+    try { const listed = await fetchBackups(); await deleteBackup(listed, id); cloudRows = cloudRows.filter(row => row.id !== id); notify('Firebase 백업을 삭제했습니다.', 'success'); }
+    catch (error) { notify(`Firebase 백업 삭제 실패: ${error.message}`, 'error', 7600); }
+    finally { busy = false; const current = currentCloudDialog(); if (current) renderFirebaseCloudPanel(current); }
+  }
+  function injectCloudProvider(dialog) {
+    const body = dialog.querySelector('.m3-dialog-body');
+    const header = dialog.querySelector('.m3-sheet>header .m3-t');
+    if (!body || !header || !body.querySelector('[data-key="cloud-head"]')) return;
+    if (!header.querySelector('[data-wish-cloud-providers]')) {
+      const title = header.querySelector('b');
+      if (title && title.textContent !== '클라우드 백업') title.textContent = '클라우드 백업';
+      dialog.setAttribute('aria-label', '클라우드 백업');
+      const tabs = document.createElement('div');
+      tabs.className = 'wish-fbp-providers m3-row';
+      tabs.setAttribute('data-wish-cloud-providers', '');
+      tabs.innerHTML = '<button type="button" class="m3-btn mini" data-wish-provider="koofr">Koofr</button><button type="button" class="m3-btn mini" data-wish-provider="firebase">Firebase</button>';
+      header.appendChild(tabs);
+      for (const button of tabs.querySelectorAll('button')) button.onclick = event => {
+        event.preventDefault(); event.stopPropagation();
+        cloudProvider = button.dataset.wishProvider;
+        gmWrite(CLOUD_PROVIDER_KEY, cloudProvider);
+        injectCloudProvider(dialog);
+      };
+      const panel = document.createElement('div');
+      panel.setAttribute('data-wish-fbp-cloud', '');
+      body.appendChild(panel);
+      injectApiSettings(dialog);
+    }
+    dialog.classList.toggle('wish-fbp-firebase-mode', cloudProvider === 'firebase');
+    dialog.querySelectorAll('[data-wish-provider]').forEach(button => {
+      const chosen = button.dataset.wishProvider === cloudProvider;
+      button.classList.toggle('primary', chosen);
+      button.setAttribute('aria-pressed', String(chosen));
+    });
+    if (cloudProvider === 'firebase') {
+      renderFirebaseCloudPanel(dialog);
+      if (!dialog.dataset.wishFbpAutoList && connected()) {
+        dialog.dataset.wishFbpAutoList = '1';
+        void refreshFirebaseCloud();
+      }
+    }
+  }
+  function injectPatchVersion(root) {
+    const line = root.querySelector('.m3-sub-line');
+    if (!line) return;
+    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.3\.1(?:\.\d+)?$/.test(span.textContent.trim()));
+    if (!version) return;
+    if (version.textContent !== 'Wish Core 1.3.1') version.textContent = 'Wish Core 1.3.1';
+    if (version.nextElementSibling?.dataset.wishPatchVersion === PATCH_VERSION) return;
+    const badge = document.createElement('span');
+    badge.dataset.wishPatchVersion = PATCH_VERSION;
+    badge.textContent = `( + patch ${PATCH_VERSION})`;
+    version.insertAdjacentElement('afterend', badge);
+  }
+  function applyButtonContrast(button, background, border) {
+    if (!button) return;
+    button.style.setProperty('background', background, 'important');
+    button.style.setProperty('background-color', background, 'important');
+    button.style.setProperty('border-color', border, 'important');
+    button.style.setProperty('color', '#ffffff', 'important');
+    button.style.setProperty('-webkit-text-fill-color', '#ffffff', 'important');
+  }
+  function refreshButtonContrast(root) {
+    root.querySelectorAll('[data-wish-fbp-upload],[data-wish-fbp-list]').forEach(button => applyButtonContrast(button, '#285d73', '#173c4d'));
+    root.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental],[data-wish-gpt-secondary-open],[data-wish-gpt-secondary-run]').forEach(button => applyButtonContrast(button, '#334894', '#263b80'));
+  }
+  function patchChatButton(label = 'ChatGPT 전송') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'm3-btn mini wish-gpt-prepare-button';
+    button.textContent = label;
+    return button;
+  }
+  function injectChatTransferButtons(root) {
+    const fullSource = root.querySelector('[data-key="external"] [data-act="rebuildExport"]');
+    if (fullSource && !fullSource.parentElement.querySelector('[data-wish-gpt-full]')) {
+      const button = patchChatButton();
+      button.setAttribute('data-wish-gpt-full', '');
+      button.disabled = fullSource.disabled;
+      button.onclick = event => {
+        event.preventDefault(); event.stopPropagation();
+        if (fullSource.disabled) return;
+        beginTransferCapture('full');
+        notify('전체 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
+        fullSource.click();
+      };
+      const guide = fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
+      (guide || fullSource).insertAdjacentElement('afterend', button);
+    }
+    if (fullSource && !fullSource.parentElement.querySelector('[data-wish-gpt-incremental]')) {
+      const button = patchChatButton('이어서 ChatGPT 전송');
+      button.setAttribute('data-wish-gpt-incremental', '');
+      button.disabled = fullSource.disabled;
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!fullSource.disabled) openIncrementalTransferDialog(); };
+      const preceding = fullSource.parentElement.querySelector('[data-wish-gpt-full]') || fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
+      (preceding || fullSource).insertAdjacentElement('afterend', button);
+    }
+    const secondarySource = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]');
+    if (secondarySource && !secondarySource.parentElement.querySelector('[data-wish-gpt-secondary-open]')) {
+      const button = patchChatButton();
+      button.setAttribute('data-wish-gpt-secondary-open', '');
+      button.disabled = secondarySource.disabled;
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!secondarySource.disabled) secondarySource.click(); };
+      const guide = secondarySource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalSecondary"]');
+      (guide || secondarySource).insertAdjacentElement('afterend', button);
+    }
+  }
+  function injectSecondaryDialogButton(root) {
+    root.querySelectorAll('.m3-dialog[aria-label="외부 AI로 2차 재구축"]').forEach(dialog => {
+      const original = dialog.querySelector('footer [data-act="secondaryExportRun"]');
+      if (!original || dialog.querySelector('[data-wish-gpt-secondary-run]')) return;
+      const button = patchChatButton('ChatGPT 전송');
+      button.setAttribute('data-wish-gpt-secondary-run', '');
+      button.disabled = original.disabled;
+      button.onclick = event => {
+        event.preventDefault(); event.stopPropagation();
+        if (original.disabled) return;
+        beginTransferCapture('secondary');
+        notify('2차 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
+        original.click();
+      };
+      original.insertAdjacentElement('afterend', button);
+    });
+  }
+  function processAppleTransferDialog(root) {
+    const capture = activeTransferCapture;
+    if (!capture || capture.kind !== 'full' || !capture.suppressDownload) return;
+    const dialog = root.querySelector('.m3-dialog[aria-label="전체 재구축 TXT 받기"]');
+    if (!dialog || dialog.dataset.wishGptProcessing === '1') return;
+    const links = [...dialog.querySelectorAll('a[data-txt-download][download]')].filter(link => transferKindForName(link.download) === 'full');
+    if (!links.length) return;
+    dialog.dataset.wishGptProcessing = '1';
+    dialog.style.pointerEvents = 'none';
+    void Promise.all(links.map(link => captureTransferDownload(link))).finally(() => {
+      dialog.style.pointerEvents = '';
+      dialog.querySelector('[data-act="closeDlg"]')?.click();
+    });
+  }
+  function injectChatTransferNote(root) {
+    const panel = root.querySelector('[data-key="external"]');
+    if (!panel || panel.querySelector('[data-wish-gpt-transfer-note]')) return;
+    const note = document.createElement('div');
+    note.className = 'wish-gpt-transfer-note';
+    note.setAttribute('data-wish-gpt-transfer-note', '');
+    note.textContent = '🪽 “ChatGPT 전송”은 턴 범위 파일과 요청 문구를 준비하고 열려 있는 ChatGPT 탭으로 이동합니다. 열린 탭이 없으면 새 탭을 엽니다. ChatGPT의 “이 방으로 전송”으로 첨부한 뒤 보내기를 눌러 주세요. 전달함 보관 12시간.';
+    panel.appendChild(note);
   }
   function scan() {
     scanQueued = false;
     const root = document.getElementById('wish-rp-root');
     if (!root) return;
-    injectBackupButtons(root);
-    root.querySelectorAll('.m3-dialog[aria-label="보조 AI 연결"]').forEach(injectApiSettings);
+    injectPatchVersion(root);
+    root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
+    injectChatTransferButtons(root);
+    injectSecondaryDialogButton(root);
+    refreshButtonContrast(root);
+    injectChatTransferNote(root);
+    processAppleTransferDialog(root);
   }
   function queueScan() {
     if (scanQueued) return;
@@ -691,14 +1646,6 @@
   function installObserver() {
     if (!document.documentElement) { document.addEventListener('DOMContentLoaded', installObserver, { once:true }); return; }
     new MutationObserver(queueScan).observe(document.documentElement, { childList:true, subtree:true });
-    document.addEventListener('click', event => {
-      const save = event.target.closest?.('[data-act="aiSave"]');
-      if (!save) return;
-      const section = save.closest('.m3-dialog')?.querySelector('[data-wish-fbp-settings]');
-      if (!section) return;
-      try { saveSettings(readSectionSettings(section)); }
-      catch (error) { event.preventDefault(); event.stopImmediatePropagation(); notify(`서버 백업 설정 확인: ${error.message}`, 'error', 6500); }
-    }, true);
     queueScan();
     const notice = sessionStorage.getItem(RESTORE_NOTICE_KEY);
     if (notice) { sessionStorage.removeItem(RESTORE_NOTICE_KEY); setTimeout(() => notify(notice, 'success', 6500), 1200); }
@@ -709,9 +1656,17 @@
   style.textContent = `
     #wish-fbp-toast-wrap{position:fixed;z-index:2147483647;right:14px;bottom:16px;display:flex;flex-direction:column;gap:8px;max-width:min(430px,calc(100vw - 28px));pointer-events:none}
     .wish-fbp-toast{opacity:0;transform:translateY(8px);padding:11px 14px;border:1px solid #46566f;border-radius:10px;background:#17202d;color:#e8eef8;box-shadow:0 14px 40px #0009;font:12px/1.55 system-ui,sans-serif;transition:.2s}.wish-fbp-toast.show{opacity:1;transform:none}.wish-fbp-toast.success{border-color:#3d7b65;color:#b9f0d7}.wish-fbp-toast.error{border-color:#8f4653;color:#ffc3cb}.wish-fbp-toast.warn{border-color:#8c6c35;color:#ffe0a8}
-    .wish-fbp-settings>label,.wish-fbp-settings .wish-fbp-grid>label{display:grid;gap:5px;margin:9px 0;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-fbp-settings label>span{font-weight:650}.wish-fbp-settings input{box-sizing:border-box;width:100%;min-height:38px;border:1px solid var(--m3-line,#3a465a);border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg,#edf1f8);padding:8px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}.wish-fbp-settings input:focus{outline:2px solid color-mix(in srgb,var(--m3-accent,#83aaff) 28%,transparent);border-color:var(--m3-accent,#83aaff)}.wish-fbp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wish-fbp-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}.wish-fbp-status.ok{color:#93dfbd}.wish-fbp-status.error{color:#ff9eab}.wish-fbp-status.busy{color:#ffd58f}.wish-fbp-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-main-button{border-color:#3e6473!important;color:#bce8f1!important}
+    .wish-fbp-settings>label,.wish-fbp-settings .wish-fbp-grid>label{display:grid;gap:5px;margin:9px 0;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-fbp-settings label>span{font-weight:650}.wish-fbp-settings input{box-sizing:border-box;width:100%;min-height:38px;border:1px solid var(--m3-line,#3a465a);border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg,#edf1f8);padding:8px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}.wish-fbp-settings input:focus{outline:2px solid color-mix(in srgb,var(--m3-accent,#83aaff) 28%,transparent);border-color:var(--m3-accent,#83aaff)}.wish-fbp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wish-fbp-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}.wish-fbp-status.ok{color:#93dfbd}.wish-fbp-status.error{color:#ff9eab}.wish-fbp-status.busy{color:#ffd58f}.wish-fbp-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-main-button{border-color:#173c4d!important;background:#285d73!important;color:#fff!important;font-weight:760!important;box-shadow:0 2px 7px rgba(20,63,82,.25)!important}.wish-fbp-main-button:hover{border-color:#102f3d!important;background:#1d4d62!important;color:#fff!important}.wish-gpt-prepare-button{border-color:color-mix(in srgb,var(--m3-accent,#3f52a0) 70%,#18213a)!important;background:var(--m3-accent,#3f52a0)!important;color:var(--m3-accent-ink,#fff)!important;font-weight:720!important}.wish-gpt-prepare-button:hover{filter:brightness(.92)}
+    .wish-gpt-transfer-note{margin-top:12px;padding:9px 11px;border:1px solid color-mix(in srgb,var(--m3-accent,#83aaff) 35%,transparent);border-radius:9px;background:color-mix(in srgb,var(--m3-accent,#83aaff) 9%,transparent);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}
+    .wish-fbp-providers{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-providers .m3-btn{min-width:76px;font-weight:750!important}.wish-fbp-providers [aria-pressed="true"]{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}.wish-fbp-providers [aria-pressed="false"]{background:#dce3ef!important;border-color:#a5b4ce!important;color:#24344f!important;-webkit-text-fill-color:#24344f!important}body[data-theme="dark"] .wish-fbp-providers [aria-pressed="false"]{background:#303b50!important;border-color:#50617e!important;color:#ecf2ff!important;-webkit-text-fill-color:#ecf2ff!important}
+    .m3-dialog.wish-fbp-firebase-mode .m3-dialog-body>*:not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]){display:none!important}.m3-dialog.wish-fbp-firebase-mode .m3-sheet>footer{display:none!important}.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-cloud],.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-settings]{display:none!important}[data-wish-fbp-cloud] .m3-cloud-row{display:flex;align-items:center;justify-content:space-between;gap:10px}[data-wish-fbp-cloud] .m3-cloud-info{min-width:0;flex:1}[data-wish-fbp-cloud] .m3-cloud-actions{flex:none}[data-wish-fbp-cloud] .m3-btn.primary,[data-wish-fbp-settings] .m3-btn.primary{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}
     .wish-fbp-overlay{position:fixed;z-index:2147483646;inset:0;display:grid;place-items:center;padding:16px;background:#080b11c7;backdrop-filter:blur(5px);font:12px/1.5 system-ui,sans-serif;color:#edf1f8}.wish-fbp-modal{width:min(640px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;border:1px solid #354258;border-radius:14px;background:#141b27;box-shadow:0 28px 80px #000c;overflow:hidden}.wish-fbp-modal>header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;border-bottom:1px solid #2b3547}.wish-fbp-modal>header>div{flex:1}.wish-fbp-modal>header b{display:block;font-size:16px}.wish-fbp-modal>header small{display:block;margin-top:3px;color:#94a1b6}.wish-fbp-modal>header button{border:0;background:none;color:#aab5c7;font-size:18px;cursor:pointer}.wish-fbp-body{min-height:0;overflow:auto;padding:14px 18px}.wish-fbp-modal>footer{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid #2b3547;background:#101722}.wish-fbp-modal>footer>span{flex:1}.wish-fbp-modal button,.wish-fbp-toolbar button{border:1px solid #3b485e;border-radius:8px;background:#202a3a;color:#dbe3ef;padding:8px 11px;cursor:pointer;font:inherit}.wish-fbp-modal button:hover{border-color:#60789e}.wish-fbp-modal button:disabled{opacity:.45;cursor:default}.wish-fbp-modal button.primary{border-color:#557bc0;background:#294979;color:#fff}.wish-fbp-modal button.danger{border-color:#75434c;background:#3a2228;color:#ffc2cb}.wish-fbp-row{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;margin:7px 0;padding:11px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e;cursor:pointer}.wish-fbp-row:hover{border-color:#50647f}.wish-fbp-row.blocked{opacity:.55;cursor:not-allowed}.wish-fbp-row input{margin-top:3px;accent-color:#719be1}.wish-fbp-row span{min-width:0}.wish-fbp-row b,.wish-fbp-row small{display:block;overflow-wrap:anywhere}.wish-fbp-row small{margin-top:3px;color:#93a0b3}.wish-fbp-body h3{margin:18px 0 8px;color:#b7c5d9;font-size:12px}.wish-fbp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}.wish-fbp-toolbar span{margin-left:auto;color:#9eabbd}.wish-fbp-note{margin-top:14px;padding:10px 12px;border:1px solid #5b4e33;border-radius:9px;background:#282316;color:#d9c28c}.wish-fbp-empty{padding:30px 12px;text-align:center;color:#8996aa}
+    #wish-gpt-transfer-widget{position:fixed;z-index:2147483645;right:18px;bottom:92px;display:grid;grid-template-columns:minmax(180px,auto) auto auto;align-items:stretch;gap:5px;max-width:calc(100vw - 28px);padding:6px;border:1px solid #526786;border-radius:14px;background:#151d29eF;box-shadow:0 16px 48px #0008;backdrop-filter:blur(12px);font:12px/1.35 system-ui,sans-serif;color:#eef4ff}#wish-gpt-transfer-widget button{border:1px solid #40516b;border-radius:9px;background:#212d40;color:#e8f0fd;padding:8px 10px;cursor:pointer;font:inherit}#wish-gpt-transfer-widget button:hover{border-color:#7ca2df;background:#293954}#wish-gpt-transfer-widget button:disabled{opacity:.6;cursor:wait}.wish-gpt-send{display:grid;text-align:left}.wish-gpt-send b{font-size:12px}.wish-gpt-send small{margin-top:2px;color:#a9b7ca;font-size:10px}.wish-gpt-save,.wish-gpt-clear{min-width:42px}.wish-gpt-clear{font-size:18px!important;padding-inline:9px!important}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:168px}
     @media(max-width:600px){.wish-fbp-grid{grid-template-columns:1fr}.wish-fbp-overlay{padding:0;place-items:end stretch}.wish-fbp-modal{width:100%;max-height:88vh;border-radius:16px 16px 0 0}.wish-fbp-modal>footer{flex-wrap:wrap}.wish-fbp-modal>footer>span{display:none}.wish-fbp-modal>footer button{flex:1}.wish-fbp-toolbar span{flex-basis:100%;margin-left:0}}
+    @media(max-width:600px){#wish-gpt-transfer-widget{left:10px;right:10px;bottom:76px;grid-template-columns:minmax(0,1fr) auto auto}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:154px}}
+    .wish-inc-field{display:grid;gap:5px;margin:13px 0;color:#dbe3ef}.wish-inc-field>span{font-weight:700}.wish-inc-field>small{color:#a7b4c8}.wish-inc-field input,.wish-inc-field textarea{box-sizing:border-box;width:100%;border:1px solid #465773;border-radius:8px;background:#101a29;color:#f1f5ff;padding:9px 10px;font:12px/1.5 system-ui,sans-serif}.wish-inc-field textarea{resize:vertical;max-height:240px}
+    #wish-gpt-transfer-widget{display:flex;flex-wrap:wrap}#wish-gpt-transfer-widget .wish-gpt-send{flex:1 1 170px}#wish-gpt-transfer-widget .wish-gpt-checkpoint{flex:0 1 auto;white-space:normal}
+    @media(max-width:600px){#wish-gpt-transfer-widget{bottom:calc(76px + env(safe-area-inset-bottom,0px))}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:calc(154px + env(safe-area-inset-bottom,0px))}.wish-fbp-overlay{padding-bottom:env(safe-area-inset-bottom,0px)}}
   `;
   function mountStyle() {
     const target = document.head || document.documentElement;
@@ -719,5 +1674,9 @@
     document.addEventListener('DOMContentLoaded', () => (document.head || document.documentElement)?.appendChild(style), { once:true });
   }
   mountStyle();
-  installObserver();
+  if (IS_CHATGPT) installChatGPTBridge();
+  else {
+    installTransferCapture();
+    installObserver();
+  }
 })();
