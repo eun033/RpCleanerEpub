@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Firebase Backup Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      0.5.1
-// @description  Wish RP Manager Core v1.3.1의 클라우드 백업에 Firebase를 추가하고 ChatGPT 재구축 전송을 제공하는 동반 패치입니다.
+// @version      0.6.2
+// @description  Wish RP Manager Core v1.3.1에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
 // @match        https://crack.wrtn.ai/stories/*/episodes/*
@@ -15,6 +15,7 @@
 // @connect      securetoken.googleapis.com
 // @connect      *.firebaseio.com
 // @connect      *.firebasedatabase.app
+// @connect      www.googleapis.com
 // @connect      *
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -24,6 +25,7 @@
 // @grant        GM_getTab
 // @grant        GM_saveTab
 // @grant        GM_getTabs
+// @grant        GM_addElement
 // @grant        window.focus
 // @grant        unsafeWindow
 // @run-at       document-start
@@ -33,7 +35,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.5.1';
+  const PATCH_VERSION = '0.6.2';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
@@ -41,6 +43,9 @@
   const SESSION_KEY = 'WISH_RP_FIREBASE_PATCH_SESSION_V1';
   const RESTORE_NOTICE_KEY = 'WISH_RP_FIREBASE_PATCH_RESTORED_V1';
   const CLOUD_PROVIDER_KEY = 'WISH_RP_CLOUD_PROVIDER_V1';
+  const DRIVE_CLIENT_KEY = 'WISH_RP_GOOGLE_DRIVE_CLIENT_ID_V1';
+  const DRIVE_FOLDER_NAME = 'Wish-Core-Backups';
+  const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const CHAT_TRANSFER_KEY = 'WISH_RP_CHATGPT_TRANSFER_V1';
   const CHAT_CHECKPOINT_KEY = 'WISH_RP_CHATGPT_CHECKPOINTS_V1';
   const CHAT_ROOM_URL_KEY = 'WISH_RP_CHATGPT_ROOM_URLS_V1';
@@ -93,12 +98,26 @@
   let titleRetryAfter = 0;
   let pendingChatTitle = null;
   try { pendingChatTitle = JSON.parse(sessionStorage.getItem(CHAT_TITLE_PENDING_KEY) || 'null'); } catch (_) {}
-  let cloudProvider = gmRead(CLOUD_PROVIDER_KEY, 'koofr') === 'firebase' ? 'firebase' : 'koofr';
+  let cloudProvider = ['koofr', 'firebase', 'drive'].includes(gmRead(CLOUD_PROVIDER_KEY, 'koofr')) ? gmRead(CLOUD_PROVIDER_KEY, 'koofr') : 'koofr';
   let cloudRows = [];
+  let cloudSelectedId = '';
   let cloudError = '';
   let cloudLoaded = false;
   let cloudLoading = false;
   const apiDrafts = new Map();
+  const firebaseAutoListed = new WeakSet();
+  const driveAutoListed = new WeakSet();
+  const driveScriptPrepared = new WeakSet();
+  let driveAccessToken = '';
+  let driveExpiresAt = 0;
+  let driveTokenClient = null;
+  let driveIdentityPromise = null;
+  let driveRows = [];
+  let driveSelectedId = '';
+  let driveLoaded = false;
+  let driveLoading = false;
+  let driveBusy = false;
+  let driveError = '';
 
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
   const clone = value => {
@@ -1197,11 +1216,12 @@
     if (!includeSettings) for (const key of ['guides','defaultExtraPreset','cognitionSettings']) delete data[key];
     return validateCoreBackup(data);
   }
-  async function openFirebaseBackupRoomPicker() {
-    if (busy) return;
+  async function openFirebaseBackupRoomPicker(provider = 'firebase') {
+    if (busy || driveBusy) return;
     try {
       const snapshot = await createCoreBackup();
-      const modal = createModal('Firebase에 백업할 방 선택', 'Koofr와 별도 저장소입니다. 선택한 방과 연결 자료만 Firebase에 올립니다.');
+      const isDrive = provider === 'drive';
+      const modal = createModal(`${isDrive ? 'Google Drive' : 'Firebase'}에 백업할 방 선택`, `Koofr와 별도 저장소입니다. 선택한 방과 연결 자료만 ${isDrive ? 'Google Drive' : 'Firebase'}에 올립니다.`);
       modal.body.innerHTML = `<label class="wish-inc-field"><span>백업 이름</span><input type="text" data-fbp-backup-label maxlength="80" value="${esc(`Wish 백업 ${new Date().toLocaleString('ko-KR')}`)}"></label><div class="wish-fbp-actions"><button type="button" data-fbp-current>현재 방만</button><button type="button" data-fbp-all>전체 선택</button><button type="button" data-fbp-none>선택 해제</button></div>${snapshot.rooms.map(room => `<label class="m3-cbx wish-fbp-room-row"><input type="checkbox" data-fbp-room value="${esc(room.chatId)}" ${String(apiChatIdOf(room)) === currentApiChatId() ? 'checked' : ''}><span class="m3-box"></span><span class="m3-t"><b>${esc(room.backupDisplayName || room.label || room.chatId)}</b><small>ID ${esc(room.chatId)}</small></span></label>`).join('') || '<p class="m3-muted">백업할 방이 없습니다.</p>'}<label class="m3-cbx wish-fbp-room-row"><input type="checkbox" data-fbp-global checked><span class="m3-box"></span><span class="m3-t">공용 지침·설정도 함께 저장</span></label>`;
       modal.footer.innerHTML = '<button type="button" data-fbp-cancel>취소</button><span></span><button type="button" class="primary" data-fbp-upload>선택한 방 백업</button>';
       modal.body.querySelector('[data-fbp-current]').onclick = () => modal.body.querySelectorAll('[data-fbp-room]').forEach(input => { input.checked = snapshot.rooms.some(room => String(room.chatId) === input.value && String(apiChatIdOf(room)) === currentApiChatId()); });
@@ -1215,8 +1235,8 @@
         const payload = selectedCoreBackup(snapshot, ids, modal.body.querySelector('[data-fbp-global]').checked);
         const label = modal.body.querySelector('[data-fbp-backup-label]').value;
         modal.close();
-        await uploadBackup({ payload, label });
-        await refreshFirebaseCloud();
+        if (isDrive) { await uploadDriveBackup({ payload, label }); await refreshDriveCloud(); }
+        else { await uploadBackup({ payload, label }); await refreshFirebaseCloud(); }
       };
     } catch (error) { notify(`백업할 방 준비 실패: ${error.message}`, 'error', 7600); }
   }
@@ -1260,6 +1280,149 @@
       [`${META_ROOT}/${listed.session.localId}/${id}`]:null,
       [`${DATA_ROOT}/${listed.session.localId}/${id}`]:null,
     });
+  }
+
+  function driveConnected() { return !!driveAccessToken && driveExpiresAt > Date.now() + 30000; }
+  function driveClientId() { return String(gmRead(DRIVE_CLIENT_KEY, '') || '').trim(); }
+  function saveDriveClientId(value) {
+    const clientId = String(value || '').trim();
+    if (!/^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(clientId)) throw new Error('Google OAuth 웹 클라이언트 ID 형식을 확인해 주세요.');
+    if (clientId !== driveClientId()) { driveAccessToken = ''; driveExpiresAt = 0; driveTokenClient = null; driveRows = []; driveLoaded = false; }
+    gmWrite(DRIVE_CLIENT_KEY, clientId);
+    return clientId;
+  }
+  function driveIdentity() { return (typeof unsafeWindow !== 'undefined' ? unsafeWindow.google : window.google)?.accounts?.oauth2; }
+  function loadDriveIdentityScript() {
+    if (driveIdentity()) return Promise.resolve();
+    if (driveIdentityPromise) return driveIdentityPromise;
+    driveIdentityPromise = new Promise((resolve, reject) => {
+      const url = 'https://accounts.google.com/gsi/client';
+      const script = typeof GM_addElement === 'function'
+        ? GM_addElement('script', { src:url, async:true })
+        : (() => { const node = document.createElement('script'); node.src = url; node.async = true; (document.head || document.documentElement).appendChild(node); return node; })();
+      let settled = false;
+      const finish = error => { if (settled) return; settled = true; clearInterval(timer); clearTimeout(limit); error ? reject(error) : resolve(); };
+      const timer = setInterval(() => { if (driveIdentity()) finish(); }, 100);
+      const limit = setTimeout(() => finish(new Error('Google 로그인 스크립트를 불러오지 못했습니다. 콘텐츠 차단 또는 사이트 보안 정책을 확인해 주세요.')), 15000);
+      script?.addEventListener?.('error', () => finish(new Error('Google 로그인 스크립트가 차단되었습니다.')));
+    }).catch(error => { driveIdentityPromise = null; throw error; });
+    return driveIdentityPromise;
+  }
+  function connectDrive(clientId) {
+    const oauth = driveIdentity();
+    if (!oauth) throw new Error('Google 로그인 준비 중입니다. 잠시 후 연결을 다시 눌러 주세요.');
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error, result) => { if (settled) return; settled = true; clearTimeout(limit); error ? reject(error) : resolve(result); };
+      const limit = setTimeout(() => finish(new Error('Google 계정 연결 시간이 초과되었습니다.')), 120000);
+      try {
+        driveTokenClient = oauth.initTokenClient({
+          client_id:clientId,
+          scope:DRIVE_SCOPE,
+          callback:response => {
+            if (response?.error || !response?.access_token) { finish(new Error(`Google 권한 승인이 완료되지 않았습니다${response?.error ? ` (${response.error})` : ''}.`)); return; }
+            driveAccessToken = String(response.access_token);
+            driveExpiresAt = Date.now() + Math.max(60, Number(response.expires_in) || 3600) * 1000;
+            finish(null, response);
+          },
+          error_callback:error => finish(new Error(`Google 로그인 창을 완료하지 못했습니다 (${error?.type || 'popup_error'}).`)),
+        });
+        // Called synchronously from the click handler so mobile popup blockers permit the account chooser.
+        driveTokenClient.requestAccessToken({ prompt:'' });
+      } catch (error) { finish(error); }
+    });
+  }
+  function driveHttp({ method = 'GET', url, data, headers = {}, raw = false, timeout = 120000, label = 'Google Drive 요청' }) {
+    if (!driveConnected()) return Promise.reject(new Error('Google Drive 연결이 만료되었습니다. 다시 연결해 주세요.'));
+    if (!/^https:\/\/(?:www\.googleapis\.com)(?:\/|$)/.test(url)) return Promise.reject(new Error('허용되지 않은 Google Drive 요청 주소입니다.'));
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method, url, data, timeout, headers:{ Authorization:`Bearer ${driveAccessToken}`, ...headers },
+      onload:response => {
+        if (!(response.status >= 200 && response.status < 300)) {
+          let detail = '';
+          try { const parsed = JSON.parse(response.responseText || '{}'); detail = parsed.error?.message || ''; } catch (_) {}
+          if (response.status === 401) { driveAccessToken = ''; driveExpiresAt = 0; }
+          reject(new Error(`${label} 실패 (HTTP ${response.status}${detail ? ` · ${detail}` : ''})`)); return;
+        }
+        if (raw) { resolve(response); return; }
+        const responseText = String(response.responseText || '').trim();
+        if (!responseText) { resolve(null); return; }
+        try { resolve(JSON.parse(responseText)); } catch (_) { reject(new Error(`${label} 응답 JSON을 읽지 못했습니다.`)); }
+      },
+      ontimeout:() => reject(new Error(`${label} 시간이 초과되었습니다.`)),
+      onerror:() => reject(new Error(`${label} 네트워크 연결에 실패했습니다.`)),
+    }));
+  }
+  function driveQuery(query, fields, pageToken = '') {
+    const params = new URLSearchParams({ q:query, fields, pageSize:'1000', spaces:'drive' });
+    if (pageToken) params.set('pageToken', pageToken);
+    return driveHttp({ url:`https://www.googleapis.com/drive/v3/files?${params}`, label:'Google Drive 목록' });
+  }
+  async function driveFolder() {
+    const query = `name = '${DRIVE_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`;
+    const result = await driveQuery(query, 'files(id,name,mimeType),nextPageToken');
+    if (result?.files?.[0]?.id) return result.files[0].id;
+    const created = await driveHttp({
+      method:'POST', url:'https://www.googleapis.com/drive/v3/files?fields=id,name',
+      headers:{ 'Content-Type':'application/json; charset=UTF-8' },
+      data:JSON.stringify({ name:DRIVE_FOLDER_NAME, mimeType:'application/vnd.google-apps.folder', parents:['root'] }), label:'Google Drive 백업 폴더 생성',
+    });
+    if (!created?.id) throw new Error('Google Drive 백업 폴더 ID를 확인할 수 없습니다.');
+    return created.id;
+  }
+  function validDriveId(id) { if (!/^[A-Za-z0-9_-]{8,}$/.test(String(id || ''))) throw new Error('Google Drive 파일 ID가 올바르지 않습니다.'); return id; }
+  async function uploadDriveBackup({ payload, label }) {
+    if (driveBusy) return;
+    driveBusy = true;
+    try {
+      const folderId = await driveFolder();
+      const name = String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`;
+      const safeName = name.replace(/[\\/:*?"<>|]/g, '_');
+      const json = JSON.stringify(validateCoreBackup(payload));
+      const bytes = new TextEncoder().encode(json);
+      const metadata = {
+        name:`${safeName}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
+        mimeType:'application/json', parents:[folderId], description:`Wish RP Manager Core 백업 · ${name}`,
+        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.3.1'), patchVersion:PATCH_VERSION },
+      };
+      const session = await driveHttp({
+        method:'POST', url:'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name', raw:true,
+        headers:{ 'Content-Type':'application/json; charset=UTF-8', 'X-Upload-Content-Type':'application/json', 'X-Upload-Content-Length':String(bytes.byteLength) },
+        data:JSON.stringify(metadata), label:'Google Drive 업로드 시작',
+      });
+      const uploadUrl = String(session.responseHeaders || '').match(/^location:\s*(https:\/\/www\.googleapis\.com\/upload\/drive\/v3\/files\?[^\r\n]+)$/im)?.[1];
+      if (!uploadUrl) throw new Error('Google Drive 업로드 세션 주소를 받지 못했습니다.');
+      const uploaded = await driveHttp({ method:'PUT', url:uploadUrl, data:bytes.buffer, headers:{ 'Content-Type':'application/json', 'Content-Length':String(bytes.byteLength) }, timeout:300000, label:'Google Drive 백업 업로드' });
+      if (!uploaded?.id) throw new Error('Google Drive가 업로드 완료 파일 ID를 반환하지 않았습니다.');
+      notify(`Google Drive 백업 완료 · ${name} · 방 ${payload.rooms.length}개`, 'success', 5600);
+    } catch (error) { notify(`Google Drive 백업 실패: ${error.message}`, 'error', 8000); }
+    finally { driveBusy = false; renderDriveCloudPanel(currentCloudDialog() || document.createElement('div')); }
+  }
+  async function listDriveBackups() {
+    const folderId = await driveFolder();
+    const items = [];
+    let pageToken = '';
+    do {
+      const query = `'${folderId}' in parents and trashed = false`;
+      const page = await driveQuery(query, 'nextPageToken,files(id,name,mimeType,createdTime,size,appProperties,parents)', pageToken);
+      items.push(...(page?.files || []).filter(file => file.appProperties?.manager === MANAGER_ID && file.mimeType === 'application/json').map(file => ({
+        id:file.id, label:file.appProperties.label || file.name, createdAt:file.createdTime, roomCount:Number(file.appProperties.roomCount || 0), libraryCount:Number(file.appProperties.libraryCount || 0), version:file.appProperties.version || '?', size:Number(file.size || 0), folderId,
+      })));
+      pageToken = String(page?.nextPageToken || '');
+    } while (pageToken);
+    items.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return items;
+  }
+  async function downloadDriveBackup(id) {
+    validDriveId(id);
+    const response = await driveHttp({ url:`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, raw:true, label:'Google Drive 백업 내려받기' });
+    let data;
+    try { data = JSON.parse(String(response.responseText || '')); } catch (_) { throw new Error('백업 JSON을 읽지 못했습니다.'); }
+    return validateCoreBackup(data);
+  }
+  async function trashDriveBackup(id) {
+    validDriveId(id);
+    await driveHttp({ method:'PATCH', url:`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`, headers:{ 'Content-Type':'application/json; charset=UTF-8' }, data:JSON.stringify({ trashed:true }), label:'Google Drive 백업 휴지통 이동' });
   }
 
   function closePatchModal() { document.querySelector('.wish-fbp-overlay')?.remove(); }
@@ -1407,6 +1570,7 @@
     const section = document.createElement('section');
     section.className = 'm3-grp wish-fbp-settings';
     section.setAttribute('data-wish-fbp-settings', '');
+    section.setAttribute('data-fx-node', '');
     section.innerHTML = `<div class="m3-gt">☁ Firebase 서버 백업 · Patch v${PATCH_VERSION}</div><label><span>Web API Key</span><input type="text" data-fbp-api-key value="${esc(draft.apiKey)}" placeholder="AIza…"></label><label><span>Realtime Database URL</span><input type="url" data-fbp-db-url value="${esc(draft.databaseURL)}" placeholder="https://project.firebaseio.com"></label><div class="wish-fbp-grid"><label><span>로그인 이메일</span><input type="email" data-fbp-email value="${esc(draft.email)}"></label><label><span>비밀번호 · 연결할 때만</span><input type="password" data-fbp-password value="${esc(draft.password)}" placeholder="저장하지 않음"></label></div><div class="wish-fbp-status ${connected(saved)?'ok':''}" data-fbp-status>${connected(saved)?'Firebase 서버 백업 연결됨':'설정값은 이 패치에만 저장됩니다. 비밀번호는 저장하지 않습니다.'}</div><div class="wish-fbp-actions"><button type="button" class="m3-btn mini" data-fbp-save>설정 저장</button><button type="button" class="m3-btn mini primary" data-fbp-connect>저장 후 연결</button><button type="button" class="m3-btn mini quiet" data-fbp-logout>서버 로그아웃</button></div>`;
     body.appendChild(section);
     const syncDraft = () => Object.assign(draft, readSectionSettings(section), { password:section.querySelector('[data-fbp-password]').value });
@@ -1445,15 +1609,17 @@
     const panel = dialog.querySelector('[data-wish-fbp-cloud]');
     if (!panel) return;
     const ready = connected();
-    const signature = JSON.stringify({ ready, loading:cloudLoading, busy, error:cloudError, loaded:cloudLoaded, rows:cloudRows });
+    if (!cloudRows.some(item => item.id === cloudSelectedId)) cloudSelectedId = cloudRows[0]?.id || '';
+    const signature = JSON.stringify({ ready, loading:cloudLoading, busy, error:cloudError, loaded:cloudLoaded, rows:cloudRows, selected:cloudSelectedId });
     if (panel.dataset.signature === signature) return;
     panel.dataset.signature = signature;
-    const rows = cloudRows.map(item => `<div class="m3-cloud-row" data-key="firebase-${esc(item.id)}"><div class="m3-cloud-info m3-cbx m3-cloud-pick" style="padding:0;margin:0"><span class="m3-box" aria-hidden="true"></span><span class="m3-t"><b>${esc(item.label || '이름 없는 백업')}</b><small>${esc(item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '생성 시각 미상')} · 방 ${Number(item.roomCount || 0)}개 · 자료집 ${Number(item.libraryCount || 0)}개 · v${esc(item.version || '?')}</small></span></div><div class="m3-row m3-cloud-actions"><button type="button" class="m3-btn mini" data-fbp-cloud-restore="${esc(item.id)}" ${busy ? 'disabled' : ''}>복원</button><button type="button" class="m3-btn mini danger" data-fbp-cloud-delete="${esc(item.id)}" ${busy ? 'disabled' : ''}>삭제</button></div></div>`).join('');
+    const rows = cloudRows.map(item => { const selected = item.id === cloudSelectedId; return `<div class="m3-cloud-row wish-cloud-choice ${selected ? 'is-selected' : ''}" data-key="firebase-${esc(item.id)}" aria-selected="${selected}"><label class="m3-cloud-info m3-cbx m3-cloud-pick ${selected ? 'is-on' : ''}" style="padding:0;margin:0"><input type="radio" name="wish-fbp-firebase-backup" value="${esc(item.id)}" data-fbp-cloud-select ${selected ? 'checked' : ''}><span class="m3-box" aria-hidden="true"></span><span class="m3-t"><b>${esc(item.label || '이름 없는 백업')}${selected ? '<em class="wish-cloud-selected">✓ 선택됨</em>' : ''}</b><small>${esc(item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '생성 시각 미상')} · 방 ${Number(item.roomCount || 0)}개 · 자료집 ${Number(item.libraryCount || 0)}개 · v${esc(item.version || '?')}</small></span></label><div class="m3-row m3-cloud-actions"><button type="button" class="m3-btn mini" data-fbp-cloud-restore="${esc(item.id)}" ${busy ? 'disabled' : ''}>복원</button><button type="button" class="m3-btn mini danger" data-fbp-cloud-delete="${esc(item.id)}" ${busy ? 'disabled' : ''}>삭제</button></div></div>`; }).join('');
     panel.innerHTML = `<section class="m3-panel" data-key="firebase-cloud-head"><b>${ready ? 'Firebase 연결됨' : 'Firebase 연결 설정이 필요합니다'}</b><div class="m3-muted">Firebase Realtime Database · 계정별 개인 백업 · 암호화하지 않은 JSON</div><div class="m3-status m3-topgap">수동 저장·불러오기 · Koofr 백업과 별도 목록</div><div class="m3-row m3-card-actions"><button type="button" class="m3-btn mini primary" data-fbp-cloud-upload ${!ready || busy || cloudLoading ? 'disabled' : ''}>방 골라 백업</button><button type="button" class="m3-btn mini" data-fbp-cloud-refresh ${!ready || busy || cloudLoading ? 'disabled' : ''}>목록 새로고침</button></div></section>${cloudError ? `<section class="m3-panel m3-alert"><b>Firebase 목록 오류</b><p>${esc(cloudError)}</p></section>` : ''}${cloudLoading ? '<p class="m3-muted" role="status">Firebase 목록 확인 중…</p>' : rows ? `<div class="m3-cloud-group"><div class="m3-cloud-title">내 Firebase 백업<small>${cloudRows.length}개</small></div>${rows}</div>` : `<p class="m3-muted">${cloudLoaded ? '저장된 Firebase 백업이 없습니다.' : '목록 새로고침을 눌러 저장된 백업을 확인하세요.'}</p>`}`;
     panel.querySelector('[data-fbp-cloud-upload]').onclick = () => { void openFirebaseBackupRoomPicker(); };
     panel.querySelector('[data-fbp-cloud-refresh]').onclick = () => { void refreshFirebaseCloud(); };
-    panel.querySelectorAll('[data-fbp-cloud-restore]').forEach(button => { button.onclick = () => { void restoreFirebaseCloudItem(button.dataset.fbpCloudRestore); }; });
-    panel.querySelectorAll('[data-fbp-cloud-delete]').forEach(button => { button.onclick = () => { void deleteFirebaseCloudItem(button.dataset.fbpCloudDelete); }; });
+    panel.querySelectorAll('[data-fbp-cloud-select]').forEach(input => { input.onchange = () => { cloudSelectedId = input.value; renderFirebaseCloudPanel(dialog); }; });
+    panel.querySelectorAll('[data-fbp-cloud-restore]').forEach(button => { button.onclick = () => { cloudSelectedId = button.dataset.fbpCloudRestore; void restoreFirebaseCloudItem(cloudSelectedId); }; });
+    panel.querySelectorAll('[data-fbp-cloud-delete]').forEach(button => { button.onclick = () => { cloudSelectedId = button.dataset.fbpCloudDelete; renderFirebaseCloudPanel(dialog); void deleteFirebaseCloudItem(cloudSelectedId); }; });
   }
   function currentCloudDialog() { return [...document.querySelectorAll('#wish-rp-root .m3-dialog')].find(dialog => dialog.querySelector('[data-wish-fbp-cloud]')) || null; }
   async function refreshFirebaseCloud() {
@@ -1483,18 +1649,126 @@
     catch (error) { notify(`Firebase 백업 삭제 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; const current = currentCloudDialog(); if (current) renderFirebaseCloudPanel(current); }
   }
+  function injectDriveSettings(dialog) {
+    const body = dialog.querySelector('.m3-dialog-body');
+    if (!body || body.querySelector('[data-wish-drive-settings]')) return;
+    const section = document.createElement('section');
+    section.className = 'm3-grp wish-fbp-settings wish-drive-settings';
+    section.setAttribute('data-wish-drive-settings', '');
+    section.setAttribute('data-fx-node', '');
+    section.innerHTML = `<div class="m3-gt">☁ Google Drive 백업 · Patch v${PATCH_VERSION}</div><label><span>Google OAuth 웹 클라이언트 ID</span><input type="text" data-drive-client-id value="${esc(driveClientId())}" placeholder="123456789-....apps.googleusercontent.com" autocapitalize="off" spellcheck="false"></label><details class="wish-drive-help"><summary aria-label="Google 클라이언트 ID 발급 방법">?</summary><div>1. <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console</a>에서 프로젝트를 만듭니다.<br>2. Google Drive API를 켜고 OAuth 동의 화면에 <code>drive.file</code> 범위를 추가합니다. 테스트 상태라면 사용할 Google 계정을 테스트 사용자로 추가합니다.<br>3. 사용자 인증 정보에서 <b>OAuth 클라이언트 ID → 웹 애플리케이션</b>을 만들고 승인된 JavaScript 원본에 <code>https://crack.wrtn.ai</code>를 등록합니다.<br>4. 클라이언트 ID만 여기에 붙여넣습니다. 클라이언트 보안 비밀번호는 입력하지 않습니다.</div></details><div class="wish-fbp-status ${driveConnected() ? 'ok' : ''}" data-drive-status>${driveConnected() ? 'Google Drive 연결됨' : '클라이언트 ID 저장 후 연결을 눌러 Google 계정을 선택해 주세요.'}</div><div class="wish-fbp-actions"><button type="button" class="m3-btn mini" data-drive-save>설정 저장</button><button type="button" class="m3-btn mini primary" data-drive-connect>Google 계정 연결</button><button type="button" class="m3-btn mini quiet" data-drive-disconnect>연결 해제</button></div><div class="m3-muted m3-topgap">Chrome·Edge에서 이미 로그인한 계정을 선택할 수 있지만 Drive 접근 승인에는 클라이언트 ID가 필요합니다. 토큰은 이 탭의 메모리에만 보관합니다.</div>`;
+    body.appendChild(section);
+    const status = (message, type = '') => { const target = section.querySelector('[data-drive-status]'); target.textContent = message; target.className = `wish-fbp-status ${type}`; };
+    section.querySelector('[data-drive-save]').onclick = () => {
+      try { saveDriveClientId(section.querySelector('[data-drive-client-id]').value); status('클라이언트 ID를 저장했습니다. 계정 연결을 눌러 주세요.', 'ok'); notify('Google Drive 설정 저장 완료', 'success'); }
+      catch (error) { status(error.message, 'error'); }
+    };
+    section.querySelector('[data-drive-connect]').onclick = event => {
+      if (driveBusy) return;
+      let promise;
+      try {
+        const clientId = saveDriveClientId(section.querySelector('[data-drive-client-id]').value);
+        promise = connectDrive(clientId);
+      } catch (error) { status(error.message, 'error'); void loadDriveIdentityScript().catch(() => {}); return; }
+      driveBusy = true;
+      event.currentTarget.disabled = true;
+      status('Google 계정 승인 대기 중…', 'busy');
+      void promise.then(async () => {
+        status('Google Drive 연결됨', 'ok');
+        notify('Google Drive 연결 완료', 'success');
+        driveLoaded = false;
+      }).catch(error => { status(error.message, 'error'); notify(`Google Drive 연결 실패: ${error.message}`, 'error', 7600); })
+        .finally(() => { driveBusy = false; event.currentTarget.disabled = false; renderDriveCloudPanel(dialog); if (driveConnected()) void refreshDriveCloud(); });
+    };
+    section.querySelector('[data-drive-disconnect]').onclick = () => {
+      const token = driveAccessToken;
+      driveAccessToken = ''; driveExpiresAt = 0; driveTokenClient = null; driveRows = []; driveLoaded = false;
+      if (token) { try { driveIdentity()?.revoke(token, () => {}); } catch (_) {} }
+      status('Google Drive 연결이 해제되었습니다. 클라이언트 ID는 유지됩니다.', '');
+      renderDriveCloudPanel(dialog);
+    };
+  }
+  function renderDriveCloudPanel(dialog) {
+    const panel = dialog.querySelector('[data-wish-drive-cloud]');
+    if (!panel) return;
+    const ready = driveConnected();
+    if (!driveRows.some(item => item.id === driveSelectedId)) driveSelectedId = driveRows[0]?.id || '';
+    const signature = JSON.stringify({ ready, loading:driveLoading, busy:driveBusy, error:driveError, loaded:driveLoaded, rows:driveRows, selected:driveSelectedId });
+    if (panel.dataset.signature === signature) return;
+    panel.dataset.signature = signature;
+    const rows = driveRows.map(item => { const selected = item.id === driveSelectedId; return `<div class="m3-cloud-row wish-cloud-choice ${selected ? 'is-selected' : ''}" data-key="drive-${esc(item.id)}" aria-selected="${selected}"><label class="m3-cloud-info m3-cbx m3-cloud-pick ${selected ? 'is-on' : ''}" style="padding:0;margin:0"><input type="radio" name="wish-fbp-drive-backup" value="${esc(item.id)}" data-drive-select ${selected ? 'checked' : ''}><span class="m3-box" aria-hidden="true"></span><span class="m3-t"><b>${esc(item.label || '이름 없는 백업')}${selected ? '<em class="wish-cloud-selected">✓ 선택됨</em>' : ''}</b><small>${esc(item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '생성 시각 미상')} · 방 ${Number(item.roomCount || 0)}개 · 자료집 ${Number(item.libraryCount || 0)}개 · v${esc(item.version || '?')}</small></span></label><div class="m3-row m3-cloud-actions"><button type="button" class="m3-btn mini" data-drive-restore="${esc(item.id)}" ${driveBusy ? 'disabled' : ''}>복원</button><button type="button" class="m3-btn mini danger" data-drive-delete="${esc(item.id)}" ${driveBusy ? 'disabled' : ''}>삭제</button></div></div>`; }).join('');
+    panel.innerHTML = `<section class="m3-panel" data-key="drive-cloud-head"><b>${ready ? 'Google Drive 연결됨' : 'Google Drive 연결 설정이 필요합니다'}</b><div class="m3-muted">내 드라이브 / ${DRIVE_FOLDER_NAME} · 암호화하지 않은 JSON</div><div class="m3-status m3-topgap">수동 저장·불러오기 · Koofr/Firebase와 별도 목록 · 삭제 시 휴지통 이동</div><div class="m3-row m3-card-actions"><button type="button" class="m3-btn mini primary" data-drive-upload ${!ready || driveBusy || driveLoading ? 'disabled' : ''}>방 골라 백업</button><button type="button" class="m3-btn mini" data-drive-refresh ${!ready || driveBusy || driveLoading ? 'disabled' : ''}>목록 새로고침</button></div></section>${driveError ? `<section class="m3-panel m3-alert"><b>Google Drive 목록 오류</b><p>${esc(driveError)}</p></section>` : ''}${driveLoading ? '<p class="m3-muted" role="status">Google Drive 목록 확인 중…</p>' : rows ? `<div class="m3-cloud-group"><div class="m3-cloud-title">내 Google Drive 백업<small>${driveRows.length}개</small></div>${rows}</div>` : `<p class="m3-muted">${driveLoaded ? '저장된 Google Drive 백업이 없습니다.' : '계정을 연결하고 목록 새로고침을 눌러 주세요.'}</p>`}`;
+    panel.querySelector('[data-drive-upload]').onclick = () => { void openFirebaseBackupRoomPicker('drive'); };
+    panel.querySelector('[data-drive-refresh]').onclick = () => { void refreshDriveCloud(); };
+    panel.querySelectorAll('[data-drive-select]').forEach(input => { input.onchange = () => { driveSelectedId = input.value; renderDriveCloudPanel(dialog); }; });
+    panel.querySelectorAll('[data-drive-restore]').forEach(button => { button.onclick = () => { driveSelectedId = button.dataset.driveRestore; void restoreDriveCloudItem(driveSelectedId); }; });
+    panel.querySelectorAll('[data-drive-delete]').forEach(button => { button.onclick = () => { driveSelectedId = button.dataset.driveDelete; renderDriveCloudPanel(dialog); void deleteDriveCloudItem(driveSelectedId); }; });
+  }
+  async function refreshDriveCloud() {
+    if (driveBusy || driveLoading || !driveConnected()) return;
+    driveLoading = true; driveError = ''; renderDriveCloudPanel(currentCloudDialog() || document.createElement('div'));
+    try { driveRows = await listDriveBackups(); driveLoaded = true; }
+    catch (error) { driveError = error.message; notify(`Google Drive 목록 실패: ${error.message}`, 'error', 7600); }
+    finally { driveLoading = false; const dialog = currentCloudDialog(); if (dialog) renderDriveCloudPanel(dialog); }
+  }
+  async function restoreDriveCloudItem(id) {
+    if (driveBusy) return;
+    driveBusy = true; const dialog = currentCloudDialog(); if (dialog) renderDriveCloudPanel(dialog);
+    try {
+      if (!driveRows.some(item => item.id === id)) throw new Error('백업 목록을 다시 확인해 주세요.');
+      await openRestoreSelection(await downloadDriveBackup(id));
+    } catch (error) { notify(`Google Drive 복원 준비 실패: ${error.message}`, 'error', 7600); }
+    finally { driveBusy = false; const current = currentCloudDialog(); if (current) renderDriveCloudPanel(current); }
+  }
+  async function deleteDriveCloudItem(id) {
+    if (driveBusy) return;
+    const item = driveRows.find(row => row.id === id);
+    if (!item || !confirm(`Google Drive 백업을 휴지통으로 이동할까요?\n\n${item.label || '이름 없는 백업'}\n\nGoogle Drive 휴지통에서 복구할 수 있습니다.`)) return;
+    driveBusy = true; const dialog = currentCloudDialog(); if (dialog) renderDriveCloudPanel(dialog);
+    try { await trashDriveBackup(id); driveRows = driveRows.filter(row => row.id !== id); notify('Google Drive 백업을 휴지통으로 이동했습니다.', 'success'); }
+    catch (error) { notify(`Google Drive 백업 삭제 실패: ${error.message}`, 'error', 7600); }
+    finally { driveBusy = false; const current = currentCloudDialog(); if (current) renderDriveCloudPanel(current); }
+  }
+  function updateCloudModeStyle(dialog) {
+    const id = String(dialog.dataset.dlg || '');
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) return;
+    let modeStyle = document.getElementById('wish-fbp-cloud-mode-style');
+    if (!modeStyle) {
+      modeStyle = document.createElement('style');
+      modeStyle.id = 'wish-fbp-cloud-mode-style';
+      (document.head || document.documentElement).appendChild(modeStyle);
+    }
+    const base = `#wish-rp-root .m3-dialog[data-dlg="${id}"]`;
+    const title = `${base} .m3-sheet>header .m3-t>b:not([data-wish-cloud-title]){display:none!important}`;
+    const firebase = '[data-wish-fbp-cloud],[data-wish-fbp-settings]';
+    const drive = '[data-wish-drive-cloud],[data-wish-drive-settings]';
+    const hide = names => names.split(',').map(name => `${base} ${name}{display:none!important}`).join('');
+    const show = names => names.split(',').map(name => `${base} ${name}{display:block!important}`).join('');
+    const rules = cloudProvider === 'firebase'
+      ? `${title}${base} .m3-dialog-body>*:not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]){display:none!important}${base} .m3-sheet>footer{display:none!important}${show(firebase)}${hide(drive)}`
+      : cloudProvider === 'drive'
+        ? `${title}${base} .m3-dialog-body>*:not([data-wish-drive-cloud]):not([data-wish-drive-settings]){display:none!important}${base} .m3-sheet>footer{display:none!important}${show(drive)}${hide(firebase)}`
+        : `${title}${hide(`${firebase},${drive}`)}`;
+    if (modeStyle.textContent !== rules) modeStyle.textContent = rules;
+  }
   function injectCloudProvider(dialog) {
     const body = dialog.querySelector('.m3-dialog-body');
     const header = dialog.querySelector('.m3-sheet>header .m3-t');
     if (!body || !header || !body.querySelector('[data-key="cloud-head"]')) return;
     if (!header.querySelector('[data-wish-cloud-providers]')) {
       const title = header.querySelector('b');
-      if (title && title.textContent !== '클라우드 백업') title.textContent = '클라우드 백업';
-      dialog.setAttribute('aria-label', '클라우드 백업');
+      if (title) {
+        const patchTitle = document.createElement('b');
+        patchTitle.setAttribute('data-fx-node', '');
+        patchTitle.setAttribute('data-wish-cloud-title', '');
+        patchTitle.textContent = '클라우드 백업';
+        title.insertAdjacentElement('afterend', patchTitle);
+      }
       const tabs = document.createElement('div');
       tabs.className = 'wish-fbp-providers m3-row';
       tabs.setAttribute('data-wish-cloud-providers', '');
-      tabs.innerHTML = '<button type="button" class="m3-btn mini" data-wish-provider="koofr">Koofr</button><button type="button" class="m3-btn mini" data-wish-provider="firebase">Firebase</button>';
+      tabs.setAttribute('data-fx-node', '');
+      tabs.innerHTML = '<button type="button" class="m3-btn mini" data-wish-provider="koofr">Koofr</button><button type="button" class="m3-btn mini" data-wish-provider="firebase">Firebase</button><button type="button" class="m3-btn mini" data-wish-provider="drive">Google Drive</button>';
       header.appendChild(tabs);
       for (const button of tabs.querySelectorAll('button')) button.onclick = event => {
         event.preventDefault(); event.stopPropagation();
@@ -1504,10 +1778,16 @@
       };
       const panel = document.createElement('div');
       panel.setAttribute('data-wish-fbp-cloud', '');
+      panel.setAttribute('data-fx-node', '');
       body.appendChild(panel);
       injectApiSettings(dialog);
+      const drivePanel = document.createElement('div');
+      drivePanel.setAttribute('data-wish-drive-cloud', '');
+      drivePanel.setAttribute('data-fx-node', '');
+      body.appendChild(drivePanel);
+      injectDriveSettings(dialog);
     }
-    dialog.classList.toggle('wish-fbp-firebase-mode', cloudProvider === 'firebase');
+    updateCloudModeStyle(dialog);
     dialog.querySelectorAll('[data-wish-provider]').forEach(button => {
       const chosen = button.dataset.wishProvider === cloudProvider;
       button.classList.toggle('primary', chosen);
@@ -1515,9 +1795,24 @@
     });
     if (cloudProvider === 'firebase') {
       renderFirebaseCloudPanel(dialog);
-      if (!dialog.dataset.wishFbpAutoList && connected()) {
-        dialog.dataset.wishFbpAutoList = '1';
+      if (!firebaseAutoListed.has(dialog) && connected()) {
+        firebaseAutoListed.add(dialog);
         void refreshFirebaseCloud();
+      }
+    }
+    if (cloudProvider === 'drive') {
+      if (!driveScriptPrepared.has(dialog)) {
+        driveScriptPrepared.add(dialog);
+        void loadDriveIdentityScript().catch(error => {
+          const section = dialog.querySelector('[data-wish-drive-settings]');
+          const target = section?.querySelector('[data-drive-status]');
+          if (target && target.textContent !== error.message) { target.textContent = error.message; target.className = 'wish-fbp-status error'; }
+        });
+      }
+      renderDriveCloudPanel(dialog);
+      if (!driveAutoListed.has(dialog) && driveConnected()) {
+        driveAutoListed.add(dialog);
+        void refreshDriveCloud();
       }
     }
   }
@@ -1526,9 +1821,16 @@
     if (!line) return;
     const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.3\.1(?:\.\d+)?$/.test(span.textContent.trim()));
     if (!version) return;
-    if (version.textContent !== 'Wish Core 1.3.1') version.textContent = 'Wish Core 1.3.1';
-    if (version.nextElementSibling?.dataset.wishPatchVersion === PATCH_VERSION) return;
+    const existing = line.querySelector('[data-wish-patch-version]');
+    if (existing) {
+      if (existing.dataset.wishPatchVersion !== PATCH_VERSION) {
+        existing.dataset.wishPatchVersion = PATCH_VERSION;
+        existing.textContent = `( + patch ${PATCH_VERSION})`;
+      }
+      return;
+    }
     const badge = document.createElement('span');
+    badge.setAttribute('data-fx-node', '');
     badge.dataset.wishPatchVersion = PATCH_VERSION;
     badge.textContent = `( + patch ${PATCH_VERSION})`;
     version.insertAdjacentElement('afterend', badge);
@@ -1549,6 +1851,7 @@
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'm3-btn mini wish-gpt-prepare-button';
+    button.setAttribute('data-fx-node', '');
     button.textContent = label;
     return button;
   }
@@ -1560,10 +1863,11 @@
       button.disabled = fullSource.disabled;
       button.onclick = event => {
         event.preventDefault(); event.stopPropagation();
-        if (fullSource.disabled) return;
+        const source = root.querySelector('[data-key="external"] [data-act="rebuildExport"]');
+        if (!source || source.disabled) return;
         beginTransferCapture('full');
         notify('전체 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
-        fullSource.click();
+        source.click();
       };
       const guide = fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
       (guide || fullSource).insertAdjacentElement('afterend', button);
@@ -1572,7 +1876,7 @@
       const button = patchChatButton('이어서 ChatGPT 전송');
       button.setAttribute('data-wish-gpt-incremental', '');
       button.disabled = fullSource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!fullSource.disabled) openIncrementalTransferDialog(); };
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = root.querySelector('[data-key="external"] [data-act="rebuildExport"]'); if (source && !source.disabled) openIncrementalTransferDialog(); };
       const preceding = fullSource.parentElement.querySelector('[data-wish-gpt-full]') || fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
       (preceding || fullSource).insertAdjacentElement('afterend', button);
     }
@@ -1581,24 +1885,29 @@
       const button = patchChatButton();
       button.setAttribute('data-wish-gpt-secondary-open', '');
       button.disabled = secondarySource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!secondarySource.disabled) secondarySource.click(); };
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]'); if (source && !source.disabled) source.click(); };
       const guide = secondarySource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalSecondary"]');
       (guide || secondarySource).insertAdjacentElement('afterend', button);
     }
+    if (fullSource) fullSource.parentElement.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental]').forEach(button => { button.disabled = fullSource.disabled; });
+    if (secondarySource) secondarySource.parentElement.querySelectorAll('[data-wish-gpt-secondary-open]').forEach(button => { button.disabled = secondarySource.disabled; });
   }
   function injectSecondaryDialogButton(root) {
     root.querySelectorAll('.m3-dialog[aria-label="외부 AI로 2차 재구축"]').forEach(dialog => {
       const original = dialog.querySelector('footer [data-act="secondaryExportRun"]');
-      if (!original || dialog.querySelector('[data-wish-gpt-secondary-run]')) return;
+      if (!original) return;
+      const existing = dialog.querySelector('[data-wish-gpt-secondary-run]');
+      if (existing) { existing.disabled = original.disabled; return; }
       const button = patchChatButton('ChatGPT 전송');
       button.setAttribute('data-wish-gpt-secondary-run', '');
       button.disabled = original.disabled;
       button.onclick = event => {
         event.preventDefault(); event.stopPropagation();
-        if (original.disabled) return;
+        const source = dialog.querySelector('footer [data-act="secondaryExportRun"]');
+        if (!source || source.disabled) return;
         beginTransferCapture('secondary');
         notify('2차 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
-        original.click();
+        source.click();
       };
       original.insertAdjacentElement('afterend', button);
     });
@@ -1623,6 +1932,7 @@
     const note = document.createElement('div');
     note.className = 'wish-gpt-transfer-note';
     note.setAttribute('data-wish-gpt-transfer-note', '');
+    note.setAttribute('data-fx-node', '');
     note.textContent = '🪽 “ChatGPT 전송”은 턴 범위 파일과 요청 문구를 준비하고 열려 있는 ChatGPT 탭으로 이동합니다. 열린 탭이 없으면 새 탭을 엽니다. ChatGPT의 “이 방으로 전송”으로 첨부한 뒤 보내기를 눌러 주세요. 전달함 보관 12시간.';
     panel.appendChild(note);
   }
@@ -1659,7 +1969,9 @@
     .wish-fbp-settings>label,.wish-fbp-settings .wish-fbp-grid>label{display:grid;gap:5px;margin:9px 0;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-fbp-settings label>span{font-weight:650}.wish-fbp-settings input{box-sizing:border-box;width:100%;min-height:38px;border:1px solid var(--m3-line,#3a465a);border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg,#edf1f8);padding:8px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}.wish-fbp-settings input:focus{outline:2px solid color-mix(in srgb,var(--m3-accent,#83aaff) 28%,transparent);border-color:var(--m3-accent,#83aaff)}.wish-fbp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wish-fbp-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}.wish-fbp-status.ok{color:#93dfbd}.wish-fbp-status.error{color:#ff9eab}.wish-fbp-status.busy{color:#ffd58f}.wish-fbp-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-main-button{border-color:#173c4d!important;background:#285d73!important;color:#fff!important;font-weight:760!important;box-shadow:0 2px 7px rgba(20,63,82,.25)!important}.wish-fbp-main-button:hover{border-color:#102f3d!important;background:#1d4d62!important;color:#fff!important}.wish-gpt-prepare-button{border-color:color-mix(in srgb,var(--m3-accent,#3f52a0) 70%,#18213a)!important;background:var(--m3-accent,#3f52a0)!important;color:var(--m3-accent-ink,#fff)!important;font-weight:720!important}.wish-gpt-prepare-button:hover{filter:brightness(.92)}
     .wish-gpt-transfer-note{margin-top:12px;padding:9px 11px;border:1px solid color-mix(in srgb,var(--m3-accent,#83aaff) 35%,transparent);border-radius:9px;background:color-mix(in srgb,var(--m3-accent,#83aaff) 9%,transparent);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}
     .wish-fbp-providers{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-providers .m3-btn{min-width:76px;font-weight:750!important}.wish-fbp-providers [aria-pressed="true"]{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}.wish-fbp-providers [aria-pressed="false"]{background:#dce3ef!important;border-color:#a5b4ce!important;color:#24344f!important;-webkit-text-fill-color:#24344f!important}body[data-theme="dark"] .wish-fbp-providers [aria-pressed="false"]{background:#303b50!important;border-color:#50617e!important;color:#ecf2ff!important;-webkit-text-fill-color:#ecf2ff!important}
-    .m3-dialog.wish-fbp-firebase-mode .m3-dialog-body>*:not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]){display:none!important}.m3-dialog.wish-fbp-firebase-mode .m3-sheet>footer{display:none!important}.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-cloud],.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-settings]{display:none!important}[data-wish-fbp-cloud] .m3-cloud-row{display:flex;align-items:center;justify-content:space-between;gap:10px}[data-wish-fbp-cloud] .m3-cloud-info{min-width:0;flex:1}[data-wish-fbp-cloud] .m3-cloud-actions{flex:none}[data-wish-fbp-cloud] .m3-btn.primary,[data-wish-fbp-settings] .m3-btn.primary{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}
+    .wish-fbp-providers [aria-pressed="true"]::before{content:"✓";margin-right:4px}.wish-cloud-choice .m3-cloud-info{cursor:pointer!important}.wish-cloud-choice .m3-cloud-info .m3-box{visibility:visible!important;flex:none}.wish-cloud-choice.is-selected{border:2px solid #245bb0!important;background:#e5f0ff!important;box-shadow:inset 4px 0 #245bb0,0 0 0 1px #93b8ef!important}.wish-cloud-choice.is-selected .m3-t b{color:#173d78!important}.wish-cloud-choice.is-selected .m3-t small{color:#335477!important}.wish-cloud-selected{display:inline-flex;align-items:center;white-space:nowrap;margin-left:6px;padding:2px 7px;border-radius:99px;background:#245bb0;color:#fff!important;-webkit-text-fill-color:#fff!important;font-size:10px;font-style:normal;font-weight:800;line-height:1.4}body[data-theme="dark"] .wish-cloud-choice.is-selected{border-color:#8bb7ff!important;background:#203657!important;box-shadow:inset 4px 0 #8bb7ff,0 0 0 1px #5284c8!important}body[data-theme="dark"] .wish-cloud-choice.is-selected .m3-t b{color:#f3f7ff!important}body[data-theme="dark"] .wish-cloud-choice.is-selected .m3-t small{color:#c4d8f5!important}body[data-theme="dark"] .wish-cloud-selected{background:#a9caff;color:#14243b!important;-webkit-text-fill-color:#14243b!important}
+    @media(max-width:600px){.m3-cloud-row.wish-cloud-choice{display:grid!important;grid-template-columns:minmax(0,1fr)!important}.wish-cloud-choice .m3-cloud-info{width:100%}.wish-cloud-choice .m3-cloud-actions{width:100%;justify-content:flex-end}}
+    .m3-dialog.wish-fbp-firebase-mode .m3-dialog-body>*:not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]),.m3-dialog.wish-fbp-drive-mode .m3-dialog-body>*:not([data-wish-drive-cloud]):not([data-wish-drive-settings]){display:none!important}.m3-dialog.wish-fbp-firebase-mode .m3-sheet>footer,.m3-dialog.wish-fbp-drive-mode .m3-sheet>footer{display:none!important}.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-cloud],.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-settings],.m3-dialog:not(.wish-fbp-drive-mode) [data-wish-drive-cloud],.m3-dialog:not(.wish-fbp-drive-mode) [data-wish-drive-settings]{display:none!important}[data-wish-fbp-cloud] .m3-cloud-row,[data-wish-drive-cloud] .m3-cloud-row{display:flex;align-items:center;justify-content:space-between;gap:10px}[data-wish-fbp-cloud] .m3-cloud-info,[data-wish-drive-cloud] .m3-cloud-info{min-width:0;flex:1}[data-wish-fbp-cloud] .m3-cloud-actions,[data-wish-drive-cloud] .m3-cloud-actions{flex:none}[data-wish-fbp-cloud] .m3-btn.primary,[data-wish-fbp-settings] .m3-btn.primary,[data-wish-drive-cloud] .m3-btn.primary,[data-wish-drive-settings] .m3-btn.primary{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}.wish-drive-help{margin:8px 0 12px;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-drive-help summary{display:inline-grid;place-items:center;width:22px;height:22px;border:1px solid var(--m3-line,#60718f);border-radius:50%;cursor:pointer;font-weight:800;list-style:none}.wish-drive-help summary::-webkit-details-marker{display:none}.wish-drive-help>div{margin-top:7px;line-height:1.7;overflow-wrap:anywhere}.wish-drive-help a{color:var(--m3-accent,#5890df);text-decoration:underline}.wish-drive-help code{overflow-wrap:anywhere}
     .wish-fbp-overlay{position:fixed;z-index:2147483646;inset:0;display:grid;place-items:center;padding:16px;background:#080b11c7;backdrop-filter:blur(5px);font:12px/1.5 system-ui,sans-serif;color:#edf1f8}.wish-fbp-modal{width:min(640px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;border:1px solid #354258;border-radius:14px;background:#141b27;box-shadow:0 28px 80px #000c;overflow:hidden}.wish-fbp-modal>header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;border-bottom:1px solid #2b3547}.wish-fbp-modal>header>div{flex:1}.wish-fbp-modal>header b{display:block;font-size:16px}.wish-fbp-modal>header small{display:block;margin-top:3px;color:#94a1b6}.wish-fbp-modal>header button{border:0;background:none;color:#aab5c7;font-size:18px;cursor:pointer}.wish-fbp-body{min-height:0;overflow:auto;padding:14px 18px}.wish-fbp-modal>footer{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid #2b3547;background:#101722}.wish-fbp-modal>footer>span{flex:1}.wish-fbp-modal button,.wish-fbp-toolbar button{border:1px solid #3b485e;border-radius:8px;background:#202a3a;color:#dbe3ef;padding:8px 11px;cursor:pointer;font:inherit}.wish-fbp-modal button:hover{border-color:#60789e}.wish-fbp-modal button:disabled{opacity:.45;cursor:default}.wish-fbp-modal button.primary{border-color:#557bc0;background:#294979;color:#fff}.wish-fbp-modal button.danger{border-color:#75434c;background:#3a2228;color:#ffc2cb}.wish-fbp-row{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;margin:7px 0;padding:11px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e;cursor:pointer}.wish-fbp-row:hover{border-color:#50647f}.wish-fbp-row.blocked{opacity:.55;cursor:not-allowed}.wish-fbp-row input{margin-top:3px;accent-color:#719be1}.wish-fbp-row span{min-width:0}.wish-fbp-row b,.wish-fbp-row small{display:block;overflow-wrap:anywhere}.wish-fbp-row small{margin-top:3px;color:#93a0b3}.wish-fbp-body h3{margin:18px 0 8px;color:#b7c5d9;font-size:12px}.wish-fbp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}.wish-fbp-toolbar span{margin-left:auto;color:#9eabbd}.wish-fbp-note{margin-top:14px;padding:10px 12px;border:1px solid #5b4e33;border-radius:9px;background:#282316;color:#d9c28c}.wish-fbp-empty{padding:30px 12px;text-align:center;color:#8996aa}
     #wish-gpt-transfer-widget{position:fixed;z-index:2147483645;right:18px;bottom:92px;display:grid;grid-template-columns:minmax(180px,auto) auto auto;align-items:stretch;gap:5px;max-width:calc(100vw - 28px);padding:6px;border:1px solid #526786;border-radius:14px;background:#151d29eF;box-shadow:0 16px 48px #0008;backdrop-filter:blur(12px);font:12px/1.35 system-ui,sans-serif;color:#eef4ff}#wish-gpt-transfer-widget button{border:1px solid #40516b;border-radius:9px;background:#212d40;color:#e8f0fd;padding:8px 10px;cursor:pointer;font:inherit}#wish-gpt-transfer-widget button:hover{border-color:#7ca2df;background:#293954}#wish-gpt-transfer-widget button:disabled{opacity:.6;cursor:wait}.wish-gpt-send{display:grid;text-align:left}.wish-gpt-send b{font-size:12px}.wish-gpt-send small{margin-top:2px;color:#a9b7ca;font-size:10px}.wish-gpt-save,.wish-gpt-clear{min-width:42px}.wish-gpt-clear{font-size:18px!important;padding-inline:9px!important}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:168px}
     @media(max-width:600px){.wish-fbp-grid{grid-template-columns:1fr}.wish-fbp-overlay{padding:0;place-items:end stretch}.wish-fbp-modal{width:100%;max-height:88vh;border-radius:16px 16px 0 0}.wish-fbp-modal>footer{flex-wrap:wrap}.wish-fbp-modal>footer>span{display:none}.wish-fbp-modal>footer button{flex:1}.wish-fbp-toolbar span{flex-basis:100%;margin-left:0}}
