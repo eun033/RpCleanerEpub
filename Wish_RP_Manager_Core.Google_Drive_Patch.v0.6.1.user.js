@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Firebase Backup Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      0.6.1
+// @version      0.6.2
 // @description  Wish RP Manager Core v1.3.1에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -35,7 +35,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.6.1';
+  const PATCH_VERSION = '0.6.2';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
@@ -105,6 +105,9 @@
   let cloudLoaded = false;
   let cloudLoading = false;
   const apiDrafts = new Map();
+  const firebaseAutoListed = new WeakSet();
+  const driveAutoListed = new WeakSet();
+  const driveScriptPrepared = new WeakSet();
   let driveAccessToken = '';
   let driveExpiresAt = 0;
   let driveTokenClient = null;
@@ -1567,6 +1570,7 @@
     const section = document.createElement('section');
     section.className = 'm3-grp wish-fbp-settings';
     section.setAttribute('data-wish-fbp-settings', '');
+    section.setAttribute('data-fx-node', '');
     section.innerHTML = `<div class="m3-gt">☁ Firebase 서버 백업 · Patch v${PATCH_VERSION}</div><label><span>Web API Key</span><input type="text" data-fbp-api-key value="${esc(draft.apiKey)}" placeholder="AIza…"></label><label><span>Realtime Database URL</span><input type="url" data-fbp-db-url value="${esc(draft.databaseURL)}" placeholder="https://project.firebaseio.com"></label><div class="wish-fbp-grid"><label><span>로그인 이메일</span><input type="email" data-fbp-email value="${esc(draft.email)}"></label><label><span>비밀번호 · 연결할 때만</span><input type="password" data-fbp-password value="${esc(draft.password)}" placeholder="저장하지 않음"></label></div><div class="wish-fbp-status ${connected(saved)?'ok':''}" data-fbp-status>${connected(saved)?'Firebase 서버 백업 연결됨':'설정값은 이 패치에만 저장됩니다. 비밀번호는 저장하지 않습니다.'}</div><div class="wish-fbp-actions"><button type="button" class="m3-btn mini" data-fbp-save>설정 저장</button><button type="button" class="m3-btn mini primary" data-fbp-connect>저장 후 연결</button><button type="button" class="m3-btn mini quiet" data-fbp-logout>서버 로그아웃</button></div>`;
     body.appendChild(section);
     const syncDraft = () => Object.assign(draft, readSectionSettings(section), { password:section.querySelector('[data-fbp-password]').value });
@@ -1651,6 +1655,7 @@
     const section = document.createElement('section');
     section.className = 'm3-grp wish-fbp-settings wish-drive-settings';
     section.setAttribute('data-wish-drive-settings', '');
+    section.setAttribute('data-fx-node', '');
     section.innerHTML = `<div class="m3-gt">☁ Google Drive 백업 · Patch v${PATCH_VERSION}</div><label><span>Google OAuth 웹 클라이언트 ID</span><input type="text" data-drive-client-id value="${esc(driveClientId())}" placeholder="123456789-....apps.googleusercontent.com" autocapitalize="off" spellcheck="false"></label><details class="wish-drive-help"><summary aria-label="Google 클라이언트 ID 발급 방법">?</summary><div>1. <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console</a>에서 프로젝트를 만듭니다.<br>2. Google Drive API를 켜고 OAuth 동의 화면에 <code>drive.file</code> 범위를 추가합니다. 테스트 상태라면 사용할 Google 계정을 테스트 사용자로 추가합니다.<br>3. 사용자 인증 정보에서 <b>OAuth 클라이언트 ID → 웹 애플리케이션</b>을 만들고 승인된 JavaScript 원본에 <code>https://crack.wrtn.ai</code>를 등록합니다.<br>4. 클라이언트 ID만 여기에 붙여넣습니다. 클라이언트 보안 비밀번호는 입력하지 않습니다.</div></details><div class="wish-fbp-status ${driveConnected() ? 'ok' : ''}" data-drive-status>${driveConnected() ? 'Google Drive 연결됨' : '클라이언트 ID 저장 후 연결을 눌러 Google 계정을 선택해 주세요.'}</div><div class="wish-fbp-actions"><button type="button" class="m3-btn mini" data-drive-save>설정 저장</button><button type="button" class="m3-btn mini primary" data-drive-connect>Google 계정 연결</button><button type="button" class="m3-btn mini quiet" data-drive-disconnect>연결 해제</button></div><div class="m3-muted m3-topgap">Chrome·Edge에서 이미 로그인한 계정을 선택할 수 있지만 Drive 접근 승인에는 클라이언트 ID가 필요합니다. 토큰은 이 탭의 메모리에만 보관합니다.</div>`;
     body.appendChild(section);
     const status = (message, type = '') => { const target = section.querySelector('[data-drive-status]'); target.textContent = message; target.className = `wish-fbp-status ${type}`; };
@@ -1724,17 +1729,45 @@
     catch (error) { notify(`Google Drive 백업 삭제 실패: ${error.message}`, 'error', 7600); }
     finally { driveBusy = false; const current = currentCloudDialog(); if (current) renderDriveCloudPanel(current); }
   }
+  function updateCloudModeStyle(dialog) {
+    const id = String(dialog.dataset.dlg || '');
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) return;
+    let modeStyle = document.getElementById('wish-fbp-cloud-mode-style');
+    if (!modeStyle) {
+      modeStyle = document.createElement('style');
+      modeStyle.id = 'wish-fbp-cloud-mode-style';
+      (document.head || document.documentElement).appendChild(modeStyle);
+    }
+    const base = `#wish-rp-root .m3-dialog[data-dlg="${id}"]`;
+    const title = `${base} .m3-sheet>header .m3-t>b:not([data-wish-cloud-title]){display:none!important}`;
+    const firebase = '[data-wish-fbp-cloud],[data-wish-fbp-settings]';
+    const drive = '[data-wish-drive-cloud],[data-wish-drive-settings]';
+    const hide = names => names.split(',').map(name => `${base} ${name}{display:none!important}`).join('');
+    const show = names => names.split(',').map(name => `${base} ${name}{display:block!important}`).join('');
+    const rules = cloudProvider === 'firebase'
+      ? `${title}${base} .m3-dialog-body>*:not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]){display:none!important}${base} .m3-sheet>footer{display:none!important}${show(firebase)}${hide(drive)}`
+      : cloudProvider === 'drive'
+        ? `${title}${base} .m3-dialog-body>*:not([data-wish-drive-cloud]):not([data-wish-drive-settings]){display:none!important}${base} .m3-sheet>footer{display:none!important}${show(drive)}${hide(firebase)}`
+        : `${title}${hide(`${firebase},${drive}`)}`;
+    if (modeStyle.textContent !== rules) modeStyle.textContent = rules;
+  }
   function injectCloudProvider(dialog) {
     const body = dialog.querySelector('.m3-dialog-body');
     const header = dialog.querySelector('.m3-sheet>header .m3-t');
     if (!body || !header || !body.querySelector('[data-key="cloud-head"]')) return;
     if (!header.querySelector('[data-wish-cloud-providers]')) {
       const title = header.querySelector('b');
-      if (title && title.textContent !== '클라우드 백업') title.textContent = '클라우드 백업';
-      dialog.setAttribute('aria-label', '클라우드 백업');
+      if (title) {
+        const patchTitle = document.createElement('b');
+        patchTitle.setAttribute('data-fx-node', '');
+        patchTitle.setAttribute('data-wish-cloud-title', '');
+        patchTitle.textContent = '클라우드 백업';
+        title.insertAdjacentElement('afterend', patchTitle);
+      }
       const tabs = document.createElement('div');
       tabs.className = 'wish-fbp-providers m3-row';
       tabs.setAttribute('data-wish-cloud-providers', '');
+      tabs.setAttribute('data-fx-node', '');
       tabs.innerHTML = '<button type="button" class="m3-btn mini" data-wish-provider="koofr">Koofr</button><button type="button" class="m3-btn mini" data-wish-provider="firebase">Firebase</button><button type="button" class="m3-btn mini" data-wish-provider="drive">Google Drive</button>';
       header.appendChild(tabs);
       for (const button of tabs.querySelectorAll('button')) button.onclick = event => {
@@ -1745,15 +1778,16 @@
       };
       const panel = document.createElement('div');
       panel.setAttribute('data-wish-fbp-cloud', '');
+      panel.setAttribute('data-fx-node', '');
       body.appendChild(panel);
       injectApiSettings(dialog);
       const drivePanel = document.createElement('div');
       drivePanel.setAttribute('data-wish-drive-cloud', '');
+      drivePanel.setAttribute('data-fx-node', '');
       body.appendChild(drivePanel);
       injectDriveSettings(dialog);
     }
-    dialog.classList.toggle('wish-fbp-firebase-mode', cloudProvider === 'firebase');
-    dialog.classList.toggle('wish-fbp-drive-mode', cloudProvider === 'drive');
+    updateCloudModeStyle(dialog);
     dialog.querySelectorAll('[data-wish-provider]').forEach(button => {
       const chosen = button.dataset.wishProvider === cloudProvider;
       button.classList.toggle('primary', chosen);
@@ -1761,19 +1795,23 @@
     });
     if (cloudProvider === 'firebase') {
       renderFirebaseCloudPanel(dialog);
-      if (!dialog.dataset.wishFbpAutoList && connected()) {
-        dialog.dataset.wishFbpAutoList = '1';
+      if (!firebaseAutoListed.has(dialog) && connected()) {
+        firebaseAutoListed.add(dialog);
         void refreshFirebaseCloud();
       }
     }
     if (cloudProvider === 'drive') {
-      void loadDriveIdentityScript().catch(error => {
-        const section = dialog.querySelector('[data-wish-drive-settings]');
-        if (section) { const target = section.querySelector('[data-drive-status]'); target.textContent = error.message; target.className = 'wish-fbp-status error'; }
-      });
+      if (!driveScriptPrepared.has(dialog)) {
+        driveScriptPrepared.add(dialog);
+        void loadDriveIdentityScript().catch(error => {
+          const section = dialog.querySelector('[data-wish-drive-settings]');
+          const target = section?.querySelector('[data-drive-status]');
+          if (target && target.textContent !== error.message) { target.textContent = error.message; target.className = 'wish-fbp-status error'; }
+        });
+      }
       renderDriveCloudPanel(dialog);
-      if (!dialog.dataset.wishDriveAutoList && driveConnected()) {
-        dialog.dataset.wishDriveAutoList = '1';
+      if (!driveAutoListed.has(dialog) && driveConnected()) {
+        driveAutoListed.add(dialog);
         void refreshDriveCloud();
       }
     }
@@ -1783,9 +1821,16 @@
     if (!line) return;
     const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.3\.1(?:\.\d+)?$/.test(span.textContent.trim()));
     if (!version) return;
-    if (version.textContent !== 'Wish Core 1.3.1') version.textContent = 'Wish Core 1.3.1';
-    if (version.nextElementSibling?.dataset.wishPatchVersion === PATCH_VERSION) return;
+    const existing = line.querySelector('[data-wish-patch-version]');
+    if (existing) {
+      if (existing.dataset.wishPatchVersion !== PATCH_VERSION) {
+        existing.dataset.wishPatchVersion = PATCH_VERSION;
+        existing.textContent = `( + patch ${PATCH_VERSION})`;
+      }
+      return;
+    }
     const badge = document.createElement('span');
+    badge.setAttribute('data-fx-node', '');
     badge.dataset.wishPatchVersion = PATCH_VERSION;
     badge.textContent = `( + patch ${PATCH_VERSION})`;
     version.insertAdjacentElement('afterend', badge);
@@ -1806,6 +1851,7 @@
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'm3-btn mini wish-gpt-prepare-button';
+    button.setAttribute('data-fx-node', '');
     button.textContent = label;
     return button;
   }
@@ -1817,10 +1863,11 @@
       button.disabled = fullSource.disabled;
       button.onclick = event => {
         event.preventDefault(); event.stopPropagation();
-        if (fullSource.disabled) return;
+        const source = root.querySelector('[data-key="external"] [data-act="rebuildExport"]');
+        if (!source || source.disabled) return;
         beginTransferCapture('full');
         notify('전체 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
-        fullSource.click();
+        source.click();
       };
       const guide = fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
       (guide || fullSource).insertAdjacentElement('afterend', button);
@@ -1829,7 +1876,7 @@
       const button = patchChatButton('이어서 ChatGPT 전송');
       button.setAttribute('data-wish-gpt-incremental', '');
       button.disabled = fullSource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!fullSource.disabled) openIncrementalTransferDialog(); };
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = root.querySelector('[data-key="external"] [data-act="rebuildExport"]'); if (source && !source.disabled) openIncrementalTransferDialog(); };
       const preceding = fullSource.parentElement.querySelector('[data-wish-gpt-full]') || fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
       (preceding || fullSource).insertAdjacentElement('afterend', button);
     }
@@ -1838,24 +1885,29 @@
       const button = patchChatButton();
       button.setAttribute('data-wish-gpt-secondary-open', '');
       button.disabled = secondarySource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); if (!secondarySource.disabled) secondarySource.click(); };
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]'); if (source && !source.disabled) source.click(); };
       const guide = secondarySource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalSecondary"]');
       (guide || secondarySource).insertAdjacentElement('afterend', button);
     }
+    if (fullSource) fullSource.parentElement.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental]').forEach(button => { button.disabled = fullSource.disabled; });
+    if (secondarySource) secondarySource.parentElement.querySelectorAll('[data-wish-gpt-secondary-open]').forEach(button => { button.disabled = secondarySource.disabled; });
   }
   function injectSecondaryDialogButton(root) {
     root.querySelectorAll('.m3-dialog[aria-label="외부 AI로 2차 재구축"]').forEach(dialog => {
       const original = dialog.querySelector('footer [data-act="secondaryExportRun"]');
-      if (!original || dialog.querySelector('[data-wish-gpt-secondary-run]')) return;
+      if (!original) return;
+      const existing = dialog.querySelector('[data-wish-gpt-secondary-run]');
+      if (existing) { existing.disabled = original.disabled; return; }
       const button = patchChatButton('ChatGPT 전송');
       button.setAttribute('data-wish-gpt-secondary-run', '');
       button.disabled = original.disabled;
       button.onclick = event => {
         event.preventDefault(); event.stopPropagation();
-        if (original.disabled) return;
+        const source = dialog.querySelector('footer [data-act="secondaryExportRun"]');
+        if (!source || source.disabled) return;
         beginTransferCapture('secondary');
         notify('2차 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
-        original.click();
+        source.click();
       };
       original.insertAdjacentElement('afterend', button);
     });
@@ -1880,6 +1932,7 @@
     const note = document.createElement('div');
     note.className = 'wish-gpt-transfer-note';
     note.setAttribute('data-wish-gpt-transfer-note', '');
+    note.setAttribute('data-fx-node', '');
     note.textContent = '🪽 “ChatGPT 전송”은 턴 범위 파일과 요청 문구를 준비하고 열려 있는 ChatGPT 탭으로 이동합니다. 열린 탭이 없으면 새 탭을 엽니다. ChatGPT의 “이 방으로 전송”으로 첨부한 뒤 보내기를 눌러 주세요. 전달함 보관 12시간.';
     panel.appendChild(note);
   }
