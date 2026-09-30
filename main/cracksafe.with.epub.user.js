@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrackSafe with EPUB
 // @namespace    https://crack.wrtn.ai/
-// @version      1.1.0
+// @version      1.1.1
 // @description  CrackSafe - 크랙 채팅 백업 및 EPUB 변환 기능 통합
 // @author       zxklkj12 & eun033
 // @match        https://crack.wrtn.ai/*
@@ -29,6 +29,7 @@ CrackSafe 에 ePub 기능 추가
         historyKey: 'HCD_downloadHistory',
         cursorKey: 'HCD_saveCursors',
         incrFormatKey: 'HCD_incrFormat',
+        recentFormatKey: 'HCD_recentFormat',
         clipboardKey: 'HCD_clipboardOn',
         siteOptionButtonKey: 'HCD_siteDownloadSidebarOn_v2',
         cleanerOptionsKey: 'HCD_logCleanerOptions_v1',
@@ -90,13 +91,26 @@ CrackSafe 에 ePub 기능 추가
         .hcd-cleaner-help{font-size:11px;color:var(--hcd-text4);line-height:1.45;margin-top:2px}
         .hcd-cleaner-select-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;padding:8px 10px;border:1px solid var(--hcd-border2);border-radius:10px;background:var(--hcd-surface2)}
         .hcd-cleaner-select-row span{font-size:12px;font-weight:800;color:var(--hcd-text2)}
+        .hcd-actions.hcd-save-stack{display:block;margin-top:0}
+        .hcd-save-card{background:var(--hcd-surface2);border:1px solid var(--hcd-border);border-radius:14px;padding:16px;margin-bottom:12px;min-width:0;overflow:hidden}
+        .hcd-save-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+        .hcd-save-title{font-size:13px;font-weight:800;color:var(--hcd-text);line-height:1.4}
+        .hcd-save-desc{font-size:11px;line-height:1.55;color:var(--hcd-text4);margin-top:8px}
+        .hcd-save-row{display:flex;align-items:stretch;gap:8px;margin-top:12px;min-width:0}
+        .hcd-save-row .hcd-select{flex:0 0 86px;width:86px;min-width:0}
+        .hcd-save-row .hcd-play-btn{flex:1;min-width:0}
+        .hcd-turn-control{display:flex;align-items:center;gap:6px;flex:0 0 auto;font-size:12px;font-weight:700;color:var(--hcd-text3);white-space:nowrap}
+        .hcd-turn-input{width:72px;min-width:0;padding:8px 9px;border:1px solid var(--hcd-border);border-radius:10px;background:var(--hcd-input-bg);color:var(--hcd-text);font-size:13px;font-weight:700;text-align:right;box-sizing:border-box;outline:none;font-family:inherit}
+        .hcd-turn-input:focus{border-color:var(--hcd-accent);box-shadow:0 0 0 3px var(--hcd-input-focus)}
+        .hcd-history-type.recent{background:var(--hcd-accent-soft);color:var(--hcd-accent-text)}
+        @media(max-width:380px){.hcd-panel{padding:20px}.hcd-save-card{padding:13px}.hcd-save-title-row{align-items:flex-start}.hcd-turn-input{width:60px}.hcd-save-row .hcd-select{flex-basis:78px;width:78px;padding-left:9px;padding-right:26px}}
         :root{--hcd-bg:rgba(255,255,255,.98);--hcd-bg2:linear-gradient(160deg,rgba(255,255,255,.98),rgba(248,249,250,.98));--hcd-surface:rgba(0,0,0,.03);--hcd-surface2:rgba(0,0,0,.02);--hcd-border:rgba(0,0,0,.08);--hcd-border2:rgba(0,0,0,.05);--hcd-text:#000000;--hcd-text2:#1a1a1a;--hcd-text3:#333333;--hcd-text4:#555555;--hcd-accent:#2563eb;--hcd-accent2:#3b82f6;--hcd-accent-glow:rgba(37,99,235,.2);--hcd-accent-soft:rgba(37,99,235,.08);--hcd-accent-text:#1d4ed8;--hcd-accent-text2:#93c5fd;--hcd-danger:#dc2626;--hcd-danger-soft:rgba(239,68,68,.06);--hcd-danger-text:#dc2626;--hcd-overlay:rgba(0,0,0,.3);--hcd-fab-bg:linear-gradient(135deg,#fff,#f8f9fa);--hcd-fab-color:#2563eb;--hcd-fab-shadow:0 8px 32px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.06);--hcd-fab-hover-shadow:0 12px 40px rgba(0,0,0,.18),0 0 20px rgba(37,99,235,.1);--hcd-panel-shadow:0 25px 60px rgba(0,0,0,.15),0 0 0 1px rgba(0,0,0,.06);--hcd-tab-active-bg:rgba(37,99,235,.08);--hcd-tab-active-color:#2563eb;--hcd-tab-active-shadow:0 0 12px rgba(37,99,235,.06);--hcd-btn-sec-bg:rgba(0,0,0,.04);--hcd-btn-sec-color:#495057;--hcd-btn-sec-border:rgba(0,0,0,.08);--hcd-input-bg:rgba(0,0,0,.02);--hcd-input-focus:rgba(37,99,235,.15);--hcd-incr-bg:rgba(37,99,235,.04);--hcd-incr-border:rgba(37,99,235,.1);--hcd-incr-text:#1d4ed8;--hcd-incr-strong:#1e40af;--hcd-tag-html-bg:rgba(59,130,246,.08);--hcd-tag-html:#2563eb;--hcd-tag-txt-bg:rgba(0,0,0,.04);--hcd-tag-txt:#6b7280;--hcd-tag-json-bg:rgba(34,197,94,.06);--hcd-tag-json:#16a34a;--hcd-tag-incr-bg:rgba(217,119,6,.06);--hcd-tag-incr:#d97706;--hcd-close-hover:rgba(239,68,68,.06);--hcd-close-hover-color:#ef4444;--hcd-warn-bg:rgba(239,68,68,.04);--hcd-warn-border:rgba(239,68,68,.1);--hcd-warn-text:#ef4444;--hcd-status-ok:#16a34a;--hcd-status-err:#dc2626;--hcd-grp-cnt-bg:rgba(0,0,0,.04);--hcd-scroll-thumb:rgba(0,0,0,.1);--hcd-rename-hover-bg:rgba(37,99,235,.06);--hcd-rename-hover-color:#2563eb}
         @media(prefers-color-scheme:dark){:root{--hcd-bg:rgba(22,22,35,.97);--hcd-bg2:linear-gradient(160deg,rgba(22,22,35,.97),rgba(15,15,25,.98));--hcd-surface:rgba(255,255,255,.04);--hcd-surface2:rgba(255,255,255,.02);--hcd-border:rgba(255,255,255,.08);--hcd-border2:rgba(255,255,255,.04);--hcd-text:#ffffff;--hcd-text2:#f0f0f3;--hcd-text3:#b0b5bd;--hcd-text4:#8a8f99;--hcd-accent:#3b82f6;--hcd-accent2:#60a5fa;--hcd-accent-glow:rgba(37,99,235,.25);--hcd-accent-soft:rgba(126,184,255,.12);--hcd-accent-text:#7eb8ff;--hcd-accent-text2:#93c5fd;--hcd-danger:#ef4444;--hcd-danger-soft:rgba(239,68,68,.1);--hcd-danger-text:#f87171;--hcd-overlay:rgba(0,0,0,.6);--hcd-fab-bg:linear-gradient(135deg,#0f0f0f,#1a1a2e);--hcd-fab-color:#7eb8ff;--hcd-fab-shadow:0 8px 32px rgba(0,0,0,.3),0 0 0 1px rgba(255,255,255,.05) inset;--hcd-fab-hover-shadow:0 12px 40px rgba(0,0,0,.4),0 0 20px rgba(126,184,255,.15);--hcd-panel-shadow:0 25px 60px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.06) inset;--hcd-tab-active-bg:rgba(126,184,255,.12);--hcd-tab-active-color:#7eb8ff;--hcd-tab-active-shadow:0 0 12px rgba(126,184,255,.08);--hcd-btn-sec-bg:rgba(255,255,255,.06);--hcd-btn-sec-color:#9ca3af;--hcd-btn-sec-border:rgba(255,255,255,.08);--hcd-input-bg:rgba(255,255,255,.04);--hcd-input-focus:rgba(126,184,255,.15);--hcd-incr-bg:rgba(126,184,255,.06);--hcd-incr-border:rgba(126,184,255,.12);--hcd-incr-text:#93c5fd;--hcd-incr-strong:#a5d4ff;--hcd-tag-html-bg:rgba(59,130,246,.15);--hcd-tag-html:#60a5fa;--hcd-tag-txt-bg:rgba(255,255,255,.06);--hcd-tag-txt:#9ca3af;--hcd-tag-json-bg:rgba(34,197,94,.12);--hcd-tag-json:#4ade80;--hcd-tag-incr-bg:rgba(251,191,36,.1);--hcd-tag-incr:#fbbf24;--hcd-close-hover:rgba(255,80,80,.1);--hcd-close-hover-color:#ff6b6b;--hcd-warn-bg:rgba(239,68,68,.08);--hcd-warn-border:rgba(239,68,68,.15);--hcd-warn-text:#fca5a5;--hcd-status-ok:#4ade80;--hcd-status-err:#f87171;--hcd-grp-cnt-bg:rgba(255,255,255,.05);--hcd-scroll-thumb:rgba(255,255,255,.1);--hcd-rename-hover-bg:rgba(96,165,250,.1);--hcd-rename-hover-color:#60a5fa}}
         .hcd-fab{position:fixed;bottom:140px;right:16px;width:52px;height:52px;border-radius:16px;background:var(--hcd-fab-bg);border:1px solid var(--hcd-border);box-shadow:var(--hcd-fab-shadow);cursor:grab;display:flex;align-items:center;justify-content:center;z-index:9999;color:var(--hcd-fab-color);-webkit-tap-highlight-color:transparent;touch-action:none;user-select:none;-webkit-user-select:none}
         @media(min-width:769px){.hcd-fab{right:auto;left:20px;bottom:80px}}
         .hcd-fab:active{cursor:grabbing}
         .hcd-panel-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:var(--hcd-overlay);z-index:10000;display:flex;align-items:center;justify-content:center;opacity:0;animation:hcdFadeIn .25s cubic-bezier(.4,0,.2,1) forwards}
-        .hcd-panel{background:var(--hcd-bg2);width:90%;max-width:460px;border-radius:20px;padding:28px;box-shadow:var(--hcd-panel-shadow);font-family:'Pretendard Variable',Pretendard,-apple-system,BlinkMacSystemFont,sans-serif;max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;color:var(--hcd-text2);scrollbar-width:thin;scrollbar-color:var(--hcd-scroll-thumb) transparent}
+        .hcd-panel{background:var(--hcd-bg2);width:90%;max-width:460px;border-radius:20px;padding:28px;box-sizing:border-box;box-shadow:var(--hcd-panel-shadow);font-family:'Pretendard Variable',Pretendard,-apple-system,BlinkMacSystemFont,sans-serif;max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;color:var(--hcd-text2);scrollbar-width:thin;scrollbar-color:var(--hcd-scroll-thumb) transparent}
         .hcd-panel::-webkit-scrollbar{width:6px}.hcd-panel::-webkit-scrollbar-track{background:transparent}.hcd-panel::-webkit-scrollbar-thumb{background:var(--hcd-scroll-thumb);border-radius:3px}
         .hcd-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
         .hcd-title{font-size:19px;font-weight:600;color:var(--hcd-text);letter-spacing:-.01em;font-family:'Playfair Display',Georgia,serif}
@@ -275,7 +289,7 @@ CrackSafe 에 ePub 기능 추가
             const list = this._load();
             for (const crid of affectedChatroomIds) {
                 if (crid === '_full_backup_') continue;
-                const remaining = list.filter(h => h.chatroomId === crid && h.lastMessageId).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                const remaining = list.filter(h => h.chatroomId === crid && !h.recent && h.lastMessageId).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
                 if (remaining.length > 0) {
                     const latest = remaining[0];
                     let total = 0;
@@ -293,13 +307,13 @@ CrackSafe 에 ePub 기능 추가
             const target = list.find(h => h.id === id);
             const crid = target?.chatroomId;
             this._save(list.filter(h => h.id !== id));
-            if (crid) this._rebuildCursorsAfterDelete([crid]);
+            if (crid && !target?.recent) this._rebuildCursorsAfterDelete([crid]);
         },
 
         removeMany(ids) {
             const set = new Set(ids);
             const list = this._load();
-            const affected = new Set(list.filter(h => set.has(h.id)).map(h => h.chatroomId).filter(Boolean));
+            const affected = new Set(list.filter(h => set.has(h.id) && !h.recent).map(h => h.chatroomId).filter(Boolean));
             this._save(list.filter(h => !set.has(h.id)));
             this._rebuildCursorsAfterDelete(affected);
         },
@@ -325,6 +339,28 @@ CrackSafe 에 ePub 기능 추가
 
         getIncrFormat() { try { return localStorage.getItem(CONFIG.incrFormatKey) || 'txt'; } catch { return 'txt'; } },
         setIncrFormat(f) { try { localStorage.setItem(CONFIG.incrFormatKey, f); } catch {} },
+        getRecentFormat() {
+            try {
+                const value = localStorage.getItem(CONFIG.recentFormatKey) || 'txt';
+                return ['txt', 'html', 'json'].includes(value) ? value : 'txt';
+            } catch { return 'txt'; }
+        },
+        setRecentFormat(f) {
+            if (!['txt', 'html', 'json'].includes(f)) return;
+            try { localStorage.setItem(CONFIG.recentFormatKey, f); } catch {}
+        },
+        getRecentTurnCount() {
+            const maximum = Math.max(1, Math.floor(CONFIG.hardLimit / 2));
+            try {
+                return Math.min(maximum, Math.max(1, Math.floor(Number(localStorage.getItem(CONFIG.storageKey)) || 100)));
+            } catch { return 100; }
+        },
+        setRecentTurnCount(value) {
+            const maximum = Math.max(1, Math.floor(CONFIG.hardLimit / 2));
+            const safe = Math.min(maximum, Math.max(1, Math.floor(Number(value) || 100)));
+            try { localStorage.setItem(CONFIG.storageKey, String(safe)); } catch {}
+            return safe;
+        },
 
         getStats() {
             const items = this._load().filter(h => h.chatroomId !== '_full_backup_' && h.type !== 'full');
@@ -354,6 +390,7 @@ CrackSafe 에 ePub 기능 추가
                 history: this._load(),
                 cursors: this._loadCursors(),
                 incrFormat: this.getIncrFormat(),
+                recentFormat: this.getRecentFormat(),
                 lastTurnCount: localStorage.getItem(CONFIG.storageKey) || '100',
             };
             return JSON.stringify(payload, null, 2);
@@ -381,6 +418,7 @@ CrackSafe 에 ePub 기능 추가
                 this._saveCursors(existingCursors);
             }
             if (data.incrFormat) this.setIncrFormat(data.incrFormat);
+            if (data.recentFormat) this.setRecentFormat(data.recentFormat);
             if (data.lastTurnCount) { try { localStorage.setItem(CONFIG.storageKey, data.lastTurnCount); } catch {} }
             return { historyCount: (data.history || []).length, cursorCount: Object.keys(data.cursors || {}).length };
         },
@@ -423,6 +461,61 @@ CrackSafe 에 ePub 기능 추가
                 await new Promise(r => setTimeout(r, 300));
             }
             return collected.reverse();
+        },
+        async fetchRecentTurns(chatroomId, requestedTurnCount, cancelToken, onProgress) {
+            const maximum = Math.max(1, Math.floor(CONFIG.hardLimit / 2));
+            const target = Math.min(maximum, Math.max(1, Math.floor(Number(requestedTurnCount) || 100)));
+            const seen = new Set();
+            const turnsNewestFirst = [];
+            let pendingAssistant = null;
+            let cursor = null;
+            let chunk = 0;
+            let checkedMessages = 0;
+
+            while (turnsNewestFirst.length < target && checkedMessages < CONFIG.hardLimit) {
+                if (cancelToken?.cancelled) throw new Error('USER_CANCELLED');
+                const url = `/chats/${chatroomId}/messages?limit=${CONFIG.chunkSize}${cursor ? `&cursor=${cursor}` : ''}`;
+                const data = await this.request(url);
+                const msgs = data.data?.messages || [];
+                chunk++;
+                if (!msgs.length) break;
+
+                for (const message of msgs) {
+                    if (cancelToken?.cancelled) throw new Error('USER_CANCELLED');
+                    if (!message?._id || seen.has(message._id)) continue;
+                    seen.add(message._id);
+                    checkedMessages++;
+
+                    const role = String(message.role || '').toLowerCase();
+                    if (role === 'assistant' || role === 'ai') {
+                        // 최신순 순회에서 계속 덮어쓰면 해당 USER와 시간상 가장 가까운 AI가 남는다.
+                        pendingAssistant = message;
+                    } else if (role === 'user' && pendingAssistant) {
+                        turnsNewestFirst.push([message, pendingAssistant]);
+                        pendingAssistant = null;
+                        if (turnsNewestFirst.length >= target) break;
+                    }
+
+                    if (checkedMessages >= CONFIG.hardLimit) break;
+                }
+
+                if (onProgress) onProgress(turnsNewestFirst.length, checkedMessages, chunk);
+                if (turnsNewestFirst.length >= target || checkedMessages >= CONFIG.hardLimit) break;
+
+                cursor = data.data?.nextCursor;
+                if (!cursor) break;
+                await new Promise(r => setTimeout(r, 300));
+            }
+
+            const messages = [];
+            for (const turn of turnsNewestFirst.reverse()) messages.push(turn[0], turn[1]);
+            return {
+                messages,
+                turnCount: turnsNewestFirst.length,
+                requestedTurnCount: target,
+                checkedMessages,
+                requestCount: chunk,
+            };
         },
         async fetchDetail(chatroomId) { return (await this.request(`/chats/${chatroomId}`)).data; },
         async fetchMessagesUntilId(chatroomId, targetId, onProgress) {
@@ -643,6 +736,8 @@ CrackSafe 에 ePub 기능 추가
         _histSearchCursor: 0,
         _histSearchFocused: false,
         _mergeFiles: [],
+        _saveInProgress: false,
+        _pendingClipResolve: null,
         init() { GM_addStyle(styles); this.createFab(); this.initTampermonkeyMenu(); this.initSiteOptionsEntry(); },
         createFab() {
             const btn = document.createElement('div'); btn.className = 'hcd-fab'; btn.innerHTML = ICONS.download;
@@ -1048,6 +1143,9 @@ CrackSafe 에 ePub 기능 추가
             const info = API.getUrlInfo();
             const cursor = info ? History.getCursor(info.chatroomId) : null;
             const savedFormat = History.getIncrFormat();
+            const recentFormat = History.getRecentFormat();
+            const recentTurnCount = History.getRecentTurnCount();
+            const maxRecentTurns = Math.max(1, Math.floor(CONFIG.hardLimit / 2));
 
             const overlay = document.createElement('div');
             overlay.className = 'hcd-panel-overlay';
@@ -1078,11 +1176,37 @@ CrackSafe 에 ePub 기능 추가
                     </div>
                     <div id="tab-current" class="hcd-content active">
                         ${incrBlock}
-                        <div class="hcd-label" style="margin-bottom:12px">전체 대화 저장 (최대 ${CONFIG.hardLimit.toLocaleString()}개)</div>
-                        <div id="hcd-current-actions" class="hcd-actions">
-                            <button class="hcd-btn" data-type="html">${ICONS.play} HTML</button>
-                            <button class="hcd-btn secondary" data-type="txt">${ICONS.play} TXT</button>
-                            <button class="hcd-btn secondary" data-type="json">${ICONS.play} JSON</button>
+                        <div id="hcd-current-actions" class="hcd-actions hcd-save-stack">
+                            <div class="hcd-save-card">
+                                <div class="hcd-save-title-row">
+                                    <div class="hcd-save-title">🕘 최근 대화 저장</div>
+                                    <label class="hcd-turn-control">최근
+                                        <input class="hcd-turn-input" id="hcd-recent-turn-count" type="number" inputmode="numeric" min="1" max="${maxRecentTurns}" value="${recentTurnCount}">
+                                        턴
+                                    </label>
+                                </div>
+                                <div class="hcd-save-desc">유저 메시지 + AI 메시지를 1턴으로 계산하며, 답변이 없는 최신 유저 메시지는 제외합니다.</div>
+                                <div class="hcd-save-row">
+                                    <select class="hcd-select" id="hcd-recent-format">
+                                        <option value="txt"${recentFormat === 'txt' ? ' selected' : ''}>TXT</option>
+                                        <option value="html"${recentFormat === 'html' ? ' selected' : ''}>HTML</option>
+                                        <option value="json"${recentFormat === 'json' ? ' selected' : ''}>JSON</option>
+                                    </select>
+                                    <button class="hcd-play-btn" id="hcd-recent-save">${ICONS.download} 최근 저장</button>
+                                </div>
+                            </div>
+                            <div class="hcd-save-card">
+                                <div class="hcd-save-title">📚 전체 대화 저장</div>
+                                <div class="hcd-save-desc">현재 채팅 전체 · 최대 ${CONFIG.hardLimit.toLocaleString()}개 메시지</div>
+                                <div class="hcd-save-row">
+                                    <select class="hcd-select" id="hcd-full-format">
+                                        <option value="txt">TXT</option>
+                                        <option value="html">HTML</option>
+                                        <option value="json">JSON</option>
+                                    </select>
+                                    <button class="hcd-play-btn" id="hcd-full-save">${ICONS.download} 전체 저장</button>
+                                </div>
+                            </div>
                         </div>
                         <div class="hcd-ctrl-bar" id="hcd-current-ctrl">
                             <div class="hcd-ctrl-progress"><div class="hcd-ctrl-text" id="hcd-ctrl-text">수집 준비 중...</div><div class="hcd-ctrl-sub" id="hcd-ctrl-sub"></div></div>
@@ -1101,7 +1225,7 @@ CrackSafe 에 ePub 기능 추가
                 </div>`;
 
             document.body.appendChild(overlay);
-            overlay.querySelector('.hcd-close-btn').onclick = () => { if (this._cancelToken) { if (!confirm('다운로드가 진행 중입니다. 정말 닫으시겠습니까?')) return; this._cancelToken.cancelled = true; } overlay.remove(); };
+            overlay.querySelector('.hcd-close-btn').onclick = () => { if (this._cancelToken) { if (!confirm('다운로드가 진행 중입니다. 정말 닫으시겠습니까?')) return; this._cancelToken.cancelled = true; } this.settlePendingClipboard(); overlay.remove(); };
             overlay.onclick = (e) => { if (e.target === overlay && !this._cancelToken) overlay.remove(); };
             overlay.querySelectorAll('.hcd-tab').forEach(t => t.onclick = () => {
                 overlay.querySelectorAll('.hcd-tab').forEach(x => x.classList.remove('active'));
@@ -1111,24 +1235,32 @@ CrackSafe 에 ePub 기능 추가
                 if (t.dataset.tab === 'options') this.renderOptions();
                 if (t.dataset.tab === 'tools') this.renderTools();
             });
-            overlay.querySelectorAll('#tab-current .hcd-btn').forEach(b => {
-                b.onclick = () => {
-                    const type = b.dataset.type;
-                    const wantClip = Clipboard.isOn() && type !== 'html';
-                    let clipResolve = null;
-                    if (wantClip) {
-                        try {
-                            if (navigator.clipboard?.write) {
-                                const textPromise = new Promise(r => { clipResolve = r; });
-                                const item = new ClipboardItem({ 'text/plain': textPromise.then(t => new Blob([t], { type: 'text/plain;charset=utf-8' })) });
-                                navigator.clipboard.write([item]).catch(() => {});
-                            }
-                        } catch {}
-                    }
-                    this.processCurrentChat(type, clipResolve);
-                };
-            });
-            overlay.querySelector('#hcd-stop-current').onclick = () => { if (this._cancelToken && confirm('다운로드를 취소하시겠습니까?\n수집된 데이터는 저장되지 않습니다.')) this._cancelToken.cancelled = true; };
+            const fullSaveBtn = overlay.querySelector('#hcd-full-save');
+            if (fullSaveBtn) fullSaveBtn.onclick = () => {
+                const type = overlay.querySelector('#hcd-full-format')?.value || 'txt';
+                this.processCurrentChat(type, this.prepareClipboardWrite(type));
+            };
+            const recentCountEl = overlay.querySelector('#hcd-recent-turn-count');
+            const recentFmtEl = overlay.querySelector('#hcd-recent-format');
+            if (recentCountEl) {
+                recentCountEl.onchange = () => { recentCountEl.value = String(History.setRecentTurnCount(recentCountEl.value)); };
+                recentCountEl.oninput = () => { if (recentCountEl.value !== '') History.setRecentTurnCount(recentCountEl.value); };
+            }
+            if (recentFmtEl) recentFmtEl.onchange = () => History.setRecentFormat(recentFmtEl.value);
+            const recentSaveBtn = overlay.querySelector('#hcd-recent-save');
+            if (recentSaveBtn) recentSaveBtn.onclick = () => {
+                const requested = History.setRecentTurnCount(recentCountEl?.value || 100);
+                if (recentCountEl) recentCountEl.value = String(requested);
+                const type = recentFmtEl?.value || 'txt';
+                History.setRecentFormat(type);
+                this.processRecentChat(requested, type, this.prepareClipboardWrite(type));
+            };
+            overlay.querySelector('#hcd-stop-current').onclick = () => {
+                if (this._cancelToken && confirm('다운로드를 취소하시겠습니까?\n수집된 데이터는 저장되지 않습니다.')) {
+                    this._cancelToken.cancelled = true;
+                    this.settlePendingClipboard();
+                }
+            };
             const clipCb = overlay.querySelector('#hcd-clip-cb');
             if (clipCb) clipCb.onchange = () => Clipboard.setOn(clipCb.checked);
             const incrFmtEl = overlay.querySelector('#hcd-incr-format');
@@ -1139,12 +1271,7 @@ CrackSafe 에 ePub 기능 추가
 
             if (incrBtn) incrBtn.onclick = () => {
                 const fmt = overlay.querySelector('#hcd-incr-format')?.value || 'txt';
-                const wantClip = Clipboard.isOn() && fmt !== 'html';
-                let clipResolve = null;
-                if (wantClip) {
-                    try { if (navigator.clipboard?.write) { const tp = new Promise(r => { clipResolve = r; }); const item = new ClipboardItem({ 'text/plain': tp.then(t => new Blob([t], { type: 'text/plain;charset=utf-8' })) }); navigator.clipboard.write([item]).catch(() => {}); } } catch {}
-                }
-                this.processIncrementalSave(info.chatroomId, fmt, clipResolve);
+                this.processIncrementalSave(info.chatroomId, fmt, this.prepareClipboardWrite(fmt));
             };
         },
 
@@ -1196,17 +1323,20 @@ CrackSafe 에 ePub 기능 추가
                     const d = new Date(h.timestamp);
                     const dateStr = d.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
                     const timeStr = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-                    const typeLabel = h.incremental ? 'incr' : (h.type || 'html');
+                    const typeLabel = h.recent ? 'recent' : (h.incremental ? 'incr' : (h.type || 'html'));
                     const msgCount = h.messageCount || h.turnCount || '?';
                     const displayName = h.label || '';
+                    const historyMeta = h.recent
+                        ? `${dateStr} ${timeStr} · ${h.turnCount || 0}턴 · ${msgCount}개 메시지 · ${String(h.type || 'txt').toUpperCase()}`
+                        : `${dateStr} ${timeStr} · ${msgCount}개 메시지`;
                     return `<div class="hcd-history-item" data-id="${h.id}">
                         <input type="checkbox" class="hcd-history-cb" data-hid="${h.id}">
-                        <span class="hcd-history-type ${typeLabel}">${typeLabel}</span>
+                        <span class="hcd-history-type ${typeLabel}">${h.recent ? 'RECENT' : typeLabel}</span>
                         <div class="hcd-history-info">
                             ${displayName ? `<div class="hcd-history-name">${this._escHtml(displayName)}</div>` : ''}
-                            <div class="hcd-history-meta">${dateStr} ${timeStr} · ${msgCount}개 메시지</div>
+                            <div class="hcd-history-meta">${historyMeta}</div>
                         </div>
-                        <button class="hcd-history-copy" data-cid="${h.id}" title="현재 채팅방으로 복제 (분기 채팅방 연결)">${ICONS.copy}</button>
+                        ${h.recent ? '' : `<button class="hcd-history-copy" data-cid="${h.id}" title="현재 채팅방으로 복제 (분기 채팅방 연결)">${ICONS.copy}</button>`}
                         <button class="hcd-history-rename" data-rid="${h.id}" title="이름 변경">${ICONS.pencil}</button>
                     </div>`;
                 }).join('');
@@ -1252,10 +1382,7 @@ CrackSafe 에 ePub 기능 추가
             container.querySelectorAll('.hcd-history-group-incr').forEach(btn => {
                 btn.onclick = (e) => {
                     e.stopPropagation(); const fmt = container.querySelector('#hcd-hist-incr-fmt')?.value || 'txt';
-                    const wantClip = Clipboard.isOn() && fmt !== 'html';
-                    let clipResolve = null;
-                    if (wantClip) { try { if (navigator.clipboard?.write) { const tp = new Promise(r => { clipResolve = r; }); const item = new ClipboardItem({ 'text/plain': tp.then(t => new Blob([t], { type: 'text/plain;charset=utf-8' })) }); navigator.clipboard.write([item]).catch(() => {}); } } catch {} }
-                    this.processIncrementalSave(btn.dataset.crid, fmt, clipResolve);
+                    this.processIncrementalSave(btn.dataset.crid, fmt, this.prepareClipboardWrite(fmt));
                 };
             });
 
@@ -1404,6 +1531,32 @@ CrackSafe 에 ePub 기능 추가
         },
 
         _escHtml(t) { return (t || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
+        prepareClipboardWrite(type) {
+            if (this._saveInProgress || !Clipboard.isOn() || type === 'html' || !navigator.clipboard?.write) return null;
+            try {
+                let rawResolve;
+                let settled = false;
+                const textPromise = new Promise(resolve => { rawResolve = resolve; });
+                const resolver = (text = '') => {
+                    if (settled) return;
+                    settled = true;
+                    rawResolve(text);
+                    if (this._pendingClipResolve === resolver) this._pendingClipResolve = null;
+                };
+                const item = new ClipboardItem({ 'text/plain': textPromise.then(text => new Blob([text], { type: 'text/plain;charset=utf-8' })) });
+                this._pendingClipResolve = resolver;
+                navigator.clipboard.write([item]).catch(() => resolver(''));
+                return resolver;
+            } catch {
+                this._pendingClipResolve = null;
+                return null;
+            }
+        },
+        settlePendingClipboard(text = '') {
+            const resolver = this._pendingClipResolve;
+            this._pendingClipResolve = null;
+            if (resolver) resolver(text);
+        },
         updateStatus(msg, type = 'info') { const el = document.querySelector('.hcd-status'); if (!el) return; el.innerHTML = type === 'loading' ? `${ICONS.spinner} ${msg}` : msg; el.style.color = type === 'error' ? 'var(--hcd-status-err)' : (type === 'success' ? 'var(--hcd-status-ok)' : 'var(--hcd-text3)'); },
 
         // ==========================================
@@ -1602,41 +1755,160 @@ CrackSafe 에 ePub 기능 추가
         async processBatchIncrSave() {
             const cursors = History.getAllCursors();
             if (cursors.length < 2) return;
+            if (this._saveInProgress) { this.updateStatus('다른 저장 작업이 진행 중입니다.', 'info'); return; }
             if (!confirm(`${cursors.length}개 채팅방의 새 메시지를 일괄 저장합니다.\n채팅방 간 2초 간격으로 진행됩니다. 계속할까요?`)) return;
+            this._saveInProgress = true;
             const fmt = History.getIncrFormat();
             let success = 0, fail = 0, noNew = 0;
-            for (let i = 0; i < cursors.length; i++) {
-                const c = cursors[i];
-                this.updateStatus(`[${i + 1}/${cursors.length}] ${c.charName || '알 수 없음'} 처리 중...`, 'loading');
-                try {
-                    const newMessages = await API.fetchMessagesUntilId(c.chatroomId, c.lastMessageId);
-                    if (!newMessages.length) { noNew++; continue; }
-                    await new Promise(r => setTimeout(r, 300));
-                    const detail = await API.fetchDetail(c.chatroomId);
-                    const charName = detail.story?.name || detail.character?.name || c.charName || 'Unknown';
-                    const now = new Date(); const dateSuffix = now.toISOString().slice(0, 10) + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0');
-                    const fileName = `${charName}_이어서_${dateSuffix}`;
-                    const type = (fmt === 'json') ? 'json' : 'txt';
-                    if (type === 'json') {
-                        await Platform.download(Cleaner.buildJson({ messages: newMessages, incremental: true, previouslySaved: c.totalSaved }), `${fileName}.json`, 'application/json');
-                    } else {
-                        const txt = Cleaner.buildTxt(newMessages, charName);
-                        await Platform.download(txt, `${fileName}.txt`, 'text/plain');
+            try {
+                for (let i = 0; i < cursors.length; i++) {
+                    const c = cursors[i];
+                    this.updateStatus(`[${i + 1}/${cursors.length}] ${c.charName || '알 수 없음'} 처리 중...`, 'loading');
+                    try {
+                        const newMessages = await API.fetchMessagesUntilId(c.chatroomId, c.lastMessageId);
+                        if (!newMessages.length) { noNew++; continue; }
+                        await new Promise(r => setTimeout(r, 300));
+                        const detail = await API.fetchDetail(c.chatroomId);
+                        const charName = detail.story?.name || detail.character?.name || c.charName || 'Unknown';
+                        const now = new Date(); const dateSuffix = now.toISOString().slice(0, 10) + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0');
+                        const fileName = `${charName}_이어서_${dateSuffix}`;
+                        const type = (fmt === 'json') ? 'json' : 'txt';
+                        if (type === 'json') {
+                            await Platform.download(Cleaner.buildJson({ messages: newMessages, incremental: true, previouslySaved: c.totalSaved }), `${fileName}.json`, 'application/json');
+                        } else {
+                            const txt = Cleaner.buildTxt(newMessages, charName);
+                            await Platform.download(txt, `${fileName}.txt`, 'text/plain');
+                        }
+                        const newLastMsg = newMessages[newMessages.length - 1];
+                        History.add({ type, charName, chatroomId: c.chatroomId, messageCount: newMessages.length, incremental: true, lastMessageId: newLastMsg._id });
+                        History.setCursor(c.chatroomId, { lastMessageId: newLastMsg._id, totalSaved: c.totalSaved + newMessages.length, savedAt: new Date().toISOString(), charName });
+                        success++;
+                    } catch (e) {
+                        console.error(e);
+                        fail++;
+                        if (e.message === '네트워크 오류') { this.updateStatus(`⚠ 인터넷 연결 끊김. 나머지 ${cursors.length - i - 1}개 건너뜀.`, 'error'); break; }
+                        if (e.message === 'RATE_LIMITED') { this.updateStatus('⚠ 서버 제한. 30초 대기 후 재개...', 'loading'); await new Promise(r => setTimeout(r, 30000)); }
                     }
-                    const newLastMsg = newMessages[newMessages.length - 1];
-                    History.add({ type, charName, chatroomId: c.chatroomId, messageCount: newMessages.length, incremental: true, lastMessageId: newLastMsg._id });
-                    History.setCursor(c.chatroomId, { lastMessageId: newLastMsg._id, totalSaved: c.totalSaved + newMessages.length, savedAt: new Date().toISOString(), charName });
-                    success++;
-                } catch (e) {
-                    console.error(e);
-                    fail++;
-                    if (e.message === '네트워크 오류') { this.updateStatus(`⚠ 인터넷 연결 끊김. 나머지 ${cursors.length - i - 1}개 건너뜀.`, 'error'); break; }
-                    if (e.message === 'RATE_LIMITED') { this.updateStatus('⚠ 서버 제한. 30초 대기 후 재개...', 'loading'); await new Promise(r => setTimeout(r, 30000)); }
+                    if (i < cursors.length - 1) await new Promise(r => setTimeout(r, 2000));
                 }
-                if (i < cursors.length - 1) await new Promise(r => setTimeout(r, 2000));
+                this.updateStatus(`일괄 저장 완료! (성공 ${success}, 새 메시지 없음 ${noNew}${fail ? `, 실패 ${fail}` : ''})`, success > 0 ? 'success' : 'info');
+                this.renderHistory();
+            } finally {
+                this._saveInProgress = false;
             }
-            this.updateStatus(`일괄 저장 완료! (성공 ${success}, 새 메시지 없음 ${noNew}${fail ? `, 실패 ${fail}` : ''})`, success > 0 ? 'success' : 'info');
-            this.renderHistory();
+        },
+
+        async processRecentChat(requestedTurnCount, type, clipResolve) {
+            const actionsEl = document.getElementById('hcd-current-actions');
+            const ctrlEl = document.getElementById('hcd-current-ctrl');
+            const ctrlText = document.getElementById('hcd-ctrl-text');
+            const ctrlSub = document.getElementById('hcd-ctrl-sub');
+            if (this._saveInProgress) {
+                if (clipResolve) clipResolve('');
+                this.updateStatus('다른 저장 작업이 진행 중입니다.', 'info');
+                return;
+            }
+
+            this._saveInProgress = true;
+            this._cancelToken = { cancelled: false };
+            if (actionsEl) actionsEl.style.display = 'none';
+            if (ctrlEl) ctrlEl.classList.add('active');
+
+            try {
+                const info = API.getUrlInfo();
+                if (!info) throw new Error('채팅방 정보를 찾을 수 없습니다.');
+                if (ctrlText) ctrlText.textContent = '채팅방 정보 확인 중...';
+                if (ctrlSub) ctrlSub.textContent = '';
+
+                const detail = await API.fetchDetail(info.chatroomId);
+                if (this._cancelToken.cancelled) throw new Error('USER_CANCELLED');
+                const charName = detail.story?.name || detail.character?.name || 'Unknown';
+                if (ctrlText) ctrlText.textContent = `${charName} · 최근 ${requestedTurnCount}턴 수집 중...`;
+
+                const result = await API.fetchRecentTurns(
+                    info.chatroomId,
+                    requestedTurnCount,
+                    this._cancelToken,
+                    (turns, checked, requests) => {
+                        if (ctrlText) ctrlText.textContent = `${charName} · ${turns.toLocaleString()}/${requestedTurnCount.toLocaleString()}턴 수집`;
+                        if (ctrlSub) ctrlSub.textContent = `${checked.toLocaleString()}개 메시지 확인 · ${requests}회 요청`;
+                    }
+                );
+
+                if (this._cancelToken.cancelled) throw new Error('USER_CANCELLED');
+                if (!result.turnCount) throw new Error('저장할 수 있는 완성된 유저→AI 턴이 없습니다.');
+
+                const messages = result.messages;
+                const actualTurnCount = result.turnCount;
+                if (ctrlText) ctrlText.textContent = '파일 생성 중...';
+                if (ctrlSub) ctrlSub.textContent = `${actualTurnCount.toLocaleString()}턴 · ${messages.length.toLocaleString()}개 메시지 · ${result.requestCount}회 요청`;
+
+                const now = new Date();
+                const dateSuffix = now.toISOString().slice(0, 10) + '_' + String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+                const fileName = `${charName}_최근${actualTurnCount}턴_${dateSuffix}`;
+                let clipText = null;
+
+                if (type === 'html') {
+                    const userNote = detail.story?.userNote?.content || detail.character?.userNote?.content || null;
+                    if (this._cancelToken.cancelled) throw new Error('USER_CANCELLED');
+                    await Platform.download(Generator.buildHtml(charName, messages, userNote), `${fileName}.html`, 'text/html');
+                } else if (type === 'json') {
+                    const { story, character, ...metaNoNote } = detail;
+                    const cleanMeta = { ...metaNoNote };
+                    if (story) { const { userNote, ...rest } = story; cleanMeta.story = rest; }
+                    if (character) { const { userNote, ...rest } = character; cleanMeta.character = rest; }
+                    clipText = Cleaner.buildJson({
+                        meta: cleanMeta,
+                        messages,
+                        recent: true,
+                        requestedTurnCount,
+                        turnCount: actualTurnCount,
+                    });
+                    if (this._cancelToken.cancelled) throw new Error('USER_CANCELLED');
+                    await Platform.download(clipText, `${fileName}.json`, 'application/json');
+                } else {
+                    clipText = Cleaner.buildTxt(messages, charName);
+                    if (this._cancelToken.cancelled) throw new Error('USER_CANCELLED');
+                    await Platform.download(clipText, `${fileName}.txt`, 'text/plain');
+                }
+
+                let clipStatus = '';
+                if (clipText && Clipboard.isOn()) {
+                    if (clipResolve) { clipResolve(clipText); clipStatus = ' + 클립보드 복사됨'; }
+                    else { const ok = await Clipboard.copy(clipText); if (ok) clipStatus = ' + 클립보드 복사됨'; }
+                } else if (clipResolve) {
+                    clipResolve('');
+                }
+
+                History.add({
+                    type,
+                    charName,
+                    chatroomId: info.chatroomId,
+                    messageCount: messages.length,
+                    turnCount: actualTurnCount,
+                    requestedTurnCount,
+                    recent: true,
+                });
+
+                const shortage = actualTurnCount < requestedTurnCount
+                    ? `요청 ${requestedTurnCount.toLocaleString()}턴 중 존재하는 ${actualTurnCount.toLocaleString()}턴을 저장했습니다.`
+                    : `${actualTurnCount.toLocaleString()}턴을 저장했습니다.`;
+                this.updateStatus(`최근 저장 완료! ${shortage} (${messages.length.toLocaleString()}개 메시지${clipStatus})`, 'success');
+            } catch (e) {
+                if (clipResolve) clipResolve('');
+                if (e.message === 'USER_CANCELLED') this.updateStatus('다운로드가 취소되었습니다. 파일과 기록을 남기지 않았습니다.', 'info');
+                else if (e.message === '네트워크 오류') this.updateStatus('⚠ 인터넷 연결이 끊겼습니다. 네트워크 확인 후 다시 시도해주세요.', 'error');
+                else if (e.message === 'RATE_LIMITED') this.updateStatus('⚠ 서버 요청 제한에 걸렸습니다. 잠시 후 다시 시도해주세요.', 'error');
+                else if (e.message === '로그인이 필요합니다.') this.updateStatus('⚠ 로그인이 만료되었습니다. 페이지를 새로고침해주세요.', 'error');
+                else { console.error(e); this.updateStatus('⚠ 최근 저장 실패: ' + e.message, 'error'); }
+            } finally {
+                if (clipResolve) clipResolve('');
+                if (this._pendingClipResolve === clipResolve) this._pendingClipResolve = null;
+                this._cancelToken = null;
+                this._saveInProgress = false;
+                if (actionsEl) actionsEl.style.display = '';
+                if (ctrlEl) ctrlEl.classList.remove('active');
+            }
         },
 
         async processCurrentChat(type, clipResolve) {
@@ -1644,6 +1916,12 @@ CrackSafe 에 ePub 기능 추가
             const ctrlEl = document.getElementById('hcd-current-ctrl');
             const ctrlText = document.getElementById('hcd-ctrl-text');
             const ctrlSub = document.getElementById('hcd-ctrl-sub');
+            if (this._saveInProgress) {
+                if (clipResolve) clipResolve('');
+                this.updateStatus('다른 저장 작업이 진행 중입니다.', 'info');
+                return;
+            }
+            this._saveInProgress = true;
             try {
                 const info = API.getUrlInfo(); if (!info) throw new Error('채팅방 정보를 찾을 수 없습니다.');
                 this._cancelToken = { cancelled: false };
@@ -1693,13 +1971,22 @@ CrackSafe 에 ePub 기능 추가
                 if (e.message === 'USER_CANCELLED') { this.updateStatus('다운로드가 취소되었습니다.', 'info'); }
                 else { console.error(e); this.updateStatus(e.message, 'error'); }
             } finally {
+                if (clipResolve) clipResolve('');
+                if (this._pendingClipResolve === clipResolve) this._pendingClipResolve = null;
                 this._cancelToken = null;
+                this._saveInProgress = false;
                 if (actionsEl) actionsEl.style.display = '';
                 if (ctrlEl) ctrlEl.classList.remove('active');
             }
         },
 
         async processIncrementalSave(chatroomId, format, clipResolve) {
+            if (this._saveInProgress) {
+                if (clipResolve) clipResolve('');
+                this.updateStatus('다른 저장 작업이 진행 중입니다.', 'info');
+                return;
+            }
+            this._saveInProgress = true;
             try {
                 if (!chatroomId) throw new Error('채팅방 정보를 찾을 수 없습니다.');
                 const cursor = History.getCursor(chatroomId);
@@ -1743,6 +2030,10 @@ CrackSafe 에 ePub 기능 추가
                 else if (e.message === 'RATE_LIMITED') this.updateStatus('⚠ 서버 요청 제한에 걸렸습니다. 잠시 후 다시 시도해주세요.', 'error');
                 else if (e.message === '로그인이 필요합니다.') this.updateStatus('⚠ 로그인이 만료되었습니다. 페이지를 새로고침해주세요.', 'error');
                 else this.updateStatus('⚠ 이어서 저장 실패: ' + e.message, 'error');
+            } finally {
+                if (clipResolve) clipResolve('');
+                if (this._pendingClipResolve === clipResolve) this._pendingClipResolve = null;
+                this._saveInProgress = false;
             }
         }
     };
