@@ -49,6 +49,7 @@
   const APP = {
     name: '🪽위시 RP Manager',
     version: '0.13.7',
+    customVersion: '0.1.1',
     dbName: 'RPContextManagerDB',
     dbVersion: 2,
     storeName: 'rooms',
@@ -82,6 +83,14 @@
     uiPrefsKey: 'RPCM_ui_preferences_v1',
     logRecallRevision: 9, // v0.12.59: 기존 활성 주입도 UTF-8 요청 안전선으로 로그를 다시 선정
   };
+
+  const FIREBASE_BACKUP_SETTINGS_KEY = 'RPCM_firebase_backup_settings_v1';
+  const FIREBASE_BACKUP_SESSION_KEY = 'RPCM_firebase_backup_session_v1';
+  const FIREBASE_BACKUP_DEFAULTS = Object.freeze({
+    apiKey:'AIzaSyCQrPub65vN9LVDCO9Owfcm5ql5DP51hjA',
+    databaseURL:'https://eluocnc-gg.firebaseio.com',
+    email:'eun033@naver.com',
+  });
 
   // Wish AI Manager가 Crack 탭으로 전달하는 외부 결과 브리지입니다.
   const WISH_RP_BRIDGE_NAME = 'WISH_RP_BRIDGE_V1';
@@ -8806,6 +8815,282 @@ ${dialogueText}`;
     return [4, 6, 9, 11].includes(normalizedMonth) ? 30 : 31;
   }
 
+  function readGmJson(key, fallback = null) {
+    try {
+      const raw = GM_getValue(key, '');
+      if (!raw) return fallback;
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch (_) { return fallback; }
+  }
+
+  function writeGmJson(key, value) {
+    try {
+      if (value == null) GM_deleteValue(key);
+      else GM_setValue(key, JSON.stringify(value));
+      return true;
+    } catch (_) { return false; }
+  }
+
+  function normalizeFirebaseDatabaseUrl(value) {
+    return String(value || '').trim().replace(/\/+$/, '');
+  }
+
+  function loadFirebaseBackupSettings() {
+    const saved = readGmJson(FIREBASE_BACKUP_SETTINGS_KEY, {}) || {};
+    return {
+      apiKey:String(saved.apiKey || FIREBASE_BACKUP_DEFAULTS.apiKey).trim(),
+      databaseURL:normalizeFirebaseDatabaseUrl(saved.databaseURL || FIREBASE_BACKUP_DEFAULTS.databaseURL),
+      email:String(saved.email || FIREBASE_BACKUP_DEFAULTS.email).trim(),
+    };
+  }
+
+  function saveFirebaseBackupSettings(settings) {
+    const next = {
+      apiKey:String(settings?.apiKey || '').trim(),
+      databaseURL:normalizeFirebaseDatabaseUrl(settings?.databaseURL),
+      email:String(settings?.email || '').trim(),
+    };
+    writeGmJson(FIREBASE_BACKUP_SETTINGS_KEY, next);
+    return next;
+  }
+
+  function validateFirebaseBackupSettings(settings) {
+    if (!settings?.apiKey || !settings?.databaseURL || !settings?.email) throw new Error('Firebase API 키, Realtime Database URL, 로그인 이메일을 모두 입력해 주세요.');
+    let url;
+    try { url = new URL(settings.databaseURL); }
+    catch (_) { throw new Error('Realtime Database URL 형식이 올바르지 않습니다.'); }
+    if (url.protocol !== 'https:') throw new Error('Realtime Database URL은 HTTPS 주소여야 합니다.');
+    if (!/(^|\.)(firebaseio\.com|firebasedatabase\.app)$/i.test(url.hostname)) throw new Error('Firebase Realtime Database URL을 입력해 주세요.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.email)) throw new Error('Firebase 로그인 이메일 형식이 올바르지 않습니다.');
+    return settings;
+  }
+
+  function firebaseErrorMessage(response, fallback = 'Firebase 요청에 실패했습니다.') {
+    let parsed = null;
+    try { parsed = JSON.parse(String(response?.text || '')); } catch (_) {}
+    const rawCode = String(parsed?.error?.message || parsed?.error || '').trim();
+    const code = rawCode.toUpperCase().replace(/[\s-]+/g, '_');
+    const labels = {
+      INVALID_LOGIN_CREDENTIALS:'이메일 또는 비밀번호가 올바르지 않습니다.',
+      EMAIL_NOT_FOUND:'등록되지 않은 Firebase 사용자입니다.',
+      INVALID_PASSWORD:'비밀번호가 올바르지 않습니다.',
+      USER_DISABLED:'비활성화된 Firebase 사용자입니다.',
+      OPERATION_NOT_ALLOWED:'Firebase Authentication에서 이메일/비밀번호 로그인을 활성화해 주세요.',
+      PERMISSION_DENIED:'Realtime Database 보안 규칙이 이 계정의 접근을 허용하지 않습니다.',
+      TOKEN_EXPIRED:'Firebase 로그인 세션이 만료되었습니다.',
+    };
+    return labels[code] || (rawCode ? `${fallback} (${rawCode})` : `${fallback}${response?.status ? ` (${response.status})` : ''}`);
+  }
+
+  function firebaseSessionMatches(session, settings) {
+    return !!session && String(session.apiKey || '') === settings.apiKey && normalizeFirebaseDatabaseUrl(session.databaseURL) === settings.databaseURL && String(session.email || '').toLowerCase() === settings.email.toLowerCase();
+  }
+
+  async function signInFirebaseBackup(settings, password) {
+    validateFirebaseBackupSettings(settings);
+    if (!password) throw new Error('Firebase 계정 비밀번호를 입력해 주세요.');
+    const response = await aiHttpRequest(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(settings.apiKey)}`, {
+      method:'POST', headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ email:settings.email, password:String(password), returnSecureToken:true }), timeout:30000,
+    });
+    if (!response.ok) throw new Error(firebaseErrorMessage(response, 'Firebase 로그인에 실패했습니다.'));
+    let data;
+    try { data = JSON.parse(response.text); } catch (_) { throw new Error('Firebase 로그인 응답을 해석하지 못했습니다.'); }
+    const session = {
+      apiKey:settings.apiKey, databaseURL:settings.databaseURL, email:settings.email,
+      idToken:String(data.idToken || ''), refreshToken:String(data.refreshToken || ''), localId:String(data.localId || ''),
+      expiresAt:Date.now() + Math.max(60, Number(data.expiresIn) || 3600) * 1000,
+    };
+    if (!session.idToken || !session.refreshToken || !session.localId) throw new Error('Firebase 로그인 토큰이 응답에 없습니다.');
+    writeGmJson(FIREBASE_BACKUP_SESSION_KEY, session);
+    return session;
+  }
+
+  async function refreshFirebaseBackupSession(settings, session) {
+    if (!firebaseSessionMatches(session, settings) || !session?.refreshToken) throw new Error('Firebase 로그인이 필요합니다.');
+    const response = await aiHttpRequest(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(settings.apiKey)}`, {
+      method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+      body:`grant_type=refresh_token&refresh_token=${encodeURIComponent(session.refreshToken)}`, timeout:30000,
+    });
+    if (!response.ok) {
+      writeGmJson(FIREBASE_BACKUP_SESSION_KEY, null);
+      throw new Error(firebaseErrorMessage(response, 'Firebase 로그인 갱신에 실패했습니다.'));
+    }
+    let data;
+    try { data = JSON.parse(response.text); } catch (_) { throw new Error('Firebase 로그인 갱신 응답을 해석하지 못했습니다.'); }
+    const next = {
+      ...session, idToken:String(data.id_token || ''), refreshToken:String(data.refresh_token || session.refreshToken),
+      localId:String(data.user_id || session.localId), expiresAt:Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
+    };
+    if (!next.idToken) throw new Error('Firebase 갱신 토큰 응답이 비어 있습니다.');
+    writeGmJson(FIREBASE_BACKUP_SESSION_KEY, next);
+    return next;
+  }
+
+  async function getFirebaseBackupSession(settings, forceRefresh = false) {
+    let session = readGmJson(FIREBASE_BACKUP_SESSION_KEY, null);
+    if (!firebaseSessionMatches(session, settings)) return null;
+    if (!forceRefresh && session.idToken && Number(session.expiresAt || 0) > Date.now() + 90000) return session;
+    try { return await refreshFirebaseBackupSession(settings, session); }
+    catch (_) { return null; }
+  }
+
+  async function firebaseDatabaseRequest(settings, method, path, body = undefined, retry = true) {
+    let session = await getFirebaseBackupSession(settings);
+    if (!session) throw new Error('Firebase 로그인이 필요합니다. 서버 백업 설정에서 다시 연결해 주세요.');
+    const safePath = String(path || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    const silent = String(method || '').toUpperCase() === 'GET' ? '' : '&print=silent';
+    const url = `${settings.databaseURL}/${safePath}.json?auth=${encodeURIComponent(session.idToken)}${silent}`;
+    const response = await aiHttpRequest(url, {
+      method, headers:{ 'Content-Type':'application/json' }, body:body === undefined ? undefined : JSON.stringify(body), timeout:120000,
+    });
+    if (!response.ok && retry && [401,403].includes(Number(response.status))) {
+      const refreshed = await getFirebaseBackupSession(settings, true);
+      if (refreshed) return firebaseDatabaseRequest(settings, method, path, body, false);
+    }
+    if (!response.ok) throw new Error(firebaseErrorMessage(response, 'Firebase Database 요청에 실패했습니다.'));
+    if (!String(response.text || '').trim()) return null;
+    try { return JSON.parse(response.text); } catch (_) { throw new Error('Firebase Database 응답을 해석하지 못했습니다.'); }
+  }
+
+  async function openFirebaseBackupSettingsDialog(requireLogin = false) {
+    return new Promise(resolve => {
+      document.querySelector('#rpcm-import-backdrop')?.remove();
+      const saved = loadFirebaseBackupSettings();
+      const session = readGmJson(FIREBASE_BACKUP_SESSION_KEY, null);
+      const connected = firebaseSessionMatches(session, saved) && !!session?.refreshToken;
+      const backdrop = document.createElement('div');
+      backdrop.id = 'rpcm-import-backdrop';
+      backdrop.innerHTML = `
+        <div class="rpcm-import-dialog rpcm-firebase-dialog" role="dialog" aria-modal="true" aria-label="Firebase 서버 백업 설정">
+          <div class="rpcm-lib-dialog-head"><div><div class="rpcm-lib-dialog-title">Firebase 서버 백업 설정</div><div class="rpcm-lib-dialog-desc">Realtime Database와 이메일/비밀번호 인증을 사용합니다. 비밀번호는 저장하지 않고 로그인 토큰만 이 브라우저에 보관합니다.</div></div><button type="button" class="rpcm-lib-close" aria-label="닫기">✕</button></div>
+          <div class="rpcm-import-list rpcm-firebase-settings">
+            <label><span>Web API Key</span><input id="rpcm-firebase-api-key" autocomplete="off" value="${esc(saved.apiKey)}" placeholder="AIza..."></label>
+            <label><span>Realtime Database URL</span><input id="rpcm-firebase-db-url" autocomplete="off" value="${esc(saved.databaseURL)}" placeholder="https://project-default-rtdb.asia-southeast1.firebasedatabase.app"></label>
+            <label><span>로그인 이메일</span><input id="rpcm-firebase-email" type="email" autocomplete="username" value="${esc(saved.email)}" placeholder="backup@example.com"></label>
+            <label><span>비밀번호 ${connected ? '(재로그인할 때만 입력)' : ''}</span><input id="rpcm-firebase-password" type="password" autocomplete="current-password" placeholder="Firebase Authentication 비밀번호"></label>
+            <div class="rpcm-import-note">Firebase Console에서 Authentication → Email/Password를 활성화하고 사용자를 만든 뒤, Realtime Database 규칙을 <code>rpManagerBackupMeta/$uid</code>와 <code>rpManagerBackupData/$uid</code>에서 <code>$uid === auth.uid</code>로 제한하세요.</div>
+            <div class="rpcm-firebase-state">${connected ? `저장된 로그인 세션 있음 · ${esc(saved.email)}` : requireLogin ? '서버 백업을 사용하려면 연결해 주세요.' : '아직 연결되지 않았습니다.'}</div>
+          </div>
+          <div class="rpcm-lib-dialog-actions"><button type="button" class="rpcm-btn secondary" data-firebase-act="logout" ${connected ? '' : 'disabled'}>로그아웃</button><button type="button" class="rpcm-btn secondary" data-firebase-act="cancel">취소</button><button type="button" class="rpcm-btn primary" data-firebase-act="connect">저장 후 연결</button></div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const status = backdrop.querySelector('.rpcm-firebase-state');
+      const connect = backdrop.querySelector('[data-firebase-act="connect"]');
+      const close = value => { backdrop.remove(); resolve(value); };
+      backdrop._rpcmClose = () => close(false);
+      backdrop.querySelector('.rpcm-lib-close').onclick = () => close(false);
+      backdrop.querySelector('[data-firebase-act="cancel"]').onclick = () => close(false);
+      backdrop.onclick = event => { if (event.target === backdrop) close(false); };
+      backdrop.querySelector('[data-firebase-act="logout"]').onclick = () => {
+        writeGmJson(FIREBASE_BACKUP_SESSION_KEY, null);
+        status.textContent = '로그아웃했습니다. 다시 연결하려면 비밀번호를 입력하세요.';
+        backdrop.querySelector('[data-firebase-act="logout"]').disabled = true;
+      };
+      connect.onclick = async () => {
+        const settings = {
+          apiKey:backdrop.querySelector('#rpcm-firebase-api-key').value,
+          databaseURL:backdrop.querySelector('#rpcm-firebase-db-url').value,
+          email:backdrop.querySelector('#rpcm-firebase-email').value,
+        };
+        const password = backdrop.querySelector('#rpcm-firebase-password').value;
+        try {
+          validateFirebaseBackupSettings(settings);
+          connect.disabled = true; status.textContent = 'Firebase에 연결하는 중…';
+          const next = saveFirebaseBackupSettings(settings);
+          let nextSession = await getFirebaseBackupSession(next);
+          if (!nextSession || password) nextSession = await signInFirebaseBackup(next, password);
+          await firebaseDatabaseRequest(next, 'GET', `rpManagerBackupMeta/${nextSession.localId}`);
+          notify('Firebase 서버 백업 연결 완료', 'success');
+          close(true);
+        } catch (error) {
+          status.textContent = `연결 실패 · ${error.message}`;
+          status.classList.add('error'); connect.disabled = false;
+        }
+      };
+    });
+  }
+
+  async function ensureFirebaseBackupReady() {
+    let settings = loadFirebaseBackupSettings();
+    let valid = true;
+    try { validateFirebaseBackupSettings(settings); } catch (_) { valid = false; }
+    let session = valid ? await getFirebaseBackupSession(settings) : null;
+    if (!valid || !session) {
+      const connected = await openFirebaseBackupSettingsDialog(true);
+      if (!connected) return null;
+      settings = loadFirebaseBackupSettings();
+      session = await getFirebaseBackupSession(settings);
+    }
+    return session ? { settings, session } : null;
+  }
+
+  async function buildFullBackupPayload() {
+    const [rooms, characterLibraries] = await Promise.all([getAllRooms(), getAllCharacterLibraries()]);
+    return { _rpContextManagerBackup:true, version:APP.version, customVersion:APP.customVersion, exportedAt:nowIso(), rooms, characterLibraries };
+  }
+
+  async function uploadFullBackupToFirebase(payload, label = '') {
+    const ready = await ensureFirebaseBackupReady();
+    if (!ready) return null;
+    const { settings, session } = ready;
+    const backupId = `B${Date.now().toString(36)}_${Math.random().toString(36).slice(2,8)}`;
+    const meta = {
+      id:backupId, label:String(label || '').trim().slice(0, 80) || `전체 백업 ${new Date().toLocaleString('ko-KR')}`,
+      createdAt:payload.exportedAt || nowIso(), version:String(payload.version || ''), customVersion:String(payload.customVersion || ''),
+      roomCount:Array.isArray(payload.rooms) ? payload.rooms.length : 0,
+      libraryCount:Array.isArray(payload.characterLibraries) ? payload.characterLibraries.length : 0,
+    };
+    await firebaseDatabaseRequest(settings, 'PATCH', '', {
+      [`rpManagerBackupMeta/${session.localId}/${backupId}`]:meta,
+      [`rpManagerBackupData/${session.localId}/${backupId}`]:payload,
+    });
+    return meta;
+  }
+
+  async function listFirebaseBackups() {
+    const ready = await ensureFirebaseBackupReady();
+    if (!ready) return null;
+    const raw = await firebaseDatabaseRequest(ready.settings, 'GET', `rpManagerBackupMeta/${ready.session.localId}`);
+    const items = Object.entries(raw || {}).map(([id, value]) => ({ id, ...(value && typeof value === 'object' ? value : {}) }));
+    items.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return { ...ready, items };
+  }
+
+  async function deleteFirebaseBackup(settings, session, backupId) {
+    const id = String(backupId || '').trim();
+    if (!id || !/^B[a-z0-9_]+$/i.test(id)) throw new Error('삭제할 서버 백업 ID가 올바르지 않습니다.');
+    await firebaseDatabaseRequest(settings, 'PATCH', '', {
+      [`rpManagerBackupMeta/${session.localId}/${id}`]:null,
+      [`rpManagerBackupData/${session.localId}/${id}`]:null,
+    });
+  }
+
+  function openFirebaseBackupListDialog(items) {
+    return new Promise(resolve => {
+      document.querySelector('#rpcm-import-backdrop')?.remove();
+      const backdrop = document.createElement('div');
+      backdrop.id = 'rpcm-import-backdrop';
+      backdrop.innerHTML = `
+        <div class="rpcm-import-dialog" role="dialog" aria-modal="true" aria-label="서버 백업 목록">
+          <div class="rpcm-lib-dialog-head"><div><div class="rpcm-lib-dialog-title">서버 백업 목록</div><div class="rpcm-lib-dialog-desc">Firebase에 저장된 전체 백업을 선택하면 기존 백업 불러오기 화면으로 이어집니다.</div></div><button type="button" class="rpcm-lib-close" aria-label="닫기">✕</button></div>
+          <div class="rpcm-import-list">
+            ${items.length ? items.map((item, index) => `<label class="rpcm-import-row"><input type="radio" name="rpcm-server-backup" value="${esc(item.id)}" ${index === 0 ? 'checked' : ''}><span><strong>${esc(item.label || '이름 없는 백업')}</strong><small>${esc(item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '생성 시각 미상')} · RP ${formatCount(item.roomCount)}개 · 설정집 ${formatCount(item.libraryCount)}개 · v${esc(item.version || '?')}${item.customVersion ? ` (custom v${esc(item.customVersion)})` : ''}</small></span></label>`).join('') : '<div class="rpcm-empty">서버에 저장된 백업이 없습니다.</div>'}
+          </div>
+          <div class="rpcm-lib-dialog-actions"><button type="button" class="rpcm-btn secondary" data-server-list="settings">설정</button><button type="button" class="rpcm-btn warn" data-server-list="delete" ${items.length ? '' : 'disabled'}>선택 백업 삭제</button><button type="button" class="rpcm-btn secondary" data-server-list="cancel">취소</button><button type="button" class="rpcm-btn primary" data-server-list="load" ${items.length ? '' : 'disabled'}>선택 백업 불러오기</button></div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const close = value => { backdrop.remove(); resolve(value); };
+      backdrop._rpcmClose = () => close(null);
+      backdrop.querySelector('.rpcm-lib-close').onclick = () => close(null);
+      backdrop.querySelector('[data-server-list="cancel"]').onclick = () => close(null);
+      const selectedId = () => backdrop.querySelector('input[name="rpcm-server-backup"]:checked')?.value || '';
+      backdrop.querySelector('[data-server-list="settings"]').onclick = () => close({ action:'settings' });
+      backdrop.querySelector('[data-server-list="delete"]').onclick = () => close({ action:'delete', id:selectedId() });
+      backdrop.querySelector('[data-server-list="load"]').onclick = () => close({ action:'load', id:selectedId() });
+      backdrop.onclick = event => { if (event.target === backdrop) close(null); };
+    });
+  }
   function openLogDateNormalizerDialog(room) {
     return new Promise(resolve => {
       const log = (room.slots || []).find(s => s.id === 'logSummary');
@@ -12345,6 +12630,51 @@ ${dialogueText}`;
     return next;
   }
 
+  async function importBackupPayload(room, data) {
+    if (!data?._rpContextManagerBackup || !Array.isArray(data.rooms)) throw new Error('🪽위시 RP Manager 백업 데이터가 아닙니다.');
+    const [existingRooms, existingLibraries] = await Promise.all([getAllRooms(), getAllCharacterLibraries()]);
+    const choice = await openBackupImportDialog(data, existingRooms, existingLibraries);
+    if (!choice) return false;
+    const selectedRoomIds = new Set(choice.roomIds.map(String));
+    const selectedLibraryIds = new Set(choice.libraryIds.map(String));
+    if (choice.mode === 'clone-current') {
+      if (room.pending) throw new Error('현재 방의 주입을 먼저 해제해 주세요.');
+      if (selectedRoomIds.size !== 1) throw new Error('현재 방으로 복사할 RP를 하나만 선택해 주세요.');
+      const sourceRoom = data.rooms.find(item => item?.chatId && selectedRoomIds.has(String(item.chatId)));
+      if (!sourceRoom) throw new Error('선택한 RP 데이터를 백업에서 찾지 못했습니다.');
+      const sourceLabel = String(sourceRoom.label || `RP ${shortId(sourceRoom.chatId)}`);
+      if (!confirm(`‘${sourceLabel}’의 RP Manager 전체 데이터를 현재 방에 복사할까요?\n현재 방의 기존 RP Manager 데이터는 덮어씁니다.`)) return false;
+      if (Array.isArray(data.characterLibraries)) {
+        for (const lib of data.characterLibraries) {
+          if (!lib?.scopeId || !selectedLibraryIds.has(String(lib.scopeId))) continue;
+          await saveCharacterLibrary(lib);
+        }
+      }
+      const clonedRoom = cloneBackupRoomIntoCurrent(sourceRoom, room);
+      try { localStorage.removeItem(pendingBackupKey(clonedRoom.chatId)); } catch (_) {}
+      await saveRoom(clonedRoom);
+      state.currentRoom = clonedRoom;
+      notify(`현재 방으로 RP Manager 전체 복사 완료 · ${backupRoomSummary(clonedRoom)}`, 'success', 5500);
+      renderModalIfOpen();
+      return true;
+    }
+    for (const backupRoom of data.rooms) {
+      if (!backupRoom?.chatId || !selectedRoomIds.has(String(backupRoom.chatId))) continue;
+      backupRoom.pending = null;
+      normalizeRoomSlots(backupRoom);
+      await saveRoom(backupRoom);
+    }
+    if (Array.isArray(data.characterLibraries)) {
+      for (const lib of data.characterLibraries) {
+        if (!lib?.scopeId || !selectedLibraryIds.has(String(lib.scopeId))) continue;
+        await saveCharacterLibrary(lib);
+      }
+    }
+    await ensureCurrentRoom(getChatIdFromPath(), true);
+    notify(`백업 복원 완료 · RP ${selectedRoomIds.size}개 · 설정집 ${selectedLibraryIds.size}개`, 'success', 4500);
+    renderModalIfOpen();
+    return true;
+  }
   function openBackupImportDialog(data, existingRooms = [], existingLibraries = []) {
     return new Promise(resolve => {
       document.querySelector('#rpcm-import-backdrop')?.remove();
@@ -13228,7 +13558,8 @@ ${dialogueText}`;
 
   function updateQuickInjectionTrigger() {
     const desktopQuickTriggerVisible = loadUiPrefs().desktopQuickTriggerVisible !== false;
-    const shouldShow = desktopQuickTriggerVisible && !!state.currentChatId && !!state.currentRoom?.pending && !isMobileManagerLayout() && !state.modal && !state.quickPanel;
+    const mobileQuickTrigger = isMobileManagerLayout();
+    const shouldShow = (mobileQuickTrigger || desktopQuickTriggerVisible) && !!state.currentChatId && !!state.currentRoom?.pending?.verified && !state.modal && !state.quickPanel;
     let trigger = state.quickTrigger;
     if (!shouldShow) {
       if (trigger) trigger.hidden = true;
@@ -15703,6 +16034,8 @@ ${dialogueText}`;
       #rpcm-overlay{position:fixed;inset:0;z-index:9998;background:transparent;display:block;padding:0;pointer-events:none;font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}
       #rpcm-modal{position:relative;width:100%;max-height:calc(100vh - 140px);background:#181818;color:#eee;border:1px solid #3a3a3a;border-radius:16px;box-shadow:0 25px 80px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden}
       .rpcm-main-help-button{border-color:#454545!important;background:#262626!important;color:#ddd!important;font-weight:900}.rpcm-main-help-button:hover{border-color:#626262!important;background:#303030!important;color:#fff!important}.rpcm-main-help-panel{position:absolute;z-index:30;top:64px;right:16px;width:min(560px,calc(100% - 32px));max-height:calc(100% - 88px);box-sizing:border-box;overflow:auto;border:1px solid #3a3a3a;border-radius:14px;background:#1b1b1b;box-shadow:0 22px 60px rgba(0,0,0,.62);padding:18px}.rpcm-main-help-panel[hidden]{display:none!important}.rpcm-main-help-panel header{display:flex;align-items:center;gap:8px;margin-bottom:7px}.rpcm-main-help-panel h3{flex:1;margin:0;color:#eeeeee;font-size:16px}.rpcm-main-help-panel header button{border:0;background:transparent;color:#999;font-size:18px;cursor:pointer}.rpcm-main-help-row{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;padding:11px 0;border-bottom:1px solid #303030}.rpcm-main-help-row:last-child{border-bottom:0}.rpcm-main-help-row strong{color:#df75a7;font-size:10px}.rpcm-main-help-row span{color:#b8b8b8;font-size:10px;line-height:1.6}.rpcm-ai-context-report{margin:8px 0 0;border:1px solid #3d3840;border-radius:9px;background:#191719;overflow:hidden}.rpcm-ai-context-report>summary{display:flex;align-items:center;gap:10px;list-style:none;padding:9px 11px;cursor:pointer}.rpcm-ai-context-report>summary::-webkit-details-marker{display:none}.rpcm-ai-context-report>summary span{flex:1;color:#c9bec4;font-size:10px}.rpcm-ai-context-report>summary b{color:#df75a7;font-size:10px}.rpcm-ai-context-report>div{display:grid;gap:6px;padding:9px 11px;border-top:1px solid #342f32}.rpcm-ai-context-report p{margin:0;color:#9d9499;font-size:10px;line-height:1.5}.rpcm-ai-context-report p.error{color:#f0a0aa}.rpcm-ai-context-situation{display:grid;gap:4px;padding:9px 10px!important;border:1px solid #493b43;border-left:3px solid #df75a7!important;border-radius:7px;background:#211c1f}.rpcm-ai-context-situation strong{color:#e8c5d5}.rpcm-ai-context-situation span{color:#d2c7cc;line-height:1.65}.rpcm-import-row.is-protected{background:rgba(245,158,11,.05)}.rpcm-import-row.is-protected small{color:#b59a75}.rpcm-import-dialog .rpcm-lib-dialog-actions{flex-wrap:wrap}.rpcm-auto-inline-toggle{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:28px!important;height:28px!important;min-width:28px!important;padding:0!important;font-size:15px!important;line-height:1!important}
+      .rpcm-main-server-button{border-color:#37606a!important;background:#1b2b2f!important;color:#b8e2e8!important;font-size:12px!important;font-weight:850!important}.rpcm-main-server-button:hover{border-color:#5aa9b6!important;background:#254047!important;color:#fff!important}.rpcm-server-backup{border-color:#37606a!important;background:#1b2b2f!important;color:#b8e2e8!important}.rpcm-server-backup:hover{background:#254047!important;color:#fff!important}.rpcm-custom-version{color:#75c9d5;font-weight:800}
+      .rpcm-firebase-settings{display:grid;gap:12px}.rpcm-firebase-settings>label{display:grid;gap:6px}.rpcm-firebase-settings>label>span{color:#aaa;font-size:10px;font-weight:800}.rpcm-firebase-settings input{box-sizing:border-box;width:100%;border:1px solid #3b3b3b;border-radius:8px;background:#101010;color:#eee;padding:10px 11px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.rpcm-firebase-settings input:focus{outline:none;border-color:#5aa9b6;box-shadow:0 0 0 2px rgba(90,169,182,.13)}.rpcm-firebase-settings .rpcm-import-note{margin:2px -14px -2px;padding:11px 14px;line-height:1.55}.rpcm-firebase-settings code{color:#b8e2e8}.rpcm-firebase-state{padding:10px 11px;border:1px solid #33474b;border-radius:8px;background:#172124;color:#a9cdd3;font-size:10px;line-height:1.5}.rpcm-firebase-state.error{border-color:#6b3940;background:#26191b;color:#efadb5}
       .rpcm-ai-context-actions{display:flex!important;align-items:center;gap:8px!important;padding:0 0 4px!important;border:0!important}.rpcm-ai-context-actions span{flex:1;min-width:0;color:#81767c;font-size:9px}.rpcm-ai-context-refresh{flex:0 0 auto;border-color:#7a405d!important;background:#2d1d25!important;color:#f2b9d5!important}.rpcm-ai-context-refresh:hover{border-color:#b65784!important;background:#402331!important;color:#ffe3f0!important}.rpcm-ai-context-refresh:disabled{opacity:.55;cursor:wait}
       .rpcm-ai-context-raw{border:1px solid #433941;border-radius:7px;background:#121112;overflow:hidden}.rpcm-ai-context-raw>summary{padding:7px 8px;color:#caa8b8;font-size:9px;cursor:pointer}.rpcm-ai-context-raw pre{max-height:180px;margin:0;padding:8px;border-top:1px solid #372f34;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#a99ca3;font:9px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
       .rpcm-header{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #303030;background:#1d1d1d;cursor:grab;user-select:none}.rpcm-header.rpcm-dragging{cursor:grabbing}.rpcm-header button,.rpcm-header input{cursor:pointer}
@@ -15722,6 +16055,7 @@ ${dialogueText}`;
       .rpcm-enable{width:18px;height:18px;accent-color:#df6298}.rpcm-slot-name{font-size:13px;font-weight:750;flex:1 1 auto;min-width:0}.rpcm-slot.rpcm-slot-inline-retention .rpcm-slot-name{flex:1 1 auto}.rpcm-inline-retention{display:inline-flex;align-items:center;gap:5px;color:#888;font-size:10px;white-space:nowrap;cursor:default;flex:0 0 auto}.rpcm-inline-retention select{height:28px;border:1px solid #444;border-radius:7px;background:#232323;color:#eee;padding:0 7px;font:10px/1 inherit;cursor:pointer}.rpcm-slot-count{font-size:11px;color:#888}.rpcm-chevron{font-size:12px;color:#666}.rpcm-slot[open] .rpcm-chevron{transform:rotate(90deg)}
       .rpcm-edit{padding:0 12px 12px}.rpcm-title-input{width:100%;box-sizing:border-box;background:#111;color:#eee;border:1px solid #3b3b3b;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px}.rpcm-textarea{width:100%;box-sizing:border-box;min-height:160px;max-height:1200px;resize:vertical;background:#101010;color:#e6e6e6;border:1px solid #3b3b3b;border-radius:8px;padding:11px;font-size:13px;line-height:1.55;outline:none}.rpcm-textarea:focus,.rpcm-title-input:focus{border-color:#df6298;box-shadow:0 0 0 2px rgba(223,98,152,.16)}.rpcm-slot[data-slot-id="currentState"] .rpcm-textarea:focus,.rpcm-slot[data-slot-id="logSummary"] .rpcm-textarea:focus{overscroll-behavior:contain}.rpcm-slot.is-search-hit{border-color:#7b5a9b;box-shadow:0 0 0 2px rgba(155,125,227,.14)}
       .rpcm-editor-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}.rpcm-editor-action{border:1px solid #383838;background:#222;color:#999;border-radius:7px;padding:5px 8px;font-size:10px;cursor:pointer}.rpcm-editor-action:hover{color:#eee;background:#2d2d2d}.rpcm-editor-action:disabled{opacity:.38;cursor:default}.rpcm-editor-action.rpcm-focus-toggle{margin-left:auto;color:#d7a3bd;border-color:#5d3149}.rpcm-editor-hint{color:#666;font-size:10px}
+      .rpcm-editor-action.is-active{border-color:#5aa9b6;background:#20353a;color:#c8f0f5}.rpcm-bulk-replace{display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(120px,1fr) auto auto;align-items:center;gap:7px;margin:0 0 9px;padding:9px;border:1px solid #36545b;border-radius:9px;background:#172226}.rpcm-bulk-replace[hidden]{display:none!important}.rpcm-bulk-replace>span{color:#78aab3;font-weight:850}.rpcm-bulk-replace input{min-width:0;height:32px;box-sizing:border-box;border:1px solid #3c5960;border-radius:7px;background:#0f1517;color:#e6f3f5;padding:0 9px;font:11px/1.2 inherit;outline:none}.rpcm-bulk-replace input:focus{border-color:#5aa9b6;box-shadow:0 0 0 2px rgba(90,169,182,.14)}.rpcm-bulk-replace [data-replace-apply]{border-color:#477985;background:#20383d;color:#c9edf2}
       #rpcm-detached-backdrop{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.64);display:flex;align-items:center;justify-content:center;padding:3vh 3vw;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif}
       .rpcm-detached-editor{width:min(1800px,97vw);height:min(980px,95vh);min-height:560px;background:#181818;color:#eee;border:1px solid #70405a;border-radius:16px;box-shadow:0 35px 120px rgba(0,0,0,.8);display:flex;flex-direction:column;overflow:hidden}
       .rpcm-detached-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid #343034;background:#201b1e}.rpcm-detached-head-main{display:flex;align-items:baseline;gap:10px;min-width:0;flex:1}.rpcm-detached-head-main strong{font-size:15px}.rpcm-detached-head-main span{font-size:10px;color:#9c8591;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rpcm-detached-chars{font-size:10px;color:#999;white-space:nowrap}.rpcm-detached-save-state{font-size:10px;color:#777;white-space:nowrap}.rpcm-detached-save-state.is-dirty{color:#e7a5c5}
@@ -15735,7 +16069,7 @@ ${dialogueText}`;
       .rpcm-detached-foot{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid #303030;background:#1d1d1d}.rpcm-detached-note{flex:1;color:#777;font-size:10px}
       @media(max-width:900px){.rpcm-detached-editor{width:100vw;height:100vh;height:100dvh;height:var(--rpcm-vvh,100vh);min-height:0;max-width:none;max-height:none;border-radius:0}.rpcm-detached-layout{grid-template-columns:1fr}.rpcm-detached-nav{display:flex;border-right:0;border-bottom:1px solid #303030;overflow-x:auto;overflow-y:hidden;padding:6px;-webkit-overflow-scrolling:touch}.rpcm-detached-nav-item{width:auto;min-width:130px;grid-template-columns:28px minmax(80px,1fr)}.rpcm-detached-nav-timeline{flex:0 0 190px;margin:0 6px 0 0}.rpcm-detached-nav-timeline>.rpcm-detached-nav-item{width:100%;min-width:0}#rpcm-detached-backdrop{inset:auto 0 auto 0;top:var(--rpcm-vv-top,0px);height:var(--rpcm-vvh,100vh);padding:0}.rpcm-detached-main{-webkit-overflow-scrolling:touch}.rpcm-detached-foot{padding-bottom:calc(10px + env(safe-area-inset-bottom,0px))}.rpcm-detached-note{display:none}}
       .rpcm-pending{display:flex;gap:10px;align-items:center;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:11px;padding:11px 12px;margin-bottom:12px;color:#fbbf24;font-size:12px}.rpcm-pending strong{color:#fff}.rpcm-pending .rpcm-spacer{flex:1}
-      #rpcm-quick-trigger{position:fixed;z-index:2147483644;right:0;top:46%;display:flex;align-items:center;gap:6px;min-height:42px;padding:0 10px;border:1px solid #d85d93;border-right:0;border-radius:11px 0 0 11px;background:rgba(38,25,32,.96);color:#f4b5d2;box-shadow:0 8px 28px rgba(0,0,0,.42);font:700 11px/1 -apple-system,BlinkMacSystemFont,"Pretendard",sans-serif;cursor:pointer;backdrop-filter:blur(10px)}#rpcm-quick-trigger:hover{background:#3b2430;color:#fff}#rpcm-quick-trigger[hidden]{display:none!important}#rpcm-quick-trigger>span{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#22c55e;color:#0b2a16;font-size:11px}#rpcm-quick-trigger>b{font:inherit}#rpcm-quick-trigger>em{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:999px;background:#df6298;color:#fff;font-style:normal;font-size:10px}
+      #rpcm-quick-trigger{position:fixed;z-index:2147483644;right:0;top:46%;display:flex;align-items:center;gap:6px;min-height:42px;padding:0 10px;border:1px solid #d85d93;border-right:0;border-radius:11px 0 0 11px;background:rgba(38,25,32,.96);color:#f4b5d2;box-shadow:0 8px 28px rgba(0,0,0,.42);font:700 11px/1 -apple-system,BlinkMacSystemFont,"Pretendard",sans-serif;cursor:pointer;backdrop-filter:blur(10px);transform:translateX(calc(100% - 33px));transition:transform .18s ease,background .16s,color .16s;will-change:transform}#rpcm-quick-trigger[hidden]{display:none!important}#rpcm-quick-trigger>span{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#22c55e;color:#0b2a16;font-size:11px}#rpcm-quick-trigger>b{font:inherit}#rpcm-quick-trigger>em{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;border-radius:999px;background:#df6298;color:#fff;font-style:normal;font-size:10px}@media(hover:hover) and (pointer:fine){#rpcm-quick-trigger:hover,#rpcm-quick-trigger:focus-visible{transform:translateX(0);background:#3b2430;color:#fff}}
       #rpcm-quick-backdrop{position:fixed;inset:0;z-index:2147483646;font-family:-apple-system,BlinkMacSystemFont,"Pretendard",sans-serif;color:#eee}#rpcm-quick-backdrop .rpcm-quick-shade{position:absolute;inset:0;background:rgba(0,0,0,.48)}.rpcm-quick-panel{position:absolute;right:0;top:0;bottom:0;width:min(390px,94vw);display:flex;flex-direction:column;background:#181818;border-left:1px solid #4a3540;box-shadow:-24px 0 70px rgba(0,0,0,.58);overflow:hidden}.rpcm-quick-head{display:flex;align-items:center;gap:12px;padding:16px 15px;border-bottom:1px solid #303030;background:#1e1b1d}.rpcm-quick-head>div{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}.rpcm-quick-head strong{font-size:16px}.rpcm-quick-head span{font-size:11px;color:#999}.rpcm-quick-close{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border:1px solid #3b3b3b;border-radius:9px;background:#282828;color:#ddd;font-size:17px;cursor:pointer}.rpcm-quick-note{padding:10px 15px;border-bottom:1px solid #2c2c2c;background:#1b1b1b;color:#9a8b92;font-size:11px;line-height:1.55}.rpcm-quick-list{flex:1;min-height:0;overflow:auto;padding:10px 12px 18px;overscroll-behavior:contain}.rpcm-quick-group-title{padding:8px 4px 7px;color:#dba0bd;font-size:10px;font-weight:800}.rpcm-quick-group-title.is-muted{margin-top:8px;color:#777;border-top:1px solid #2d2d2d;padding-top:14px}.rpcm-quick-row{display:grid;grid-template-columns:22px auto minmax(0,1fr);gap:8px;align-items:center;min-height:54px;padding:7px 9px;margin-bottom:6px;border:1px solid #363636;border-radius:10px;background:#202020;cursor:pointer;transition:opacity .15s,border-color .15s,background .15s}.rpcm-quick-row:hover{border-color:#68475a;background:#272124}.rpcm-quick-row.is-off{opacity:.55;background:#191919}.rpcm-quick-row input{width:20px;height:20px;margin:0;accent-color:#df6298}.rpcm-quick-badge{display:inline-flex;align-items:center;padding:3px 6px;border:1px solid color-mix(in srgb,var(--rpcm-tone) 62%,#333);border-radius:999px;color:var(--rpcm-tone);font-size:9px;font-weight:800;white-space:nowrap}.rpcm-quick-copy{display:flex;flex-direction:column;gap:4px;min-width:0}.rpcm-quick-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#eee}.rpcm-quick-copy small{font-size:9px;color:#888}.rpcm-quick-empty{padding:28px 12px;color:#777;text-align:center;font-size:12px}.rpcm-quick-foot{display:flex;align-items:center;gap:7px;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));border-top:1px solid #303030;background:#1d1d1d}.rpcm-quick-foot>span{flex:1;min-width:0;color:#777;font-size:9px;line-height:1.4}.rpcm-quick-foot .rpcm-btn{min-height:40px;padding:8px 10px;font-size:11px}
       .rpcm-footer{position:absolute;bottom:0;left:0;right:0;display:flex;gap:9px;align-items:center;padding:12px 18px;background:rgba(24,24,24,.96);border-top:1px solid #333;backdrop-filter:blur(8px)}
       #rpcm-modal-wrap{position:fixed;top:64px;right:16px;display:flex;flex-direction:column;max-height:calc(100vh - 140px);width:min(820px,calc(100vw - 32px));pointer-events:auto}
@@ -15786,6 +16120,7 @@ ${dialogueText}`;
       html.rpcm-mobile-layout #rpcm-modal-wrap{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;max-height:none!important;pointer-events:auto!important}
       html.rpcm-mobile-layout #rpcm-modal{width:100%!important;height:100%!important;max-height:none!important;border:0!important;border-radius:0!important;box-shadow:none!important}
       html.rpcm-mobile-layout .rpcm-header{flex:0 0 auto;min-height:54px;padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;cursor:default}
+      html.rpcm-mobile-layout .rpcm-header{gap:6px}html.rpcm-mobile-layout .rpcm-header>div:first-child{flex:1;min-width:0}html.rpcm-mobile-layout .rpcm-header .rpcm-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}html.rpcm-mobile-layout .rpcm-header .rpcm-iconbtn{width:36px!important;min-width:36px!important;min-height:36px!important;height:36px!important;padding:0!important;font-size:13px!important}
       html.rpcm-mobile-layout .rpcm-title{font-size:16px}html.rpcm-mobile-layout .rpcm-sub{display:none}
       html.rpcm-mobile-layout .rpcm-body{flex:1 1 auto;min-height:0;padding:0 12px 16px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scroll-padding:70px 0 24px}
       html.rpcm-mobile-layout .rpcm-footer{position:static!important;flex:0 0 auto;padding:9px 12px calc(9px + env(safe-area-inset-bottom,0px));gap:8px;flex-wrap:nowrap}
@@ -15805,7 +16140,7 @@ ${dialogueText}`;
       html.rpcm-mobile-layout .rpcm-density-select,html.rpcm-mobile-layout .rpcm-desktop-quick-trigger-pref{display:none}
       html.rpcm-mobile-layout .rpcm-summary{padding:10px 12px;margin-bottom:10px}
       html.rpcm-mobile-layout .rpcm-pending{display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:10px;font-size:12px}html.rpcm-mobile-layout .rpcm-pending>div:first-child{grid-column:1/-1}html.rpcm-mobile-layout .rpcm-pending .rpcm-spacer{display:none}html.rpcm-mobile-layout .rpcm-pending .rpcm-btn{min-height:42px;padding:8px;font-size:12px}html.rpcm-mobile-layout .rpcm-pending .rpcm-btn:last-child{grid-column:1/-1}
-      html.rpcm-mobile-layout #rpcm-quick-trigger{display:none!important}html.rpcm-mobile-layout .rpcm-quick-panel{top:auto;left:0;right:0;bottom:0;width:100%;height:min(82vh,var(--rpcm-vvh,82vh));border-left:0;border-top:1px solid #59404d;border-radius:18px 18px 0 0;box-shadow:0 -24px 70px rgba(0,0,0,.64)}html.rpcm-mobile-layout .rpcm-quick-head{padding:12px 13px}html.rpcm-mobile-layout .rpcm-quick-note{padding:9px 13px;font-size:12px}html.rpcm-mobile-layout .rpcm-quick-list{padding:8px 10px 18px;-webkit-overflow-scrolling:touch}html.rpcm-mobile-layout .rpcm-quick-row{grid-template-columns:24px auto minmax(0,1fr);min-height:58px;padding:8px 9px}html.rpcm-mobile-layout .rpcm-quick-row input{width:22px;height:22px}html.rpcm-mobile-layout .rpcm-quick-copy strong{font-size:13px}html.rpcm-mobile-layout .rpcm-quick-copy small{font-size:11px}html.rpcm-mobile-layout .rpcm-quick-foot{flex-wrap:wrap}html.rpcm-mobile-layout .rpcm-quick-foot>span{flex-basis:100%;font-size:10px}html.rpcm-mobile-layout .rpcm-quick-foot .rpcm-btn{flex:1;min-height:44px;font-size:12px}
+      html.rpcm-mobile-layout #rpcm-quick-trigger:not([hidden]){display:flex!important;top:44%;min-height:52px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transform:translateX(calc(100% - 33px))}html.rpcm-mobile-layout #rpcm-quick-trigger[hidden]{display:none!important}html.rpcm-mobile-layout .rpcm-quick-panel{top:auto;left:0;right:0;bottom:0;width:100%;height:min(82vh,var(--rpcm-vvh,82vh));border-left:0;border-top:1px solid #59404d;border-radius:18px 18px 0 0;box-shadow:0 -24px 70px rgba(0,0,0,.64)}html.rpcm-mobile-layout .rpcm-quick-head{padding:12px 13px}html.rpcm-mobile-layout .rpcm-quick-note{padding:9px 13px;font-size:12px}html.rpcm-mobile-layout .rpcm-quick-list{padding:8px 10px 18px;-webkit-overflow-scrolling:touch}html.rpcm-mobile-layout .rpcm-quick-row{grid-template-columns:24px auto minmax(0,1fr);min-height:58px;padding:8px 9px}html.rpcm-mobile-layout .rpcm-quick-row input{width:22px;height:22px}html.rpcm-mobile-layout .rpcm-quick-copy strong{font-size:13px}html.rpcm-mobile-layout .rpcm-quick-copy small{font-size:11px}html.rpcm-mobile-layout .rpcm-quick-foot{flex-wrap:wrap}html.rpcm-mobile-layout .rpcm-quick-foot>span{flex-basis:100%;font-size:10px}html.rpcm-mobile-layout .rpcm-quick-foot .rpcm-btn{flex:1;min-height:44px;font-size:12px}
       html.rpcm-mobile-layout .rpcm-summary-head{display:flex;align-items:center;gap:8px}html.rpcm-mobile-layout .rpcm-summary-main strong{font-size:16px}
       html.rpcm-mobile-layout .rpcm-summary-side{margin:0 0 0 auto;flex-wrap:nowrap}html.rpcm-mobile-layout .rpcm-limit{display:none}
       html.rpcm-mobile-layout .rpcm-mobile-summary-toggle{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border:1px solid #3b3b3b;border-radius:8px;background:#242424;color:#aaa;font-size:16px}
@@ -15826,6 +16161,7 @@ ${dialogueText}`;
       html.rpcm-mobile-layout .rpcm-delete-btn{margin-left:0}html.rpcm-mobile-layout .rpcm-chevron{order:3;font-size:14px}
       html.rpcm-mobile-layout .rpcm-edit{padding:0 10px 11px}html.rpcm-mobile-layout .rpcm-fixed-note{font-size:12px}
       html.rpcm-mobile-layout .rpcm-editor-actions{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:7px;padding-bottom:2px;scrollbar-width:none}html.rpcm-mobile-layout .rpcm-editor-actions::-webkit-scrollbar{display:none}
+      html.rpcm-mobile-layout .rpcm-bulk-replace{grid-template-columns:1fr auto 1fr;gap:7px}html.rpcm-mobile-layout .rpcm-bulk-replace input{height:42px;font-size:16px}html.rpcm-mobile-layout .rpcm-bulk-replace .rpcm-editor-action{min-height:40px}html.rpcm-mobile-layout .rpcm-bulk-replace [data-replace-apply]{grid-column:1/3}html.rpcm-mobile-layout .rpcm-bulk-replace [data-replace-close]{grid-column:3}
       html.rpcm-mobile-layout .rpcm-editor-action,html.rpcm-mobile-layout .rpcm-mini,html.rpcm-mobile-layout .rpcm-lib-small{flex:0 0 auto;min-height:42px;padding:0 12px;font-size:12px;touch-action:manipulation}
       html.rpcm-mobile-layout .rpcm-editor-hint,html.rpcm-mobile-layout .rpcm-shortcuts{display:none}
       html.rpcm-mobile-layout .rpcm-textarea{height:220px!important;min-height:220px;max-height:none;resize:none;padding:12px;font-size:16px;line-height:1.55;-webkit-text-size-adjust:100%}
@@ -15844,7 +16180,7 @@ ${dialogueText}`;
       html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-edit-section{display:block!important;margin:0;height:100%}
       html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-edit-section>.rpcm-section-head,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-edit-section>.rpcm-auto-panel,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-edit-section>.rpcm-log-help{display:none!important}
       html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot{display:block!important;height:100%;margin:0;border:0;background:#181818}
-      html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot>summary,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-fixed-note,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-editor-actions,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-slot-options,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-auto-terms,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-alias-row,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-title-input{display:none!important}
+      html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot>summary,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-fixed-note,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-editor-actions,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-bulk-replace,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-slot-options,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-auto-terms,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-alias-row,html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-title-input{display:none!important}
       html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot textarea[data-rpcm-editor="true"]:not(.rpcm-mobile-active-editor),html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-guide-panel:not(.rpcm-mobile-active-guide){display:none!important}
       html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-guide{display:block!important;height:100%;margin:0;border:0;background:#181818}html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-guide .rpcm-guide-head{display:none!important}
       html.rpcm-mobile-layout #rpcm-overlay.rpcm-mobile-editing .rpcm-mobile-active-slot .rpcm-edit{height:100%;padding:8px 0 0}
@@ -16708,13 +17044,15 @@ ${dialogueText}`;
       <div id="rpcm-modal-wrap">
         <div id="rpcm-modal" class="${uiPrefs.density === 'compact' ? 'rpcm-density-compact' : ''}">
           <div class="rpcm-header">
-            <div><div class="rpcm-title">${esc(APP.name)}</div><div class="rpcm-sub">${esc(room.label || '현재 채팅방')} · 방별 독립 · ID ${esc(shortId(room.chatId))} · v${esc(APP.version)}</div></div>
+            <div><div class="rpcm-title">${esc(APP.name)}</div><div class="rpcm-sub">${esc(room.label || '현재 채팅방')} · 방별 독립 · ID ${esc(shortId(room.chatId))} · v${esc(APP.version)} <span class="rpcm-custom-version">(custom v${esc(APP.customVersion)})</span></div></div>
             <div class="rpcm-spacer"></div>
             <button class="rpcm-iconbtn rpcm-main-help-button" id="rpcm-main-help-open" aria-label="RP Manager 사용 방법">?</button>
+            <button class="rpcm-iconbtn rpcm-main-server-button" id="rpcm-main-server-upload" aria-label="Firebase 서버 전체 백업 올리기" title="서버 전체 백업 올리기">☁↑</button>
+            <button class="rpcm-iconbtn rpcm-main-server-button" id="rpcm-main-server-download" aria-label="Firebase 서버 백업 목록" title="서버 백업 목록">☁↓</button>
             <button class="rpcm-iconbtn rpcm-main-api-button" id="rpcm-main-api-open" aria-label="API 설정">⚙</button>
             <button class="rpcm-iconbtn" id="rpcm-close">✕</button>
           </div>
-          <aside class="rpcm-main-help-panel" id="rpcm-main-help-panel" hidden><header><h3>RP Manager 사용 방법</h3><button type="button" id="rpcm-main-help-close" aria-label="도움말 닫기">✕</button></header><div class="rpcm-main-help-row"><strong>기억 관리</strong><span>현재상태는 계속 유지하고, 날짜로그는 최신·관련·직접 주입·항상 주입 날짜만 골라 주입합니다.</span></div><div class="rpcm-main-help-row"><strong>로그 관리</strong><span>날짜별 내용을 보고 직접 주입하거나 ★ 즐겨찾기·📌 항상 주입·자동 선택 제외를 정할 수 있습니다.</span></div><div class="rpcm-main-help-row"><strong>AI 맥락 검토</strong><span>키워드 후보를 저장된 API가 현재 RP 흐름으로 한 번 더 고릅니다. API가 실패하면 키워드 방식으로 돌아가며, ‘+ 관련로그 추가’로 사용자가 직접 보강할 수 있습니다.</span></div><div class="rpcm-main-help-row"><strong>연속성 타임라인</strong><span>중요 사건과 관계 변화가 현재까지 이어진 흐름입니다. 타임라인 갱신에서 API 초안 생성·결과 미리보기·최종 저장을 진행합니다.</span></div><div class="rpcm-main-help-row"><strong>캐릭터·기타</strong><span>자주 쓰는 설정을 저장하고 현재 주입 여부를 체크합니다. RP 등장 캐릭터 자동 선택을 켜면 선택한 설정집의 캐릭터가 최근 실제 RP에서 감지될 때 현재 주입이 자동으로 켜집니다.</span></div><div class="rpcm-main-help-row"><strong>주입 시작</strong><span>체크한 항목을 다음 AI 답변용 carrier에 넣습니다. 주입 중에는 위 목록의 로그를 펼쳐 보고 빼거나 관련로그를 교체할 수 있습니다.</span></div><div class="rpcm-main-help-row"><strong>AI 요약</strong><span>저장한 API로 새 RP를 읽어 날짜요약과 현재상태를 만들며, 결과는 확인·수정한 뒤에만 적용됩니다.</span></div><div class="rpcm-main-help-row"><strong>백업</strong><span>현재 방 복사용 JSON을 원본 방에서 저장한 뒤 분기방에서 불러오면, RP Manager 전체 데이터를 현재 방으로 복사할 수 있습니다.</span></div></aside>
+          <aside class="rpcm-main-help-panel" id="rpcm-main-help-panel" hidden><header><h3>RP Manager 사용 방법</h3><button type="button" id="rpcm-main-help-close" aria-label="도움말 닫기">✕</button></header><div class="rpcm-main-help-row"><strong>기억 관리</strong><span>현재상태는 계속 유지하고, 날짜로그는 최신·관련·직접 주입·항상 주입 날짜만 골라 주입합니다.</span></div><div class="rpcm-main-help-row"><strong>로그 관리</strong><span>날짜별 내용을 보고 직접 주입하거나 ★ 즐겨찾기·📌 항상 주입·자동 선택 제외를 정할 수 있습니다.</span></div><div class="rpcm-main-help-row"><strong>AI 맥락 검토</strong><span>키워드 후보를 저장된 API가 현재 RP 흐름으로 한 번 더 고릅니다. API가 실패하면 키워드 방식으로 돌아가며, ‘+ 관련로그 추가’로 사용자가 직접 보강할 수 있습니다.</span></div><div class="rpcm-main-help-row"><strong>연속성 타임라인</strong><span>중요 사건과 관계 변화가 현재까지 이어진 흐름입니다. 타임라인 갱신에서 API 초안 생성·결과 미리보기·최종 저장을 진행합니다.</span></div><div class="rpcm-main-help-row"><strong>캐릭터·기타</strong><span>자주 쓰는 설정을 저장하고 현재 주입 여부를 체크합니다. RP 등장 캐릭터 자동 선택을 켜면 선택한 설정집의 캐릭터가 최근 실제 RP에서 감지될 때 현재 주입이 자동으로 켜집니다.</span></div><div class="rpcm-main-help-row"><strong>주입 시작</strong><span>체크한 항목을 다음 AI 답변용 carrier에 넣습니다. 주입 중에는 위 목록의 로그를 펼쳐 보고 빼거나 관련로그를 교체할 수 있습니다.</span></div><div class="rpcm-main-help-row"><strong>AI 요약</strong><span>저장한 API로 새 RP를 읽어 날짜요약과 현재상태를 만들며, 결과는 확인·수정한 뒤에만 적용됩니다.</span></div><div class="rpcm-main-help-row"><strong>백업</strong><span>로컬 JSON 백업·복원과 Firebase 서버 전체 백업을 지원합니다. 서버 목록에서 백업을 고르면 기존 선택 복원 화면으로 이어집니다.</span></div></aside>
           <div class="rpcm-mobile-editbar"><button type="button" id="rpcm-mobile-edit-done">완료</button><strong id="rpcm-mobile-edit-title">내용 편집</strong><span id="rpcm-mobile-edit-count">0자</span></div>
           <div class="rpcm-body">
             ${pending ? `<div class="rpcm-pending"><div>🟠 <strong>${pending.reanchorRetry ? '자동 복구 대기 · 설정 보존됨' : pending.verified ? '서버 주입 확인됨 ✓' : '서버 주입 확인 필요'}</strong><br>${esc(pendingProgressText(pending))}<br>현재 carrier AI ${esc(shortId(pending.messageId))} · 숨김 컨텍스트 ${formatCount(pending.injectedChars)}자 · 서버 raw ${formatCount(pending.serverChars || pending.carrierChars)}자${pending.reanchorRetry ? `<br><b>${esc(pending.reanchorRetry.reason || '새 답변으로 주입문을 옮기지 못했습니다.')}</b><br>체크·유지주기는 풀리지 않았습니다. ${pending.reanchorRetry.holdUntilNextAssistant ? '다음 AI 답변에서 자동으로 다시 시도합니다.' : '잠시 후 자동으로 다시 시도합니다.'}` : pending.verified ? '' : '<br><b>재검증에 실패하면 ‘지금 해제’ 후 다시 주입해 주세요.</b>'}</div><div class="rpcm-spacer"></div>${pending.reanchorRetry ? '<button class="rpcm-btn secondary" id="rpcm-retry-reanchor">지금 다시 시도</button>' : '<button class="rpcm-btn secondary" id="rpcm-show-raw">주입 내용 확인</button><button class="rpcm-btn secondary" id="rpcm-reverify">서버 재검증</button>'}<button class="rpcm-btn warn" id="rpcm-restore-now">지금 해제</button></div>` : ''}
@@ -16770,6 +17108,9 @@ ${dialogueText}`;
               <button class="rpcm-mini" id="rpcm-room-transfer-backup">현재 방 복사용 JSON</button>
               <button class="rpcm-mini" id="rpcm-backup">전체 백업 JSON</button>
               <button class="rpcm-mini" id="rpcm-import">백업 불러오기</button>
+              <button class="rpcm-mini rpcm-server-backup" id="rpcm-server-backup">☁ 서버 전체 백업</button>
+              <button class="rpcm-mini rpcm-server-backup" id="rpcm-server-list">☁ 서버 백업 목록</button>
+              <button class="rpcm-mini" id="rpcm-server-settings">서버 백업 설정</button>
               <button class="rpcm-mini" id="rpcm-reset">현재 RP 데이터 초기화</button>
               <input id="rpcm-import-file" type="file" accept=".json" style="display:none">
               <div class="rpcm-shortcuts">단축키 · Ctrl+Shift+F 통합 검색 · Ctrl+Enter 주입 시작 · 독립 편집창 Esc 닫기</div>
@@ -16780,6 +17121,7 @@ ${dialogueText}`;
           <div class="rpcm-footnote">USER 메시지는 절대 수정하지 않습니다. 체크 변경은 주입 중에도 현재 AI carrier에 즉시 반영됩니다. 캐릭터·관련 로그 자동 선택은 완료된 최근 RP를 확인해 다음 응답용 carrier부터 적용합니다.</div>
           <span class="rpcm-save-status saved" id="rpcm-save-status">로컬 저장됨</span>
           <button class="rpcm-btn secondary" id="rpcm-save">저장</button>
+          ${pending?.verified ? '<button class="rpcm-btn warn" id="rpcm-footer-restore-now">지금 해제</button>' : ''}
           <button class="rpcm-btn primary" id="rpcm-arm" ${pending || !stats.count || stats.block > capacity.availableContext ? 'disabled' : ''}>주입 시작</button>
         </div>
       </div>`;
@@ -16948,7 +17290,8 @@ ${dialogueText}`;
           ${titleEditable ? `<input class="rpcm-title-input" value="${esc(slot.title)}" placeholder="항목 이름">` : `<div class="rpcm-fixed-note">${slot.id === 'currentState' ? '다음 업데이트 전까지 유효한 관계·정보격차·비밀·미해결 후크·지속 부상/소유물 등 지속 상태를 넣습니다. 통째로 주입합니다.' : '날짜별 사건 요약 전체를 붙여넣습니다. 원문은 저장소로 보관하고, 날짜 블록 단위로 분해해 직접 주입·최근·관련·항상 주입 날짜만 골라 주입합니다. 최근·관련 로그 자동 선택을 꺼도 직접 주입·항상 주입 날짜는 유지됩니다.'}</div>${BASE_GUIDES[slot.id] ? `<div class="rpcm-guide-panel" hidden><div class="rpcm-guide-head"><span>GPT / Gemini용 업데이트 지침 · ${slot.id === 'logSummary' ? '종류별 수정 내용' : '수정 내용'}은 이 브라우저에 자동 저장됩니다.</span>${slot.id === 'logSummary' ? '<select class="rpcm-guide-variant" aria-label="날짜요약 지침 종류"><option value="general">일반용</option><option value="adult">성인용</option></select>' : ''}<button class="rpcm-guide-icon" type="button" data-guide-copy title="지침 복사" aria-label="지침 복사">${GUIDE_COPY_ICON}</button><button class="rpcm-guide-reset" type="button" data-guide-reset>기본값 복원</button></div><textarea class="rpcm-guide-textarea" data-rpcm-editor="true" spellcheck="false"></textarea></div>` : ''}`}
           ${slot.group === 'character' ? `<div class="rpcm-auto-terms"><strong>자동 선택 감지어</strong> · ${esc(characterAutomaticTerms(slot).slice(0, 10).join(' · ') || '캐릭터 이름을 입력하면 자동 생성됩니다.')}${characterAutomaticTerms(slot).length > 10 ? ' · …' : ''}</div><div class="rpcm-alias-row"><input class="rpcm-alias-input" value="${esc((slot.aliases || []).join(', '))}" placeholder="자동 선택용 별칭 (주입 안 됨): 애칭·약칭·호칭"><label class="rpcm-auto-pin" title="RP 등장 여부와 관계없이 현재 주입을 계속 켜둡니다."><input type="checkbox" class="rpcm-auto-pinned" ${slot.autoPinned ? 'checked' : ''}> 📌 항상 주입 선택</label><label class="rpcm-auto-exclude" title="RP에 등장해도 자동으로 선택하지 않습니다. 직접 체크해 주입할 수 있습니다."><input type="checkbox" class="rpcm-auto-excluded" ${slot.autoExcluded ? 'checked' : ''}> 🚫 자동 선택 제외</label></div>` : ''}
           ${slot.id === 'logSummary' ? `<div class="rpcm-slot-options"><span>선택된 로그 유지 횟수</span><select class="rpcm-slot-retention" title="선택된 날짜로그를 앞으로 몇 번의 AI 응답에 연속 주입할지 설정 · 만료 후 자동 종료 · 주기 반복 아님">${retentionOptionsHtml(slot.retentionTurns)}</select><span>AI 응답마다 1턴 차감 · 만료 후 자동 종료 · 주기 반복 아님</span></div>` : ''}
-          <div class="rpcm-editor-actions"><button type="button" class="rpcm-editor-action" data-editor-copy>내용 복사</button><button type="button" class="rpcm-editor-action" data-editor-select>전체 선택</button><button type="button" class="rpcm-editor-action" data-editor-clean>붙여넣기 정리</button><span class="rpcm-editor-hint">Ctrl+Z로 편집 되돌리기</span>${slot.group !== 'extra' ? `<button type="button" class="rpcm-editor-action rpcm-focus-toggle" data-editor-focus>크게 편집</button>` : ''}</div>
+          <div class="rpcm-editor-actions"><button type="button" class="rpcm-editor-action" data-editor-copy>내용 복사</button><button type="button" class="rpcm-editor-action" data-editor-select>전체 선택</button><button type="button" class="rpcm-editor-action" data-editor-clean>붙여넣기 정리</button>${slot.id === 'logSummary' ? '<button type="button" class="rpcm-editor-action" data-editor-replace-toggle>글자 일괄 변경</button>' : ''}<span class="rpcm-editor-hint">Ctrl+Z로 편집 되돌리기</span>${slot.group !== 'extra' ? `<button type="button" class="rpcm-editor-action rpcm-focus-toggle" data-editor-focus>크게 편집</button>` : ''}</div>
+          ${slot.id === 'logSummary' ? '<div class="rpcm-bulk-replace" hidden><input type="text" data-replace-before placeholder="변경 전 단어" aria-label="변경 전 단어"><span aria-hidden="true">→</span><input type="text" data-replace-after placeholder="변경 후 단어" aria-label="변경 후 단어"><button type="button" class="rpcm-editor-action" data-replace-apply>일괄변경 적용</button><button type="button" class="rpcm-editor-action" data-replace-close>닫기</button></div>' : ''}
           <textarea class="rpcm-textarea" data-rpcm-editor="true" style="height:${editorHeightPreference(slot)}px" placeholder="여기에 ${esc(slot.title)} 내용을 붙여넣으세요."></textarea>
         </div>`;
 
@@ -16968,6 +17311,12 @@ ${dialogueText}`;
       const editorCopy = d.querySelector('[data-editor-copy]');
       const editorSelect = d.querySelector('[data-editor-select]');
       const editorClean = d.querySelector('[data-editor-clean]');
+      const editorReplaceToggle = d.querySelector('[data-editor-replace-toggle]');
+      const bulkReplace = d.querySelector('.rpcm-bulk-replace');
+      const replaceBefore = d.querySelector('[data-replace-before]');
+      const replaceAfter = d.querySelector('[data-replace-after]');
+      const replaceApply = d.querySelector('[data-replace-apply]');
+      const replaceClose = d.querySelector('[data-replace-close]');
       const editorFocus = d.querySelector('[data-editor-focus]');
       let guideSaveTimer = 0;
       let activeGuideVariant = initialGuideVariant;
@@ -17046,6 +17395,32 @@ ${dialogueText}`;
         clearTimeout(cleanupUndoTimer);
         cleanupUndoTimer = setTimeout(() => { cleanupUndo = null; if (editorClean) editorClean.textContent = '붙여넣기 정리'; }, 12000);
         notify('붙여넣기 형식을 정리했습니다. 12초 동안 버튼으로 되돌릴 수 있습니다.', 'success', 4200);
+      };
+      if (editorReplaceToggle && bulkReplace) editorReplaceToggle.onclick = () => {
+        bulkReplace.hidden = !bulkReplace.hidden;
+        editorReplaceToggle.classList.toggle('is-active', !bulkReplace.hidden);
+        if (!bulkReplace.hidden) replaceBefore?.focus();
+      };
+      if (replaceClose && bulkReplace) replaceClose.onclick = () => {
+        bulkReplace.hidden = true;
+        editorReplaceToggle?.classList.remove('is-active');
+      };
+      if (replaceApply) replaceApply.onclick = () => {
+        const before = String(replaceBefore?.value || '');
+        const after = String(replaceAfter?.value || '');
+        if (!before) { notify('변경 전 단어를 입력해 주세요.', 'warn', 3200); replaceBefore?.focus(); return; }
+        if (before === after) { notify('변경 전·후 단어가 같습니다.', 'warn', 3200); return; }
+        const original = String(ta.value || '');
+        const matches = original.split(before).length - 1;
+        if (!matches) { notify(`로그요약에 ‘${before}’ 문자열이 없습니다.`, 'warn', 3600); return; }
+        const afterLabel = after || '(삭제)';
+        if (!confirm(`로그요약 전체에서 ${formatCount(matches)}곳을 일괄 변경할까요?\n\n${before} → ${afterLabel}`)) return;
+        const next = original.split(before).join(after);
+        ta.focus();
+        try { ta.setRangeText(next, 0, original.length, 'end'); }
+        catch (_) { ta.value = next; }
+        commitTextareaValue();
+        notify(`글자 일괄 변경 완료 · ${formatCount(matches)}곳`, 'success', 4200);
       };
       if (editorFocus) editorFocus.onclick = () => openDetachedEditor(slot, ta);
       if (guideVariantSelect) guideVariantSelect.value = activeGuideVariant;
@@ -17860,6 +18235,8 @@ ${dialogueText}`;
     const mainHelpPanel = overlay.querySelector('#rpcm-main-help-panel');
     overlay.querySelector('#rpcm-main-help-open').onclick = () => { mainHelpPanel.hidden = false; };
     overlay.querySelector('#rpcm-main-help-close').onclick = () => { mainHelpPanel.hidden = true; };
+    overlay.querySelector('#rpcm-main-server-upload').onclick = () => overlay.querySelector('#rpcm-server-backup')?.click();
+    overlay.querySelector('#rpcm-main-server-download').onclick = () => overlay.querySelector('#rpcm-server-list')?.click();
     overlay.querySelector('#rpcm-main-api-open').onclick = async () => {
       readModalIntoRoom();
       await saveRoom(room);
@@ -17917,10 +18294,13 @@ ${dialogueText}`;
           renderModalIfOpen();
         } catch (e) { notify(`다시 시도 실패 · 설정은 보존됨: ${e.message}`, 'error', 6500); }
       };
-      overlay.querySelector('#rpcm-restore-now').onclick = async () => {
+      const restoreNow = async () => {
         try { await restorePending(room, 'manual'); }
         catch (e) { notify(`복원 실패: ${e.message}`, 'error', 6000); }
       };
+      overlay.querySelector('#rpcm-restore-now').onclick = restoreNow;
+      const footerRestore = overlay.querySelector('#rpcm-footer-restore-now');
+      if (footerRestore) footerRestore.onclick = restoreNow;
     }
 
     bindModalDrag();
@@ -17971,11 +18351,65 @@ ${dialogueText}`;
     overlay.querySelector('#rpcm-backup').onclick = async () => {
       readModalIntoRoom();
       await saveRoom(room);
-      const rooms = await getAllRooms();
-      const characterLibraries = await getAllCharacterLibraries();
-      const payload = { _rpContextManagerBackup: true, version: APP.version, exportedAt: nowIso(), rooms, characterLibraries };
+      const payload = await buildFullBackupPayload();
       downloadText(JSON.stringify(payload, null, 2), `RP_매니저_백업_${new Date().toISOString().slice(0,10)}.json`);
       notify('전체 백업 JSON 저장 완료', 'success');
+    };
+
+    overlay.querySelector('#rpcm-server-settings').onclick = () => openFirebaseBackupSettingsDialog(false);
+
+    overlay.querySelector('#rpcm-server-backup').onclick = async () => {
+      const button = overlay.querySelector('#rpcm-server-backup');
+      try {
+        button.disabled = true;
+        readModalIntoRoom();
+        await saveRoom(room);
+        const payload = await buildFullBackupPayload();
+        const suggested = `전체 백업 ${new Date().toLocaleString('ko-KR')}`;
+        const label = prompt('서버 백업 이름을 입력하세요.', suggested);
+        if (label === null) return;
+        notify('서버에 전체 백업을 올리는 중…', 'info', 2200);
+        const meta = await uploadFullBackupToFirebase(payload, label);
+        if (meta) notify(`서버 백업 완료 · ${meta.label} · RP ${meta.roomCount}개`, 'success', 5200);
+      } catch (error) {
+        notify(`서버 백업 실패: ${error.message}`, 'error', 7000);
+      } finally { button.disabled = false; }
+    };
+
+    overlay.querySelector('#rpcm-server-list').onclick = async () => {
+      const button = overlay.querySelector('#rpcm-server-list');
+      try {
+        button.disabled = true;
+        let listed = await listFirebaseBackups();
+        if (!listed) return;
+        while (listed) {
+          const choice = await openFirebaseBackupListDialog(listed.items);
+          if (!choice) return;
+          if (choice.action === 'settings') {
+            await openFirebaseBackupSettingsDialog(false);
+            return;
+          }
+          if (!choice.id) return;
+          if (choice.action === 'delete') {
+            const selected = listed.items.find(item => String(item.id) === String(choice.id));
+            const label = String(selected?.label || '이름 없는 백업');
+            const created = selected?.createdAt ? new Date(selected.createdAt).toLocaleString('ko-KR') : '생성 시각 미상';
+            if (!confirm(`서버 백업을 영구 삭제할까요?\n\n${label}\n${created}\n\n이 작업은 되돌릴 수 없습니다.`)) continue;
+            notify('서버 백업을 삭제하는 중…', 'info', 1800);
+            await deleteFirebaseBackup(listed.settings, listed.session, choice.id);
+            notify(`서버 백업 삭제 완료 · ${label}`, 'success', 4200);
+            listed = await listFirebaseBackups();
+            continue;
+          }
+          if (choice.action !== 'load') return;
+          notify('서버 백업을 불러오는 중…', 'info', 2200);
+          const data = await firebaseDatabaseRequest(listed.settings, 'GET', `rpManagerBackupData/${listed.session.localId}/${choice.id}`);
+          await importBackupPayload(room, data);
+          return;
+        }
+      } catch (error) {
+        notify(`서버 백업 작업 실패: ${error.message}`, 'error', 7000);
+      } finally { button.disabled = false; }
     };
 
     const file = overlay.querySelector('#rpcm-import-file');
@@ -17985,48 +18419,7 @@ ${dialogueText}`;
       if (!f) return;
       try {
         const data = JSON.parse(await f.text());
-        if (!data?._rpContextManagerBackup || !Array.isArray(data.rooms)) throw new Error('🪽위시 RP Manager 백업 파일이 아닙니다.');
-        const [existingRooms, existingLibraries] = await Promise.all([getAllRooms(), getAllCharacterLibraries()]);
-        const choice = await openBackupImportDialog(data, existingRooms, existingLibraries);
-        if (!choice) return;
-        const selectedRoomIds = new Set(choice.roomIds.map(String));
-        const selectedLibraryIds = new Set(choice.libraryIds.map(String));
-        if (choice.mode === 'clone-current') {
-          if (room.pending) throw new Error('현재 방의 주입을 먼저 해제해 주세요.');
-          if (selectedRoomIds.size !== 1) throw new Error('현재 방으로 복사할 RP를 하나만 선택해 주세요.');
-          const sourceRoom = data.rooms.find(item => item?.chatId && selectedRoomIds.has(String(item.chatId)));
-          if (!sourceRoom) throw new Error('선택한 RP 데이터를 백업에서 찾지 못했습니다.');
-          const sourceLabel = String(sourceRoom.label || `RP ${shortId(sourceRoom.chatId)}`);
-          if (!confirm(`‘${sourceLabel}’의 RP Manager 전체 데이터를 현재 방에 복사할까요?\n현재 방의 기존 RP Manager 데이터는 덮어씁니다.`)) return;
-          if (Array.isArray(data.characterLibraries)) {
-            for (const lib of data.characterLibraries) {
-              if (!lib?.scopeId || !selectedLibraryIds.has(String(lib.scopeId))) continue;
-              await saveCharacterLibrary(lib);
-            }
-          }
-          const clonedRoom = cloneBackupRoomIntoCurrent(sourceRoom, room);
-          try { localStorage.removeItem(pendingBackupKey(clonedRoom.chatId)); } catch (_) {}
-          await saveRoom(clonedRoom);
-          state.currentRoom = clonedRoom;
-          notify(`현재 방으로 RP Manager 전체 복사 완료 · ${backupRoomSummary(clonedRoom)}`, 'success', 5500);
-          renderModalIfOpen();
-          return;
-        }
-        for (const r of data.rooms) {
-          if (!r?.chatId || !selectedRoomIds.has(String(r.chatId))) continue;
-          r.pending = null;
-          normalizeRoomSlots(r);
-          await saveRoom(r);
-        }
-        if (Array.isArray(data.characterLibraries)) {
-          for (const lib of data.characterLibraries) {
-            if (!lib?.scopeId || !selectedLibraryIds.has(String(lib.scopeId))) continue;
-            await saveCharacterLibrary(lib);
-          }
-        }
-        await ensureCurrentRoom(getChatIdFromPath(), true);
-        notify(`백업 복원 완료 · RP ${selectedRoomIds.size}개 · 설정집 ${selectedLibraryIds.size}개`, 'success', 4500);
-        renderModalIfOpen();
+        await importBackupPayload(room, data);
       } catch (e) {
         notify(`불러오기 실패: ${e.message}`, 'error', 6000);
       } finally { file.value = ''; }
