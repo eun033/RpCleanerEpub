@@ -1,13 +1,11 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Firebase Backup Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      0.6.2
-// @description  Wish RP Manager Core v1.3.1에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
+// @version      0.7.0
+// @description  Wish RP Manager Core v1.5.2에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
-// @match        https://crack.wrtn.ai/stories/*/episodes/*
-// @match        https://crack.wrtn.ai/characters/*/chats/*
-// @match        https://crack.wrtn.ai/u/*/c/*
+// @match        https://crack.wrtn.ai/*
 // @match        https://chatgpt.com/*
 // @match        https://www.chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -35,7 +33,8 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.6.2';
+  const PATCH_VERSION = '0.7.0';
+  const SUPPORTED_CORE_VERSION = '1.5.2';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
@@ -65,6 +64,11 @@
   const MANAGER_ID = 'wish-rp-manager-core';
   const GUIDE_BASE_VERSION = '1.5.0';
   const GUIDE_STORAGE_KEYS = Object.freeze({
+    externalMemory:'Wish-RP-Manager-Core-external-memory-guide-v1',
+    externalPeople:'Wish-RP-Manager-Core-external-people-guide-v1',
+    apiBundleMemory:'Wish-RP-Manager-Core-native-memory-guide-v1',
+    apiBundlePeople:'Wish-RP-Manager-Core-native-people-guide-v1',
+    apiLoreBundle:'wish-rp-core-prompt-apiLoreBundle-v1',
     apiCommon:'wish-rp-core-prompt-v1-apiCommon',
     apiMemory:'wish-rp-core-prompt-v1-apiMemory',
     apiObserve:'wish-rp-core-prompt-v1-apiObserve',
@@ -78,6 +82,7 @@
     externalAll:'wish-rp-core-prompt-v1-externalAll',
     externalRelationships:'wish-rp-core-prompt-v1-externalRelationships',
     externalSecondary:'wish-rp-core-prompt-v1-externalSecondary',
+    manualRelay:'wish-rp-core-prompt-v1-manualRelay',
     currentState:'WISH_RP_api_guide_currentState_v1',
     logSummary:'WISH_RP_api_guide_logSummary_v1',
     loreAuto:'WISH_RP_guide_lore_auto_v1',
@@ -87,6 +92,7 @@
 
   let busy = false;
   let scanQueued = false;
+  let coreMismatchNotified = false;
   let activeTransferCapture = null;
   let chatTransferCache;
   let chatAttachBusy = false;
@@ -129,6 +135,11 @@
     try { return unsafeWindow?.[CORE_RUNTIME_KEY] || window[CORE_RUNTIME_KEY] || null; }
     catch (_) { return window[CORE_RUNTIME_KEY] || null; }
   };
+  function coreVersion() {
+    const value = runtime();
+    if (typeof value === 'string') return value.match(/@([\d.]+)$/)?.[1] || '';
+    return String(value?.version || document.querySelector('#wish-rp-root .m3-sub-line span')?.textContent?.match(/Wish Core\s+([\d.]+)/)?.[1] || '');
+  }
   const bridge = () => {
     try { return unsafeWindow?.__WishCognitionBridge || window.__WishCognitionBridge || null; }
     catch (_) { return window.__WishCognitionBridge || null; }
@@ -1087,7 +1098,7 @@
       return sanitizeBackup({
         _wishRpManagerBackup:true,
         backupSchema:3,
-        version:String(runtime()?.version || '1.0.6'),
+        version:coreVersion() || '1.5.2',
         firebasePatchVersion:PATCH_VERSION,
         exportedAt:new Date().toISOString(),
         rooms:data.rooms,
@@ -1254,7 +1265,7 @@
         source:typeof WISH_COMBINED_TRANSFER_BRIDGE !== 'undefined' ? 'integrated' : 'companion-patch',
         label:String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`,
         createdAt:payload.exportedAt,
-        version:String(payload.version || '1.3.1'),
+        version:String(payload.version || '1.5.2'),
         patchVersion:PATCH_VERSION,
         roomCount:payload.rooms.length,
         libraryCount:payload.characterLibraries.length,
@@ -1383,7 +1394,7 @@
       const metadata = {
         name:`${safeName}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
         mimeType:'application/json', parents:[folderId], description:`Wish RP Manager Core 백업 · ${name}`,
-        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.3.1'), patchVersion:PATCH_VERSION },
+        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.5.2'), patchVersion:PATCH_VERSION },
       };
       const session = await driveHttp({
         method:'POST', url:'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name', raw:true,
@@ -1466,7 +1477,7 @@
           throw new Error('Wish 전체 재구축 결과 JSON이 아닙니다.');
         if (!confirm(`선택한 이전 JSON이 ${startTurn > 1 ? `T${startTurn - 1}까지의 내용` : '이전 상태'}을 포함하고 있나요? 잘못된 JSON이면 과거 설정·기억이 빠질 수 있습니다.`)) { button.disabled = false; return; }
         const targetUrl = validChatRoomUrl(modal.body.querySelector('[data-inc-url]').value);
-        const source = document.querySelector('#wish-rp-root [data-key="external"] [data-act="rebuildExport"]');
+        const source = fullExportSource(document.getElementById('wish-rp-root'));
         if (!source || source.disabled) throw new Error('전체 재구축 TXT 버튼을 찾지 못했습니다. 자료 관리 화면을 다시 열어 주세요.');
         rememberChatRoomUrl(chatId, targetUrl);
         beginTransferCapture('full', { mode:'incremental', startTurn, previousJsonText, targetUrl });
@@ -1819,7 +1830,7 @@
   function injectPatchVersion(root) {
     const line = root.querySelector('.m3-sub-line');
     if (!line) return;
-    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.3\.1(?:\.\d+)?$/.test(span.textContent.trim()));
+    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.5\.2$/.test(span.textContent.trim()));
     if (!version) return;
     const existing = line.querySelector('[data-wish-patch-version]');
     if (existing) {
@@ -1855,29 +1866,36 @@
     button.textContent = label;
     return button;
   }
+  function fullExportSource(root) {
+    return root?.querySelector('[data-key="external"] button[data-act="externalExport"][data-arg="all"]')
+      || root?.querySelector('[data-key="external"] [data-act="rebuildExport"]') || null;
+  }
+  function fullExportActionRow(root, source) {
+    return root?.querySelector('[data-key="external"] .m3-external-actions') || source?.parentElement || null;
+  }
   function injectChatTransferButtons(root) {
-    const fullSource = root.querySelector('[data-key="external"] [data-act="rebuildExport"]');
-    if (fullSource && !fullSource.parentElement.querySelector('[data-wish-gpt-full]')) {
+    const fullSource = fullExportSource(root), fullRow = fullExportActionRow(root, fullSource);
+    if (fullSource && fullRow && !fullRow.querySelector('[data-wish-gpt-full]')) {
       const button = patchChatButton();
       button.setAttribute('data-wish-gpt-full', '');
       button.disabled = fullSource.disabled;
       button.onclick = event => {
         event.preventDefault(); event.stopPropagation();
-        const source = root.querySelector('[data-key="external"] [data-act="rebuildExport"]');
+        const source = fullExportSource(root);
         if (!source || source.disabled) return;
         beginTransferCapture('full');
         notify('전체 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
         source.click();
       };
-      const guide = fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
+      const guide = fullRow.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
       (guide || fullSource).insertAdjacentElement('afterend', button);
     }
-    if (fullSource && !fullSource.parentElement.querySelector('[data-wish-gpt-incremental]')) {
+    if (fullSource && fullRow && !fullRow.querySelector('[data-wish-gpt-incremental]')) {
       const button = patchChatButton('이어서 ChatGPT 전송');
       button.setAttribute('data-wish-gpt-incremental', '');
       button.disabled = fullSource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = root.querySelector('[data-key="external"] [data-act="rebuildExport"]'); if (source && !source.disabled) openIncrementalTransferDialog(); };
-      const preceding = fullSource.parentElement.querySelector('[data-wish-gpt-full]') || fullSource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = fullExportSource(root); if (source && !source.disabled) openIncrementalTransferDialog(); };
+      const preceding = fullRow.querySelector('[data-wish-gpt-full]') || fullRow.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
       (preceding || fullSource).insertAdjacentElement('afterend', button);
     }
     const secondarySource = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]');
@@ -1889,7 +1907,7 @@
       const guide = secondarySource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalSecondary"]');
       (guide || secondarySource).insertAdjacentElement('afterend', button);
     }
-    if (fullSource) fullSource.parentElement.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental]').forEach(button => { button.disabled = fullSource.disabled; });
+    if (fullSource && fullRow) fullRow.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental]').forEach(button => { button.disabled = fullSource.disabled; });
     if (secondarySource) secondarySource.parentElement.querySelectorAll('[data-wish-gpt-secondary-open]').forEach(button => { button.disabled = secondarySource.disabled; });
   }
   function injectSecondaryDialogButton(root) {
@@ -1940,6 +1958,14 @@
     scanQueued = false;
     const root = document.getElementById('wish-rp-root');
     if (!root) return;
+    const version = coreVersion();
+    if (version && version !== SUPPORTED_CORE_VERSION) {
+      if (!coreMismatchNotified) {
+        coreMismatchNotified = true;
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${SUPPORTED_CORE_VERSION}용입니다. 현재 ${version}에서는 실행하지 않습니다. 패치 업데이트를 확인해 주세요.`, 'warn', 9000);
+      }
+      return;
+    }
     injectPatchVersion(root);
     root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
     injectChatTransferButtons(root);
