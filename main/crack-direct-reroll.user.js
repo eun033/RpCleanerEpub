@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         크랙 직롤 - 지침 없이 바로 재생성
 // @namespace    codex.local.crack-direct-reroll
-// @version      1.1.1
-// @description  크랙의 기존 재생성 버튼 옆에 '직롤'이라고 표시된 즉시 재생성 버튼을 추가합니다.
+// @version      1.2.0
+// @description  크랙의 맨 마지막 AI 응답에만 '직롤'이라고 표시된 즉시 재생성 버튼을 추가합니다.
 // @author       Codex
 // @match        https://crack.wrtn.ai/*
 // @run-at       document-idle
@@ -93,33 +93,27 @@
     return pathData.includes(REROLL_PATH_START) && pathData.includes(REROLL_PATH_END);
   }
 
-  function findOriginalRerollButtons() {
-    const found = new Set();
+  function findLatestOriginalRerollButton() {
+    // 크랙과 메시지 배지 스크립트가 맨 마지막 AI 응답에만 부여하는 표식.
+    // 재생성 전에는 reroll-left, 재생성 후보가 생긴 뒤에는 compare-left다.
+    const latestBadge = document.querySelector(
+      '.cmu-message-badge[data-placement="reroll-left"], ' +
+        '.cmu-message-badge[data-placement="compare-left"]',
+    );
 
-    // 현재 크랙 UI에서 최신 AI 응답의 글자수 배지가 제공하는 가장 정확한 표식.
-    document
-      .querySelectorAll('.cmu-message-badge[data-placement="reroll-left"]')
-      .forEach((badge) => {
-        let sibling = badge.nextElementSibling;
-        while (sibling) {
-          if (
-            sibling instanceof HTMLButtonElement &&
-            !sibling.hasAttribute(BUTTON_MARKER) &&
-            sibling.getAttribute('aria-label') !== '메시지 옵션'
-          ) {
-            found.add(sibling);
-            break;
-          }
-          sibling = sibling.nextElementSibling;
-        }
-      });
+    if (latestBadge) {
+      let sibling = latestBadge.nextElementSibling;
+      while (sibling) {
+        if (isOriginalRerollButton(sibling)) return sibling;
+        sibling = sibling.nextElementSibling;
+      }
+    }
 
-    // 배지 클래스나 배치 속성이 바뀌었을 때를 위한 아이콘 기반 보조 탐색.
-    document.querySelectorAll('button').forEach((button) => {
-      if (isOriginalRerollButton(button)) found.add(button);
-    });
-
-    return Array.from(found);
+    // 배지 표식이 일시적으로 사라진 렌더 구간을 위한 보조 탐색.
+    // 대화 DOM이 최신순이므로 첫 번째 공식 재생성 아이콘 하나만 사용한다.
+    return Array.from(document.querySelectorAll('button')).find((button) =>
+      isOriginalRerollButton(button),
+    ) || null;
   }
 
   function directRollLabel() {
@@ -150,17 +144,25 @@
   }
 
   function syncButtons() {
-    findOriginalRerollButtons().forEach((originalButton) => {
-      let directButton = originalButton.nextElementSibling;
+    const originalButton = findLatestOriginalRerollButton();
 
-      if (!directButton || !directButton.hasAttribute(BUTTON_MARKER)) {
-        directButton = createDirectRollButton(originalButton);
-        originalButton.insertAdjacentElement('afterend', directButton);
+    // 최신 AI 응답에 붙은 버튼 한 개만 남기고 과거 응답의 직롤은 제거한다.
+    document.querySelectorAll(`button[${BUTTON_MARKER}]`).forEach((button) => {
+      if (!originalButton || button.previousElementSibling !== originalButton) {
+        button.remove();
       }
-
-      directButton.disabled = originalButton.disabled || running;
-      directButton.setAttribute('aria-busy', running ? 'true' : 'false');
     });
+
+    if (!originalButton) return;
+
+    let directButton = originalButton.nextElementSibling;
+    if (!directButton || !directButton.hasAttribute(BUTTON_MARKER)) {
+      directButton = createDirectRollButton(originalButton);
+      originalButton.insertAdjacentElement('afterend', directButton);
+    }
+
+    directButton.disabled = originalButton.disabled || running;
+    directButton.setAttribute('aria-busy', running ? 'true' : 'false');
   }
 
   function findRegenerationDialog() {
