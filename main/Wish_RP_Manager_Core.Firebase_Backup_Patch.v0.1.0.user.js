@@ -5,6 +5,8 @@
 // @description  Wish RP Manager Core v1.5.2에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
+// @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
+// @downloadURL  https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
 // @match        https://crack.wrtn.ai/*
 // @match        https://chatgpt.com/*
 // @match        https://www.chatgpt.com/*
@@ -15,8 +17,6 @@
 // @connect      *.firebasedatabase.app
 // @connect      www.googleapis.com
 // @connect      *
-// @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
-// @downloadURL  https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -1133,6 +1133,50 @@
     if (Array.isArray(data.cognitionRooms)) unique(data.cognitionRooms, 'id', '인지 방');
     return sanitizeBackup(data);
   }
+  function normalizeRestoredRoom(record) {
+    const room = clone(record && typeof record === 'object' ? record : {});
+    room.slots = Array.isArray(room.slots) ? room.slots.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
+    for (const key of ['activeLorePackIds','autoLogPinnedKeys','autoLogExcludedKeys','manualLogSelectedKeys','deletedCharacterKeys','speechRelations','relationships']) {
+      room[key] = Array.isArray(room[key]) ? room[key] : [];
+    }
+    const manifests = room.aiSourceManifests && typeof room.aiSourceManifests === 'object' && !Array.isArray(room.aiSourceManifests) ? room.aiSourceManifests : {};
+    room.aiSourceManifests = Object.fromEntries(Object.entries(manifests).map(([key, value]) => [key, Array.isArray(value) ? value.filter(Boolean) : []]));
+    const cursors = room.aiUpdateCursors && typeof room.aiUpdateCursors === 'object' && !Array.isArray(room.aiUpdateCursors) ? room.aiUpdateCursors : {};
+    room.aiUpdateCursors = Object.fromEntries(Object.entries(cursors).filter(([, value]) => value && typeof value === 'object' && !Array.isArray(value)));
+    room.pending = null;
+    delete room.lastVerifiedInjectionAt;
+    return room;
+  }
+  function normalizeRestoredCognition(record) {
+    const value = clone(record && typeof record === 'object' ? record : {});
+    value.id = String(value.id || '');
+    value.actors = Array.isArray(value.actors) ? value.actors.filter(item => item && typeof item === 'object' && !Array.isArray(item) && String(item.id || '').trim()) : [];
+    value.facts = Array.isArray(value.facts) ? value.facts.filter(item => item && typeof item === 'object' && !Array.isArray(item) && String(item.id || '').trim()) : [];
+    const actorIds = new Set(value.actors.map(item => String(item.id)));
+    const factIds = new Set(value.facts.map(item => String(item.id)));
+    const sourceState = value.state && typeof value.state === 'object' && !Array.isArray(value.state) ? value.state : {};
+    const knowledgeSource = sourceState.knowledge && typeof sourceState.knowledge === 'object' && !Array.isArray(sourceState.knowledge) ? sourceState.knowledge : {};
+    const knowledge = {};
+    for (const [actorId, facts] of Object.entries(knowledgeSource)) {
+      if (!actorIds.has(String(actorId)) || !facts || typeof facts !== 'object' || Array.isArray(facts)) continue;
+      const next = Object.fromEntries(Object.entries(facts).filter(([factId, status]) => factIds.has(String(factId)) && ['aware','unaware','unverified'].includes(String(status))));
+      if (Object.keys(next).length) knowledge[actorId] = next;
+    }
+    const concealments = Array.isArray(sourceState.concealments) ? sourceState.concealments.filter(item => item && typeof item === 'object' && !Array.isArray(item) && actorIds.has(String(item.holderId || '')) && actorIds.has(String(item.targetId || '')) && factIds.has(String(item.factId || '')) && String(item.holderId) !== String(item.targetId)) : [];
+    const present = Array.isArray(sourceState.present) ? [...new Set(sourceState.present.map(String).filter(id => actorIds.has(id)))] : [];
+    const catalogSource = sourceState.catalog && typeof sourceState.catalog === 'object' && !Array.isArray(sourceState.catalog) ? sourceState.catalog : {};
+    value.state = { ...sourceState, knowledge, concealments, present };
+    if (sourceState.catalog != null) value.state.catalog = {
+      ...catalogSource,
+      actors:Array.isArray(catalogSource.actors) ? [...new Set(catalogSource.actors.map(String).filter(id => actorIds.has(id)))] : [],
+      facts:Array.isArray(catalogSource.facts) ? [...new Set(catalogSource.facts.map(String).filter(id => factIds.has(id)))] : [],
+    };
+    for (const key of ['reviews','events','pending','deliveries','heldResolved']) value[key] = Array.isArray(value[key]) ? value[key] : [];
+    value.snapshots = value.snapshots && typeof value.snapshots === 'object' && !Array.isArray(value.snapshots) ? value.snapshots : {};
+    value.scanJob = null;
+    value.automation = null;
+    return value;
+  }
   const apiChatIdOf = room => room?.apiChatId || String(room?.chatId || '').split('::')[0] || '';
   const recordMatchesRooms = (record, roomIds) => {
     if (roomIds.has(String(record?.chatId || ''))) return true;
@@ -1155,15 +1199,16 @@
       const existing = await readAllStores(db);
       if (existing.rooms.some(room => selectedRooms.has(String(room?.chatId || '')) && room?.pending)) throw new Error('선택한 방에 활성 주입이 있습니다. 원본 RP Manager에서 먼저 주입을 해제해 주세요.');
       const rooms = data.rooms.filter(room => selectedRooms.has(String(room.chatId))).map(room => {
-        const next = clone(room), old = existing.rooms.find(item => String(item?.chatId) === String(room.chatId));
-        next.pending = null;
-        delete next.lastVerifiedInjectionAt;
+        const next = normalizeRestoredRoom(room), old = existing.rooms.find(item => String(item?.chatId) === String(room.chatId));
         next._epoch = crypto.randomUUID ? crypto.randomUUID() : `restore-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         next._rev = Number(old?._rev || 0) + 1;
         return next;
       });
       const apiIds = new Set(rooms.map(apiChatIdOf).filter(Boolean).map(String));
-      const cognitionById = new Map((data.cognitionRooms || []).filter(item => apiIds.has(String(item?.id || ''))).map(item => [String(item.id), item]));
+      const cognitionById = new Map((data.cognitionRooms || []).filter(item => apiIds.has(String(item?.id || ''))).map(item => {
+        const normalized = normalizeRestoredCognition(item);
+        return [normalized.id, normalized];
+      }));
       const libraries = data.characterLibraries.filter(item => selectedLibraries.has(String(item.scopeId))).map(clone);
       await new Promise((resolve, reject) => {
         const tx = db.transaction(STORES, 'readwrite');
@@ -1176,11 +1221,9 @@
             cognitionStore.delete(id);
             const source = cognitionById.get(id);
             if (source) {
-              const old = existing.cognitionRooms.find(item => String(item?.id) === id), next = clone(source);
+              const old = existing.cognitionRooms.find(item => String(item?.id) === id), next = normalizeRestoredCognition(source);
               next.rev = Math.max(Number(old?.rev || 0), Number(next.rev || 0)) + 1;
               next.editRev = Math.max(Number(old?.editRev || 0), Number(next.editRev || 0)) + 1;
-              next.scanJob = null;
-              next.automation = null;
               cognitionStore.put(next);
             }
           }
@@ -1211,7 +1254,8 @@
         try { await bridge()?.invalidateRuntime?.(id); } catch (_) {}
       }
       if (restoreSettings) await restoreGlobalSettings(data);
-      try { await bridge()?.refresh?.(); } catch (_) {}
+      // The caller reloads immediately. Refreshing the old in-memory cognition bridge here can
+      // race with the newly restored IndexedDB records and start a carrier sync during teardown.
       return { rooms:rooms.length, libraries:libraries.length, cognition:cognitionById.size, settings:!!restoreSettings };
     } finally { db.close(); }
   }
