@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Firebase Backup Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      0.7.0
+// @version      0.7.1
 // @description  Wish RP Manager Core v1.5.2에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -35,7 +35,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.7.0';
+  const PATCH_VERSION = '0.7.1';
   const SUPPORTED_CORE_VERSION = '1.5.2';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
@@ -1956,6 +1956,327 @@
     if (fullSource && fullRow) fullRow.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental]').forEach(button => { button.disabled = fullSource.disabled; });
     if (secondarySource) secondarySource.parentElement.querySelectorAll('[data-wish-gpt-secondary-open]').forEach(button => { button.disabled = secondarySource.disabled; });
   }
+  // BEGIN SECONDARY DIAGNOSTIC PARSERS
+  // Exact Core 1.5.2 parsers keep diagnostic log keys identical to rebuild keys.
+  const secondaryDiagnosticParsers = (() => {
+const text = value => String(value ?? "");
+function normalizeLineBreaks(text) {
+    return String(text || '').replace(/\r\n/g, '\n');
+  }
+function cleanedPastedText(value) {
+    let text = String(value == null ? '' : value).replace(/\r\n?/g, '\n').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '');
+    const fenced = text.match(/^\s*```(?:text|txt|markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i);
+    if (fenced) text = fenced[1];
+    return text.split('\n').map(line => line.replace(/[\t ]+$/g, '')).join('\n').replace(/\n{4,}/g, '\n\n\n').trim();
+  }
+function simpleHash(value) {
+    let h = 2166136261;
+    const str = String(value || '');
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  function looksLikeCustomLogDate(value) {
+    const text = String(value || '').normalize('NFKC').trim();
+    if (!text) return false;
+    return /(?:\d\s*(?:년|월|일|시|분|초|주|개월|세기|기|력|째)|오늘|어제|그제|내일|모레|당일|그날|다음\s*날|전날|직전|직후|이후|이전|사흘|나흘|며칠|아침|오전|오후|저녁|밤|새벽|정오|무렵|시점|계절|봄|여름|가을|겨울|축제|즉위|재위|창세|개국|제국력|왕국력|성력|마력|황력)/iu.test(text);
+  }
+function parseDatedLogBlocks(text) {
+    const src = normalizeLineBreaks(text);
+    // 기본 양력형·ISO·연도-only·공인 연호뿐 아니라 명시적인 상대시점/작품 고유 달력도 보존한다.
+    // 임의 [소제목-제목] 오인식을 줄이기 위해 자유형 날짜는 전각 구분자이거나 시간 표현일 때만 허용한다.
+    const re = /^[ \t]*\[([^\]\n]+)\][ \t]*$/gm;
+    const hits = [];
+    let m;
+    while ((m = re.exec(src))) {
+      const inner = String(m[1] || '').trim();
+      const standard = inner.match(/^((?:(\d{1,6})년[ \t]*)?(\d{1,2})월[ \t]*(\d{1,2})일)(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
+      const iso = inner.match(/^((\d{4,6})[-/.](\d{1,2})[-/.](\d{1,2}))(?:[ \t]*(?:[|｜–—]|-)[ \t]*(.+))?$/);
+      const yearOnly = inner.match(/^((\d{1,6})년)(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
+      const unknown = inner.match(/^(날짜[ \t]*(미상|미정|불명|없음))(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
+      const eraNamePattern = 'B\\.?[ \\t]*C\\.?(?:[ \\t]*E\\.?)?|A\\.?[ \\t]*D\\.?|C\\.?[ \\t]*E\\.?|기원전|서기';
+      const eraRe = new RegExp(`^((${eraNamePattern})[ \\t]*(\\d{1,6})(?:년)?(?:[ \\t]*(\\d{1,2})월[ \\t]*(\\d{1,2})일)?(?:[ \\t]*[~～](?:[ \\t]*(?:${eraNamePattern}[ \\t]*)?\\d{1,6}(?:년)?(?:[ \\t]*\\d{1,2}월[ \\t]*\\d{1,2}일)?)?)?)(?:[ \\t]*[-–—|｜][ \\t]*(.+))?$`, 'i');
+      const era = inner.match(eraRe);
+      const legacyExplicit = inner.match(/^시점:[ \t]*(.+?)[ \t]+\|[ \t]+(.+)$/);
+      const explicitCustom = inner.match(/^(.+?)[ \t]*[|｜][ \t]*(.+)$/);
+      const dashedCustom = inner.match(/^(.+?)[ \t]*[-–—][ \t]*(.+)$/);
+      const custom = !standard && !iso && !yearOnly && !unknown && !era
+        ? (legacyExplicit || explicitCustom || (dashedCustom && looksLikeCustomLogDate(dashedCustom[1]) ? dashedCustom : null))
+        : null;
+      if (!standard && !iso && !yearOnly && !unknown && !era && !custom) continue;
+
+      const isUnknown = !!unknown;
+      const isYearOnly = !!yearOnly;
+      const isCustomDate = !!custom;
+      const isSpecialDate = !!era || isCustomDate;
+      const dateKind = standard ? (standard[2] ? 'exact' : 'month_day')
+        : iso ? 'exact'
+          : yearOnly ? 'year'
+            : unknown ? 'unknown'
+              : era ? 'era' : 'custom';
+      let fullDate = '';
+      let year = null;
+      let month = null;
+      let day = null;
+      let sortYear = null;
+      let unknownLabel = '';
+      let events = '';
+      if (standard) {
+        fullDate = standard[1];
+        year = standard[2] ? Number(standard[2]) : null;
+        month = Number(standard[3]);
+        day = Number(standard[4]);
+        sortYear = year;
+        events = String(standard[5] || '').trim();
+      } else if (iso) {
+        fullDate = iso[1];
+        year = Number(iso[2]);
+        month = Number(iso[3]);
+        day = Number(iso[4]);
+        sortYear = year;
+        events = String(iso[5] || '').trim();
+        const leap=year%4===0&&(year%100!==0||year%400===0),days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31];
+        if(month<1||month>12||day<1||day>days[month-1])continue;
+      } else if (yearOnly) {
+        fullDate = yearOnly[1];
+        year = Number(yearOnly[2]);
+        sortYear = year;
+        events = String(yearOnly[3] || '').trim();
+      } else if (unknown) {
+        fullDate = `날짜 ${unknown[2]}`;
+        unknownLabel = fullDate;
+        events = String(unknown[3] || '').trim();
+      } else if (era) {
+        fullDate = String(era[1] || '').trim();
+        const eraName = String(era[2] || '').replace(/[.\s]/g, '').toUpperCase();
+        const eraYear = Number(era[3]);
+        const isBeforeCommonEra = eraName === 'BC' || eraName === 'BCE' || eraName === '기원전';
+        sortYear = isBeforeCommonEra ? -eraYear : eraYear;
+        month = era[4] ? Number(era[4]) : null;
+        day = era[5] ? Number(era[5]) : null;
+        events = String(era[6] || '').trim();
+      } else {
+        fullDate = String(custom[1] || '').trim();
+        events = String(custom[2] || '').trim();
+      }
+      hits.push({
+        index: m.index,
+        endTitle: re.lastIndex,
+        headingEnd: re.lastIndex,
+        fullDate,
+        year,
+        sortYear,
+        month,
+        day,
+        unknownLabel,
+        isUnknown,
+        isYearOnly,
+        isSpecialDate,
+        isCustomDate,
+        // Keep the uploaded fork's selection identity when reading older "시점:" headings.
+        customKeyDate: custom ? String(explicitCustom?.[1] || custom[1]).trim() : '',
+        dateKind,
+        events,
+        heading: m[0].trim(),
+        headingRaw: m[0],
+      });
+    }
+    if (!hits.length) return [];
+    return hits.map((h, i) => {
+      const end = i + 1 < hits.length ? hits[i + 1].index : src.length;
+      const body = src.slice(h.endTitle, end).trim();
+      const raw = `${h.heading}${body ? `\n${body}` : ''}`;
+      const dateKey = h.isUnknown
+        ? `unknown-${i}-${simpleHash(h.heading)}`
+        : h.isCustomDate
+          ? `custom-${String(h.customKeyDate || h.fullDate || '').normalize('NFKC').toLowerCase().replace(/\s+/g, '')}`
+          : h.isSpecialDate
+          ? `era-${String(h.fullDate || '').toLowerCase().replace(/\s+/g, '')}`
+          : h.isYearOnly
+            ? `year-${h.year}-${simpleHash(h.events || h.heading)}`
+            : `${h.year || 'x'}-${String(h.month).padStart(2,'0')}-${String(h.day).padStart(2,'0')}`;
+      const key = `${dateKey}-${simpleHash(h.heading)}`;
+      const yearPrefix = h.year ? `${h.year}.` : '';
+      return {
+        ...h,
+        key,
+        dateKey,
+        raw,
+        body,
+        index: i,
+        weekOfMonth: h.isUnknown || !h.day ? null : Math.min(5, Math.floor((h.day - 1) / 7) + 1),
+        titleText: h.isUnknown
+          ? `${h.unknownLabel}${h.events ? ` ${h.events}` : ''}`
+          : h.isSpecialDate || h.isYearOnly
+            ? `${h.fullDate}${h.events ? ` ${h.events}` : ''}`
+            : `${yearPrefix}${h.month}/${h.day}${h.events ? ` ${h.events}` : ''}`,
+        sourceStart: h.index,
+        sourceEnd: end,
+      };
+    });
+  }
+function isCurrentStateSeparator(line) {
+    return /^[\s\u200b\ufeff]*[━─═]{5,}[\s\u200b\ufeff]*$/.test(String(line || ''));
+  }
+
+  function parseCurrentStateSections(text) {
+    const src = cleanedPastedText(normalizeLineBreaks(String(text || '')));
+    if (!src) return [];
+    const lines = src.split('\n');
+    const sections = [];
+    let i = 0;
+    const titleOf = line => String(line || '').trim().match(/^(\d+)\s*[.)．]\s*(.+?)\s*$/);
+    while (i < lines.length) {
+      while (i < lines.length && !String(lines[i] || '').trim()) i++;
+      if (i >= lines.length) break;
+      // 사람이 붙여넣은 ━━━ / ─── / ═══ 구분선을 길이 차이와 공백에 상관없이 허용합니다.
+      if (!isCurrentStateSeparator(lines[i])) return [];
+      const titleMatch = titleOf(lines[i + 1]);
+      if (!titleMatch || !isCurrentStateSeparator(lines[i + 2])) return [];
+      const bodyStartLine = i + 3;
+      let j = bodyStartLine;
+      while (j < lines.length) {
+        if (isCurrentStateSeparator(lines[j]) && titleOf(lines[j + 1]) && isCurrentStateSeparator(lines[j + 2])) break;
+        j++;
+      }
+      sections.push({
+        number: Number(titleMatch[1]),
+        title: String(titleMatch[2] || '').trim(),
+        body: lines.slice(bodyStartLine, j).join('\n').trim(),
+        index: sections.length,
+      });
+      i = j;
+    }
+    return sections;
+  }
+function trimSpan(src,start,end){while(start<end&&/\s/.test(src[start]))start++;while(end>start&&/\s/.test(src[end-1]))end--;return {start,end,source:src.slice(start,end)};}
+    function stateSpans(src){
+      const parsed=parseCurrentStateSections(src);if(!parsed.length)return [];
+      const lines=src.split('\n'),offsets=[];let off=0;for(const l of lines){offsets.push(off);off+=l.length+1;}offsets.push(src.length);
+      const title=l=>text(l).trim().match(/^(\d+)\s*[.)．]\s*(.+?)\s*$/),heads=[];
+      for(let i=0;i<lines.length-2;i++)if(isCurrentStateSeparator(lines[i])&&title(lines[i+1])&&isCurrentStateSeparator(lines[i+2])){heads.push({line:i,title:title(lines[i+1])[2].trim()});i+=2;}
+      if(heads.length!==parsed.length)return [];
+      const spans=heads.map((h,i)=>({...trimSpan(src,offsets[h.line+3]??src.length,i+1<heads.length?offsets[heads[i+1].line]:src.length),title:h.title,index:i}));
+      return spans.every((s,i)=>s.title===parsed[i].title&&normalizeLineBreaks(s.source)===parsed[i].body)?spans:[];
+    }
+return { parseDatedLogBlocks, stateSpans };
+  })();
+  // END SECONDARY DIAGNOSTIC PARSERS
+  function collectSecondaryDuplicates(room, cog, libraries, options = {}) {
+    const groups = new Map();
+    const text = value => String(value ?? '');
+    const add = (kind, identity, title, path, body = '') => {
+      const key = JSON.stringify([kind, ...identity].map(String));
+      if (!groups.has(key)) groups.set(key, { kind, key, identity:identity.map(String), items:[] });
+      groups.get(key).items.push({ title:text(title) || '(제목 없음)', path, preview:text(body).replace(/\s+/g, ' ').slice(0, 180) });
+    };
+    for (const [index, slot] of (room.slots || []).entries()) {
+      if (!slot?.id || !['fixed','character','extra'].includes(slot.group)) continue;
+      const path = `rooms[${JSON.stringify(room.chatId)}].slots[${index}]`;
+      const source = text(slot.content).trim();
+      const sections = slot.id === 'currentState' ? secondaryDiagnosticParsers.stateSpans(source) : [];
+      const blocks = slot.id === 'logSummary' ? secondaryDiagnosticParsers.parseDatedLogBlocks(source) : [];
+      if (sections.length) {
+        for (const section of sections) add('section', [slot.id, section.index, section.title], section.title, `${path} · 섹션 ${section.index + 1}`, section.source);
+      } else if (blocks.length) {
+        for (const block of blocks) {
+          const line = source.slice(0, block.sourceStart).split('\n').length;
+          add('log', [block.key], block.heading, `${path}.content · 로그 ${block.index + 1}번째 · ${line}행`, block.body);
+        }
+      } else add('slot', [slot.id], slot.title, path, slot.content);
+    }
+    const active = new Set((room.activeLorePackIds || []).map(String));
+    for (const [packIndex, pack] of (libraries || []).entries()) {
+      if (!pack || !(pack.kind === 'lore' || pack.format === 'wish-lore-pack')) continue;
+      if (!(text(pack.ownerChatId) === text(room.chatId) || pack.scopeId === `lore:auto:${room.chatId}` || (!pack.ownerChatId && !pack.autoManaged && active.has(text(pack.scopeId))))) continue;
+      for (const [index, entry] of (pack.entries || []).entries()) {
+        if (!entry) continue;
+        add('lore', [pack.scopeId, entry.id], `${text(pack.name)} / ${text(entry.name)}`, `characterLibraries[${packIndex}] · scopeId=${text(pack.scopeId)} · entries[${index}]`, entry.summary?.full || entry.inject?.full || entry.notes);
+      }
+    }
+    for (const [index, fact] of (cog?.facts || []).entries()) if (fact) add('fact', [fact.id], fact.label, `cognitionRooms[${JSON.stringify(cog.id)}].facts[${index}]`, fact.content);
+    for (const [index, speech] of (room.speechRelations || []).entries()) if (speech) add('speech', [speech.id], `${text(speech.speaker)} → ${text(speech.target)}`, `rooms[${JSON.stringify(room.chatId)}].speechRelations[${index}]`, speech.note);
+    if (options.includeRelationships !== false) for (const [index, relation] of (room.relationships || []).entries()) if (relation) add('relationship', [relation.id], `${text(relation.speaker)} → ${text(relation.target)}`, `rooms[${JSON.stringify(room.chatId)}].relationships[${index}]`, relation.current);
+    return [...groups.values()].filter(group => group.items.length > 1);
+  }
+  function secondaryRoomScope() {
+    const apiId = currentApiChatId();
+    if (!apiId) return '';
+    const url = new URL(location.href);
+    for (const key of ['branchId','branch','forkId','threadId','conversationId']) {
+      const value = url.searchParams.get(key);
+      if (value) return `${apiId}::${key}=${value}`;
+    }
+    return apiId;
+  }
+  async function readSecondaryDiagnosticSnapshot(scopeId) {
+    const db = await openWishDatabase();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(['rooms','cognitionRooms','characterLibraries'], 'readonly');
+        const data = {};
+        for (const [request, key] of [[tx.objectStore('rooms').get(scopeId),'room'], [tx.objectStore('cognitionRooms').get(scopeId.split('::')[0]),'cog'], [tx.objectStore('characterLibraries').getAll(),'libraries']]) {
+          request.onsuccess = () => { data[key] = request.result; };
+          request.onerror = () => reject(request.error);
+        }
+        tx.oncomplete = () => resolve(data);
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('중복값 확인용 자료를 읽지 못했습니다.'));
+      });
+    } finally { db.close(); }
+  }
+  async function showSecondaryDuplicateDetails(options = {}) {
+    const scopeId = secondaryRoomScope();
+    const modal = createModal('2차 재구축 · 중복 식별값 확인', '현재 방의 저장 자료에서 중복된 값과 위치를 확인합니다.');
+    modal.overlay.setAttribute('data-wish-secondary-diagnostics', '');
+    modal.body.textContent = '중복값 확인 중…';
+    modal.footer.innerHTML = '<button type="button" data-secondary-copy>상세 내용 복사</button><span></span><button type="button" data-secondary-close>닫기</button>';
+    modal.footer.querySelector('[data-secondary-close]').onclick = modal.close;
+    const copy = modal.footer.querySelector('[data-secondary-copy]');
+    copy.disabled = true;
+    try {
+      if (!scopeId) throw new Error('현재 방 ID를 확인할 수 없습니다. 해당 채팅방에서 다시 실행해 주세요.');
+      const snapshot = await readSecondaryDiagnosticSnapshot(scopeId);
+      if (!snapshot.room) throw new Error('현재 방의 저장 자료가 없습니다. 먼저 저장한 뒤 다시 확인해 주세요.');
+      if (scopeId !== secondaryRoomScope() || !modal.overlay.isConnected) return;
+      const groups = collectSecondaryDuplicates(snapshot.room, snapshot.cog, snapshot.libraries, options);
+      const labels = { log:'날짜별 로그', section:'현재상태 섹션', slot:'기억·설정 카드', lore:'자료집 카드', fact:'인지 정보', speech:'호칭·말투', relationship:'관계·감정선' };
+      const report = groups.length ? `방 ID: ${scopeId}\n중복 ${groups.length}건\n\n` + groups.map((group, index) => `${index + 1}. ${labels[group.kind] || group.kind}\n중복 식별값: ${group.key}\n` + group.items.map((item, i) => `항목 ${i + 1}: ${item.title}\n위치: ${item.path}\n본문 일부: ${item.preview}`).join('\n\n')).join('\n\n━━━━━━━━━━━━\n\n') + '\n\n같은 날짜·제목의 로그는 로그요약에서 표시된 행을 비교하세요. ID 중복은 표시된 카드와 위치를 확인하세요. 이 확인창은 원본 자료를 변경하지 않습니다.' : `방 ID: ${scopeId}\n현재 저장 자료에서 중복을 찾지 못했습니다.\n저장 전 편집 내용이나 다른 탭의 변경일 수 있습니다. 저장·새로고침 후 다시 확인하고 원본 실패 기록도 함께 확인해 주세요.`;
+      const pre = document.createElement('pre');
+      pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:0;';
+      pre.textContent = report;
+      modal.body.replaceChildren(pre);
+      copy.disabled = false;
+      copy.onclick = async () => {
+        try { await navigator.clipboard.writeText(report); copy.textContent = '복사 완료'; }
+        catch (_) {
+          const textarea = document.createElement('textarea');
+          textarea.value = report; textarea.style.cssText = 'position:fixed;opacity:0';
+          modal.body.appendChild(textarea); textarea.focus(); textarea.select();
+          try { copy.textContent = document.execCommand('copy') ? '복사 완료' : '본문을 직접 선택해 복사하세요'; } finally { textarea.remove(); }
+        }
+      };
+    } catch (error) { if (modal.overlay.isConnected) modal.body.textContent = `중복값 확인 실패: ${error.message}`; }
+  }
+  let secondaryDiagnosticAttempt = 0, secondaryDiagnosticShown = 0;
+  function observeSecondaryDuplicateFailure(root) {
+    const source = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]');
+    if (source && !source.parentElement.querySelector('[data-wish-secondary-check]')) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'm3-btn mini'; button.textContent = '중복값 확인';
+      button.setAttribute('data-wish-secondary-check', ''); button.setAttribute('data-fx-node', '');
+      button.onclick = event => { event.preventDefault(); event.stopPropagation(); void showSecondaryDuplicateDetails(); };
+      source.parentElement.appendChild(button);
+    }
+    if (!secondaryDiagnosticAttempt || secondaryDiagnosticShown === secondaryDiagnosticAttempt || Date.now() - secondaryDiagnosticAttempt > 30000) return;
+    const failure = [...root.querySelectorAll('.m3-toast,.m3-error,.m3-warning,.wp-err-msg')].find(node => /2차 재구축 대상의 식별값이 중복|자료집 카드 ID가 비어 있거나 중복/.test(node.textContent || ''));
+    if (!failure || document.querySelector('[data-wish-secondary-diagnostics]')) return;
+    secondaryDiagnosticShown = secondaryDiagnosticAttempt;
+    if (activeTransferCapture?.kind === 'secondary') activeTransferCapture = null;
+    void showSecondaryDuplicateDetails({ includeRelationships:true });
+  }
   function injectSecondaryDialogButton(root) {
     root.querySelectorAll('.m3-dialog[aria-label="외부 AI로 2차 재구축"]').forEach(dialog => {
       const original = dialog.querySelector('footer [data-act="secondaryExportRun"]');
@@ -2016,6 +2337,7 @@
     root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
     injectChatTransferButtons(root);
     injectSecondaryDialogButton(root);
+    observeSecondaryDuplicateFailure(root);
     refreshButtonContrast(root);
     injectChatTransferNote(root);
     processAppleTransferDialog(root);
@@ -2028,6 +2350,10 @@
   function installObserver() {
     if (!document.documentElement) { document.addEventListener('DOMContentLoaded', installObserver, { once:true }); return; }
     new MutationObserver(queueScan).observe(document.documentElement, { childList:true, subtree:true });
+    document.addEventListener('click', event => {
+      const button = event.target.closest?.('[data-act="secondaryExport"],[data-act="secondaryExportRun"],[data-act="secondaryImport"],[data-act="secondaryApply"],[data-act="secondaryManage"]');
+      if (button && !button.disabled) secondaryDiagnosticAttempt = Math.max(Date.now(), secondaryDiagnosticAttempt + 1);
+    }, true);
     queueScan();
     const notice = sessionStorage.getItem(RESTORE_NOTICE_KEY);
     if (notice) { sessionStorage.removeItem(RESTORE_NOTICE_KEY); setTimeout(() => notify(notice, 'success', 6500), 1200); }
