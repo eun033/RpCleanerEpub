@@ -377,9 +377,10 @@
       files[i].name = `${base}_T${start}-T${end}${files.length > 1 ? `_${i + 1}of${files.length}` : ''}${ext}`;
       if (count) cursor = end + 1;
     }
+    const zipStartPrompt = files.length === 1 && /\.zip$/i.test(files[0].sourceName || files[0].name || '') && String(corePrompt || '').trim();
     const transfer = { id:`wish_gpt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, kind, chatId:currentApiChatId(), roomName, startTurn:endTurn ? 1 : 0, endTurn,
       createdAt:Date.now(), updatedAt:Date.now(), expiresAt:Date.now() + CHAT_TRANSFER_TTL, ready:true, files,
-      message:transferPrompt(kind, roomName, endTurn, files, corePrompt) };
+      message:zipStartPrompt || transferPrompt(kind, roomName, endTurn, files, corePrompt) };
     if (!gmWrite(CHAT_TRANSFER_KEY, transfer)) throw new Error('템퍼몽키 임시 저장소에 파일을 기록하지 못했습니다.');
     chatTransferCache = transfer;
     return transfer;
