@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      1.0.0
+// @version      1.0.1
 // @description  Wish RP Manager Core v1.5.3에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -35,7 +35,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.0.0';
+  const PATCH_VERSION = '1.0.1';
   const SUPPORTED_CORE_VERSION = '1.5.3';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
@@ -1009,6 +1009,81 @@
       });
     } finally { db.close(); }
   }
+  const isRecordObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+  function normalizeCognitionBackupRecord(raw, fallbackId = '') {
+    const source = isRecordObject(raw) ? clone(raw) : {};
+    const state = isRecordObject(source.state) ? source.state : {};
+    const catalog = isRecordObject(state.catalog) ? state.catalog : {};
+    const list = value => Array.isArray(value) ? value : [];
+    const next = {
+      ...source,
+      id:String(source.id || fallbackId),
+      actors:list(source.actors),
+      facts:list(source.facts),
+      reviews:list(source.reviews),
+      events:list(source.events),
+      pending:list(source.pending),
+      deliveries:list(source.deliveries),
+      snapshots:isRecordObject(source.snapshots) ? source.snapshots : {},
+    };
+    next.state = {
+      ...state,
+      knowledge:isRecordObject(state.knowledge) ? state.knowledge : {},
+      concealments:list(state.concealments),
+      present:list(state.present),
+      catalog:{
+        ...catalog,
+        actors:list(catalog.actors),
+        facts:list(catalog.facts),
+      },
+      evidence:isRecordObject(state.evidence) ? state.evidence : {},
+    };
+    return next;
+  }
+  function cognitionRecordNeedsRepair(value) {
+    return !isRecordObject(value)
+      || !Array.isArray(value.actors) || !Array.isArray(value.facts)
+      || !Array.isArray(value.reviews) || !Array.isArray(value.events)
+      || !Array.isArray(value.pending) || !Array.isArray(value.deliveries)
+      || !isRecordObject(value.snapshots) || !isRecordObject(value.state)
+      || !isRecordObject(value.state.knowledge)
+      || !Array.isArray(value.state.concealments) || !Array.isArray(value.state.present)
+      || !isRecordObject(value.state.catalog)
+      || !Array.isArray(value.state.catalog.actors) || !Array.isArray(value.state.catalog.facts)
+      || !isRecordObject(value.state.evidence);
+  }
+  async function repairStoredCognitionRooms() {
+    const db = await openWishDatabase();
+    try {
+      const records = await new Promise((resolve, reject) => {
+        const request = db.transaction('cognitionRooms', 'readonly').objectStore('cognitionRooms').getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error || new Error('인지 저장 데이터를 읽지 못했습니다.'));
+      });
+      const repaired = records.filter(cognitionRecordNeedsRepair).map(item => normalizeCognitionBackupRecord(item));
+      if (!repaired.length) return 0;
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('cognitionRooms', 'readwrite'), store = tx.objectStore('cognitionRooms');
+        for (const item of repaired) store.put(item);
+        tx.oncomplete = resolve;
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('인지 저장 데이터 복구에 실패했습니다.'));
+      });
+      return repaired.length;
+    } finally { db.close(); }
+  }
+  function scheduleCognitionRepair(attempt = 0) {
+    setTimeout(async () => {
+      try {
+        const count = await repairStoredCognitionRooms();
+        if (count) {
+          try { await bridge()?.refresh?.(); } catch (_) {}
+          notify(`Firebase 복원에서 누락된 인지 배열을 자동 복구했습니다. (${count}개 방)`, 'success', 5200);
+        }
+      } catch (_) {
+        if (attempt < 4) scheduleCognitionRepair(attempt + 1);
+      }
+    }, attempt ? 1200 : 1800);
+  }
   function validateCoreBackup(data) {
     if (!data || typeof data !== 'object' || Array.isArray(data) || data._wishRpManagerBackup !== true) throw new Error('Wish RP Manager Core 백업 데이터가 아닙니다.');
     const schema = Number(data.backupSchema ?? 1);
@@ -1057,7 +1132,7 @@
       });
       const apiIds = new Set(rooms.map(apiChatIdOf).filter(Boolean).map(String));
       const cognitionById = new Map((data.cognitionRooms || []).filter(item => apiIds.has(String(item?.id || ''))).map(item => {
-        const normalized = clone(item);
+        const normalized = normalizeCognitionBackupRecord(item);
         return [normalized.id, normalized];
       }));
       const libraries = data.characterLibraries.filter(item => selectedLibraries.has(String(item.scopeId))).map(clone);
@@ -1792,5 +1867,6 @@
   else {
     installSecondaryDownloadCapture();
     installObserver();
+    scheduleCognitionRepair();
   }
 })();
