@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         🪽 Wish RP Manager Core · Firebase Backup Patch
+// @name         🪽 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      0.7.1
-// @description  Wish RP Manager Core v1.5.2에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
+// @version      1.0.0
+// @description  Wish RP Manager Core v1.5.3에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
 // @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
@@ -35,8 +35,8 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.7.1';
-  const SUPPORTED_CORE_VERSION = '1.5.2';
+  const PATCH_VERSION = '1.0.0';
+  const SUPPORTED_CORE_VERSION = '1.5.3';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
@@ -48,19 +48,14 @@
   const DRIVE_FOLDER_NAME = 'Wish-Core-Backups';
   const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const CHAT_TRANSFER_KEY = 'WISH_RP_CHATGPT_TRANSFER_V1';
-  const CHAT_CHECKPOINT_KEY = 'WISH_RP_CHATGPT_CHECKPOINTS_V1';
-  const CHAT_ROOM_URL_KEY = 'WISH_RP_CHATGPT_ROOM_URLS_V1';
   const CHAT_FOCUS_KEY = 'WISH_RP_CHATGPT_FOCUS_V1';
   const CHAT_RECENT_TAB_KEY = 'WISH_RP_CHATGPT_RECENT_TAB_V1';
   const CHAT_TITLE_PENDING_KEY = 'WISH_RP_CHATGPT_TITLE_PENDING_V1';
   const CHAT_TRANSFER_TTL = 12 * 60 * 60 * 1000;
   const CHAT_TRANSFER_MESSAGE = '파일 내용 확인 후 지침 실행해줘';
   const IS_CHATGPT = /^(?:www\.)?chatgpt\.com$|^chat\.openai\.com$/i.test(location.hostname);
-  const DEFAULTS = Object.freeze({
-    apiKey: 'AIzaSyCQrPub65vN9LVDCO9Owfcm5ql5DP51hjA',
-    databaseURL: 'https://eluocnc-gg.firebaseio.com',
-    email: 'eun033@naver.com',
-  });
+  // 배포 파일에는 개인 Firebase 정보나 Google OAuth Client ID를 넣지 않습니다.
+  const DEFAULTS = Object.freeze({ apiKey:'', databaseURL:'', email:'' });
   const META_ROOT = 'rpManagerBackupMeta';
   const DATA_ROOT = 'rpManagerBackupData';
   const MANAGER_ID = 'wish-rp-manager-core';
@@ -95,7 +90,7 @@
   let busy = false;
   let scanQueued = false;
   let coreMismatchNotified = false;
-  let activeTransferCapture = null;
+  let secondaryCaptureRequestedAt = 0;
   let chatTransferCache;
   let chatAttachBusy = false;
   let chatTabToken = '';
@@ -159,7 +154,7 @@
     catch (_) { return false; }
   }
 
-  function transferKindForName(filename) {
+  function legacyTransferKindForName(filename) {
     const name = String(filename || '');
     if (/^Wish-2차재구축-전체\.txt$/i.test(name)) return 'secondary';
     if (/^Wish-재구축-\d+of\d+\.txt$/i.test(name)) return 'full';
@@ -258,99 +253,6 @@
     }
     return count;
   }
-  function checkpointForRoom(chatId) {
-    return Math.max(0, Number(gmRead(CHAT_CHECKPOINT_KEY, {})?.[chatId]) || 0);
-  }
-  function saveCheckpoint(chatId, turn) {
-    const all = gmRead(CHAT_CHECKPOINT_KEY, {}) || {};
-    all[chatId] = Math.max(Number(all[chatId]) || 0, turn);
-    if (!gmWrite(CHAT_CHECKPOINT_KEY, all)) throw new Error('마지막 전송 턴을 저장하지 못했습니다.');
-  }
-  function chatRoomUrl(chatId) { return String(gmRead(CHAT_ROOM_URL_KEY, {})?.[chatId] || ''); }
-  function validChatRoomUrl(value) {
-    const raw = String(value || '').trim();
-    let url;
-    try { url = new URL(raw); } catch (_) { throw new Error('기존 ChatGPT 대화 주소를 입력해 주세요.'); }
-    if (url.protocol !== 'https:' || !/^(?:www\.)?chatgpt\.com$|^chat\.openai\.com$/i.test(url.hostname) || !/\/c\/[^/]+/.test(url.pathname))
-      throw new Error('기존 ChatGPT 대화의 /c/ 주소를 입력해 주세요.');
-    return `${url.origin}${url.pathname}`;
-  }
-  function rememberChatRoomUrl(chatId, url) {
-    if (!chatId || !/\/c\/[^/]+/.test(new URL(url).pathname)) return;
-    const all = gmRead(CHAT_ROOM_URL_KEY, {}) || {};
-    const clean = validChatRoomUrl(url);
-    if (all[chatId] !== clean) { all[chatId] = clean; gmWrite(CHAT_ROOM_URL_KEY, all); }
-  }
-  function beginTransferCapture(kind, options = {}) {
-    gmWrite(CHAT_TRANSFER_KEY, null);
-    const capture = activeTransferCapture = {
-      id:`wish_gpt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-      kind:kind === 'secondary' ? 'secondary' : 'full',
-      mode:options.mode === 'incremental' ? 'incremental' : 'full',
-      chatId:currentApiChatId(),
-      startTurn:Number(options.startTurn) || 1,
-      previousJsonText:String(options.previousJsonText || ''),
-      targetUrl:String(options.targetUrl || ''),
-      createdAt:Date.now(),
-      expiresAt:Date.now() + CHAT_TRANSFER_TTL,
-      message:options.mode === 'incremental'
-        ? '이전 결과 JSON을 기준으로 새 RP TXT의 턴만 반영해 전체 형식의 최종 JSON 하나를 만들어줘. TXT의 최신 SOURCE 값을 그대로 사용해줘.'
-        : CHAT_TRANSFER_MESSAGE,
-      expected:kind === 'secondary' ? 1 : 0,
-      roomName:currentRoomDisplayName(),
-      turnCountPromise:kind === 'secondary' ? currentCompletedTurnCount().catch(() => null) : null,
-      suppressDownload:true,
-      files:[],
-    };
-    setTimeout(() => { if (activeTransferCapture === capture) activeTransferCapture = null; }, 5 * 60 * 1000);
-  }
-  function transferFileIndex(filename) {
-    const match = String(filename || '').match(/-(\d+)of\d+\.txt$/i);
-    return match ? Number(match[1]) : 1;
-  }
-  function parseExportTurns(files) {
-    const ordered = [...files].sort((a, b) => a.index - b.index);
-    const blocks = [], ranges = [];
-    let turn = 0;
-    for (const file of ordered) {
-      const text = String(file.text || '').replace(/\r\n/g, '\n');
-      // Restrict matching to Core's actual RP section, not example text in the guide.
-      const section = /\n\[RP \d+\/\d+ · 지침 제외 [^\n]*\]\n/.exec(text);
-      if (!section) throw new Error(`${file.sourceName || file.name}에서 Core RP 본문을 찾지 못했습니다.`);
-      const body = text.slice(section.index + section[0].length);
-      const matches = [...body.matchAll(/^\[완료 RP \d+\]\[USER\]\n/gm)];
-      if (!matches.length) throw new Error('TXT의 확정 RP 턴 구분을 확인하지 못했습니다.');
-      const fileBlocks = [];
-      for (let i = 0; i < matches.length; i++) {
-        const raw = body.slice(matches[i].index, matches[i + 1]?.index ?? body.length).trimEnd();
-        const assistantAt = raw.indexOf('\n\n[ASSISTANT]\n');
-        if (assistantAt < 0) throw new Error('TXT에 완성되지 않은 RP 턴이 있습니다.');
-        const intro = !blocks.length && !raw.slice(matches[i][0].length, assistantAt).trim();
-        if (!intro) turn++;
-        const block = { turn:intro ? 0 : turn, sourceIndex:file.index, text:raw.replace(/^\[완료 RP \d+\]/, `[완료 RP ${intro ? 0 : turn}]`) };
-        blocks.push(block); fileBlocks.push(block);
-      }
-      ranges.push({ file, start:fileBlocks.find(block => block.turn > 0)?.turn || 0, end:fileBlocks[fileBlocks.length - 1].turn });
-    }
-    return { blocks, ranges, end:turn };
-  }
-  function transferMessage(capture) {
-    const end = Number(capture.endTurn), start = capture.mode === 'incremental' ? capture.startTurn : (end ? 1 : 0);
-    const base = safeFilenamePart(capture.roomName);
-    const finalRange = end ? `T1-T${end}` : 'T0 (인트로만 있음)';
-    const lines = [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${capture.roomName}`, `이번 첨부 턴 범위: T${start}-T${end}`];
-    if (capture.kind === 'secondary') {
-      lines.push(`현재 대화 기준 턴 범위: ${finalRange}`, '이번 파일은 저장된 자료의 2차 재구축용이다. 턴 범위는 내보내기 시점의 대화 기준이며, 저장 자료가 모든 턴을 반영했다는 뜻은 아니다. 실제 자료에 없는 턴의 반영을 완료했다고 주장하지 말고 원래 2차 재구축 지침을 실행해줘.');
-    } else {
-      lines.push(`최종 결과에 반영할 누적 턴 범위: ${finalRange}`, '인트로는 T0으로 취급하고 확정 RP 턴수에 더하지 마. 파일명에 표시된 턴 범위는 전체 대화 기준이다.');
-      if (capture.mode === 'incremental') lines.push(start > 1
-        ? `이전 결과 JSON의 T1-T${start - 1} 내용을 보존하고 이번 T${start}-T${end}을 합쳐 완결된 전체 JSON 하나를 만들어줘.`
-        : `이전 결과 JSON의 유효한 내용을 참고하고 이번 T1-T${end} 전체 RP를 다시 검토해 완결된 전체 JSON 하나를 만들어줘.`);
-      lines.push('TXT의 최신 SOURCE 값을 사용하고 원래 JSON 스키마를 지켜줘. 턴 범위를 넣기 위해 JSON에 임의 필드를 추가하지 마.');
-    }
-    lines.push(`최종 결과 JSON의 파일명은 ${base}_T${end ? 1 : 0}-T${end}${capture.kind === 'secondary' ? '_2차재구축' : ''}.json 으로 해줘.`);
-    return lines.join('\n');
-  }
   function chatConversationPath(value) {
     try {
       const url = new URL(value, 'https://chatgpt.com');
@@ -394,129 +296,146 @@
     notify('브라우저가 ChatGPT 열기를 막았습니다. ChatGPT 탭을 직접 열면 준비한 파일을 받을 수 있습니다.', 'warn', 8000);
     return false;
   }
-  function incrementalExport(capture) {
-    const sourceFiles = [...capture.files].sort((a, b) => a.index - b.index);
-    const first = sourceFiles[0]?.text || '';
-    const section = /\r?\n\[RP \d+\/\d+ · 지침 제외 [^\n]*\]\r?\n/.exec(first);
-    if (!section) throw new Error('전체 재구축 TXT에서 RP 본문을 찾지 못했습니다.');
-    const prefix = first.slice(0, section.index).trimEnd();
-    const { blocks, end:turn } = parseExportTurns(sourceFiles);
-    const start = capture.startTurn;
-    if (!Number.isSafeInteger(start) || start < 1 || start > turn) throw new Error(`시작 턴은 1~${turn} 사이여야 합니다.`);
-    const selected = blocks.filter(block => block.turn >= start);
-    if (!selected.length) throw new Error('선택한 시작 턴 이후의 확정 RP가 없습니다.');
-    const groups = new Map();
-    for (const block of selected) {
-      if (!groups.has(block.sourceIndex)) groups.set(block.sourceIndex, []);
-      groups.get(block.sourceIndex).push(block);
-    }
-    const base = safeFilenamePart(capture.roomName);
-    const note = `\n\n[이어서 재구축 · 이번 입력 범위 T${start}-T${turn}]\n첨부한 이전 결과 JSON은 앞서 처리한 RP의 전체 상태 스냅샷이다. 아래 RP는 이번에 보낼 확정 턴이다. 이전 JSON의 유효한 상태·사건·인물·인지·자료·호칭·말투·관계를 보존하고, 새 RP에서 직접 변경된 부분만 갱신한다. 이전 JSON에 없다는 이유만으로 삭제하지 않는다. 최종 출력은 기존 결과와 새 턴을 합친 완전한 wish-rp-rebuild-2.3 JSON 하나여야 한다. source.last_message_id와 source.sha256은 이 TXT의 [SOURCE] 최신 값을 그대로 복사한다. 이전 JSON의 source 값은 복사하지 않는다. 기존 근거 인용은 이전 JSON과 이번 TXT에 실제 있는 경우에만 유지하고, 새로운 근거는 이번 RP 원문에서만 선택한다.\n`;
-    const files = [{ sourceName:'previous-result', name:`${base}_previous_result.json`, text:capture.previousJsonText, bytes:new Blob([capture.previousJsonText]).size, index:0 }];
-    let index = 1;
-    for (const group of groups.values()) {
-      const begin = group[0].turn, end = group.at(-1).turn;
-      const body = `${prefix}${note}\n[신규 RP T${begin}-T${end}]\n${group.map(block => block.text).join('\n\n')}`;
-      files.push({ sourceName:`incremental-${index}`, name:`${base}_T${begin}-T${end}.txt`, turnStart:begin, turnEnd:end, text:body, bytes:new Blob([body]).size, index:index++ });
-    }
-    capture.files = files;
-    capture.endTurn = turn;
-    capture.previousJsonText = '';
+  // Patch 1.0 transfer path: the Core finishes making its selected TXT/ZIP first,
+  // then the last download sheet offers GPT transfer beside Close.
+  function transferKindForDialog(dialog) {
+    const names = [...dialog.querySelectorAll('a[data-txt-download][download]')].map(a => String(a.download || ''));
+    if (names.length && names.every(name => /^Wish-재구축-\d+of\d+\.txt$/i.test(name))) return 'full';
+    if (names.length === 1 && /^Wish-rebuild-all-[\d-]+\.zip$/i.test(names[0])) return 'full';
+    if (names.length === 1 && /^Wish-자료집-전체RP\+지침-[\d-]+\.txt$/i.test(names[0])) return 'lore';
+    return '';
   }
-  async function renameTransferFiles(capture) {
-    if (capture.mode === 'incremental') return;
-    const base = safeFilenamePart(capture.roomName);
-    if (capture.kind === 'secondary') {
-      const resolved = await capture.turnCountPromise;
-      let end = resolved;
-      if (!Number.isSafeInteger(end) || end < 0) {
-        const entered = prompt('2차 재구축의 기준 마지막 RP 턴을 자동 확인하지 못했습니다. 마지막 턴 숫자를 입력해 주세요. (인트로만 있으면 0)', '');
-        if (entered == null || !/^\d+$/.test(entered.trim())) throw new Error('기준 턴 확인이 취소되었습니다. 다시 ChatGPT 전송을 눌러 주세요.');
-        end = Number(entered);
-        if (!Number.isSafeInteger(end)) throw new Error('기준 턴 숫자가 너무 큽니다.');
-      }
-      capture.endTurn = end;
-      for (const file of capture.files) { file.turnStart = end ? 1 : 0; file.turnEnd = end; file.name = `${base}_T${file.turnStart}-T${end}.txt`; }
-      return;
+  function mimeForName(name) {
+    if (/\.zip$/i.test(name)) return 'application/zip';
+    if (/\.json$/i.test(name)) return 'application/json';
+    return 'text/plain;charset=utf-8';
+  }
+  function fileExtension(name) { return String(name || '').match(/(\.[A-Za-z0-9]+)$/)?.[1]?.toLowerCase() || '.txt'; }
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.onerror = () => reject(reader.error || new Error('파일을 임시 보관용으로 읽지 못했습니다.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+  function base64ToBytes(value) {
+    const raw = atob(String(value || '')), out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  function storedFileBlob(item) {
+    return item.encoding === 'base64'
+      ? new Blob([base64ToBytes(item.data)], { type:item.mime || mimeForName(item.name) })
+      : new Blob([String(item.data ?? item.text ?? '')], { type:item.mime || mimeForName(item.name) });
+  }
+  async function portableFile(blob, sourceName, index) {
+    const textLike = /^text\//i.test(blob.type) || /\.(?:txt|json|md)$/i.test(sourceName);
+    if (textLike) return { sourceName, name:sourceName, mime:blob.type || mimeForName(sourceName), encoding:'text', data:await blob.text(), bytes:blob.size, index };
+    return { sourceName, name:sourceName, mime:blob.type || mimeForName(sourceName), encoding:'base64', data:await blobToBase64(blob), bytes:blob.size, index };
+  }
+  async function readDownloadAnchor(anchor, index) {
+    const response = await fetch(anchor.href);
+    if (!response.ok) throw new Error(`파일 준비 확인 실패 (HTTP ${response.status})`);
+    return portableFile(await response.blob(), String(anchor.download || `Wish-export-${index + 1}.txt`), index);
+  }
+  function countTextTurns(value) {
+    const text = String(value || '').replace(/\r\n/g, '\n');
+    const matches = [...text.matchAll(/^\[완료 RP \d+\]\[USER\]\n/gm)];
+    let count = 0;
+    for (const match of matches) {
+      const end = text.indexOf('\n\n[ASSISTANT]\n', match.index + match[0].length);
+      if (end < 0) continue;
+      const user = text.slice(match.index + match[0].length, end).trim();
+      if (user || count) count++;
     }
-    const parsed = parseExportTurns(capture.files);
-    capture.endTurn = parsed.end;
-    for (const { file, start, end } of parsed.ranges) {
-      file.turnStart = start;
-      file.turnEnd = end;
-      file.name = `${base}_T${file.turnStart}-T${file.turnEnd}.txt`;
+    return count;
+  }
+  function transferPrompt(kind, roomName, endTurn, files, corePrompt = '') {
+    const start = endTurn > 0 ? 1 : 0;
+    const label = kind === 'secondary' ? '외부 AI 2차 재구축' : kind === 'lore' ? '외부 AI 자료집 재구축' : '외부 AI 전체 재구축';
+    const lines = [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${roomName}`, `작업: ${label}`, `첨부 파일 턴 범위: T${start}-T${endTurn}`, `최종 결과에 반영된 턴 범위를 T${start}-T${endTurn}으로 명시해줘.`];
+    if (kind === 'secondary') lines.push('첨부 파일은 현재 저장 자료의 2차 재구축용이다. 실제 자료에 없는 턴의 반영을 완료했다고 주장하지 말고 파일 안의 원래 지침을 실행해줘.');
+    else lines.push('인트로는 T0으로 취급하고 확정 RP 턴수에 더하지 마. 파일 안의 원래 지침과 출력 스키마를 그대로 지켜줘.');
+    if (corePrompt.trim()) lines.push(corePrompt.trim());
+    const base = safeFilenamePart(roomName), suffix = kind === 'secondary' ? '_2차재구축' : kind === 'lore' ? '_자료집재구축' : '';
+    lines.push(`최종 결과 파일명은 ${base}_T${start}-T${endTurn}${suffix}.json 으로 해줘.`);
+    if (files.length > 1) lines.push('첨부 파일은 파일명에 표시된 턴 순서대로 모두 읽어줘.');
+    return lines.join('\n');
+  }
+  async function prepareTransfer(kind, files, corePrompt = '') {
+    const roomName = currentRoomDisplayName(), base = safeFilenamePart(roomName);
+    let endTurn = 0, cursor = 1;
+    const textCounts = files.map(file => file.encoding === 'text' ? countTextTurns(file.data) : 0);
+    if (textCounts.some(Boolean)) endTurn = textCounts.reduce((sum, count) => sum + count, 0);
+    if (!endTurn) endTurn = await currentCompletedTurnCount().catch(() => visibleCompletedTurnCount());
+    endTurn = Math.max(0, Number(endTurn) || 0);
+    for (let i = 0; i < files.length; i++) {
+      const count = textCounts[i], start = endTurn ? (count ? cursor : 1) : 0, end = count ? cursor + count - 1 : endTurn;
+      const ext = fileExtension(files[i].sourceName);
+      files[i].turnStart = start; files[i].turnEnd = end;
+      files[i].name = `${base}_T${start}-T${end}${files.length > 1 ? `_${i + 1}of${files.length}` : ''}${ext}`;
+      if (count) cursor = end + 1;
+    }
+    const transfer = { id:`wish_gpt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, kind, chatId:currentApiChatId(), roomName, startTurn:endTurn ? 1 : 0, endTurn,
+      createdAt:Date.now(), updatedAt:Date.now(), expiresAt:Date.now() + CHAT_TRANSFER_TTL, ready:true, files,
+      message:transferPrompt(kind, roomName, endTurn, files, corePrompt) };
+    if (!gmWrite(CHAT_TRANSFER_KEY, transfer)) throw new Error('템퍼몽키 임시 저장소에 파일을 기록하지 못했습니다.');
+    chatTransferCache = transfer;
+    return transfer;
+  }
+  async function prepareTransferFromDialog(dialog, kind) {
+    const links = [...dialog.querySelectorAll('a[data-txt-download][download]')];
+    if (!links.length) throw new Error('전송할 TXT/ZIP 파일을 찾지 못했습니다.');
+    const files = await Promise.all(links.map((link, index) => readDownloadAnchor(link, index)));
+    const corePrompt = dialog.querySelector('textarea[aria-label="시작 문구"]')?.value || '';
+    return prepareTransfer(kind, files, corePrompt);
+  }
+  function downloadStoredFiles(files) {
+    for (const item of files) {
+      const url = URL.createObjectURL(storedFileBlob(item)), anchor = document.createElement('a');
+      anchor.href = url; anchor.download = item.name; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
   }
-  async function captureTransferDownload(anchor, preparedText = null) {
-    const filename = String(anchor?.download || '').trim();
-    const kind = transferKindForName(filename);
-    if (!kind || (preparedText == null && !anchor?.href)) return;
-    if (!activeTransferCapture || activeTransferCapture.kind !== kind || Date.now() - activeTransferCapture.createdAt > 30 * 60 * 1000) return;
-    const capture = activeTransferCapture;
-    const totalMatch = filename.match(/of(\d+)\.txt$/i);
-    if (totalMatch) capture.expected = Math.max(capture.expected || 0, Number(totalMatch[1]) || 0);
-    try {
-      let text = preparedText;
-      if (text == null) {
-        const response = await fetch(anchor.href);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        text = await response.text();
-      }
-      if (!text.trim()) throw new Error('TXT 내용이 비어 있습니다.');
-      const processCapture = async () => {
-      const file = { sourceName:filename, name:filename, text, bytes:new Blob([text]).size, index:transferFileIndex(filename) };
-      capture.files = capture.files.filter(item => item.sourceName !== filename).concat(file).sort((a, b) => a.index - b.index || a.sourceName.localeCompare(b.sourceName));
-      const complete = capture.expected > 0 && capture.files.length >= capture.expected;
-      if (complete) {
-        if (capture.mode === 'incremental') incrementalExport(capture);
-        await renameTransferFiles(capture);
-        capture.message = transferMessage(capture);
-      }
-      capture.updatedAt = Date.now();
-      capture.expiresAt = Date.now() + CHAT_TRANSFER_TTL;
-      capture.ready = complete;
-      const { turnCountPromise, endTurnPromise, writeQueue, previousJsonText, suppressDownload, ...stored } = capture;
-      if (!gmWrite(CHAT_TRANSFER_KEY, stored)) throw new Error('템퍼몽키 임시 저장소에 기록하지 못했습니다.');
-      notify(complete
-        ? `ChatGPT 전송 준비 완료 · 파일 ${capture.files.length}개 · 다운로드 없음`
-        : `ChatGPT 전송 파일 준비 중 · ${capture.files.length}/${capture.expected || '?'}개`, 'success', complete ? 7000 : 4300);
-      if (complete && !capture.chatOpened) {
-        capture.chatOpened = true;
-        if (activeTransferCapture === capture) activeTransferCapture = null;
-        void openChatGPTAfterTransfer(capture.targetUrl).catch(error => notify(`ChatGPT 탭 이동 실패: ${error.message}`, 'error'));
-      }
-      };
-      capture.writeQueue = (capture.writeQueue || Promise.resolve()).then(processCapture);
-      await capture.writeQueue;
-    } catch (error) {
-      if (activeTransferCapture === capture) activeTransferCapture = null;
-      notify(`ChatGPT 전달용 TXT 보관 실패: ${error.message}`, 'error', 7500);
-    }
+  async function sendPreparedTransfer(transfer) {
+    notify(`ChatGPT 전송 준비 완료 · ${transfer.roomName} · T${transfer.startTurn}-T${transfer.endTurn}`, 'success', 6500);
+    await openChatGPTAfterTransfer();
   }
-  function installTransferCapture() {
+  function injectFinalGptButton(dialog) {
+    const kind = transferKindForDialog(dialog), footer = dialog.querySelector('.m3-sheet>footer');
+    if (!kind || !footer || footer.querySelector('[data-wish-gpt-final]')) return;
+    const close = footer.querySelector('[data-act="closeDlg"]');
+    if (!close) return;
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'm3-btn wish-gpt-prepare-button'; button.dataset.wishGptFinal = kind;
+    button.setAttribute('data-fx-node', ''); button.textContent = 'GPT 전송';
+    button.onclick = async event => {
+      event.preventDefault(); event.stopPropagation(); if (button.disabled) return;
+      button.disabled = true; const old = button.textContent; button.textContent = '준비 중…';
+      try { await sendPreparedTransfer(await prepareTransferFromDialog(dialog, kind)); }
+      catch (error) { notify(`ChatGPT 전송 준비 실패: ${error.message}`, 'error', 8500); button.disabled = false; button.textContent = old; }
+    };
+    close.insertAdjacentElement('beforebegin', button);
+  }
+  async function showSecondaryTransferModal(file) {
+    const transfer = await prepareTransfer('secondary', [file]);
+    const modal = createModal('2차 재구축 파일 준비 완료', `${transfer.roomName} · T${transfer.startTurn}-T${transfer.endTurn}`);
+    modal.body.innerHTML = `<div class="wish-fbp-note">파일을 내려받거나 ChatGPT로 바로 보낼 수 있습니다.</div><div class="wish-transfer-file"><b>${esc(transfer.files[0].name)}</b><small>${Math.ceil(transfer.files[0].bytes / 1024).toLocaleString('ko-KR')} KB</small></div>`;
+    modal.footer.innerHTML = '<button type="button" data-secondary-download>TXT 다운로드</button><span></span><button type="button" data-secondary-close>닫기</button><button type="button" class="primary" data-secondary-gpt>GPT 전송</button>';
+    modal.footer.querySelector('[data-secondary-close]').onclick = modal.close;
+    modal.footer.querySelector('[data-secondary-download]').onclick = () => downloadStoredFiles(transfer.files);
+    modal.footer.querySelector('[data-secondary-gpt]').onclick = async event => { event.currentTarget.disabled = true; try { await sendPreparedTransfer(transfer); } catch (error) { notify(`ChatGPT 탭 이동 실패: ${error.message}`, 'error'); event.currentTarget.disabled = false; } };
+  }
+  function installSecondaryDownloadCapture() {
     document.addEventListener('click', event => {
+      const run = event.target.closest?.('[data-act="secondaryExportRun"]');
+      if (run && !run.disabled) { secondaryCaptureRequestedAt = Date.now(); return; }
       const anchor = event.target.closest?.('a[download]');
-      const kind = anchor && transferKindForName(anchor.download);
-      if (!kind || !activeTransferCapture || activeTransferCapture.kind !== kind) return;
-      if (Date.now() - activeTransferCapture.createdAt > 5 * 60 * 1000) { activeTransferCapture = null; return; }
-      if (activeTransferCapture.suppressDownload) { event.preventDefault(); event.stopImmediatePropagation(); }
-      void captureTransferDownload(anchor);
+      if (!anchor || !/^Wish-2차재구축-전체\.txt$/i.test(anchor.download || '') || Date.now() - secondaryCaptureRequestedAt > 120000) return;
+      event.preventDefault(); event.stopImmediatePropagation(); secondaryCaptureRequestedAt = 0;
+      void readDownloadAnchor(anchor, 0).then(showSecondaryTransferModal).catch(error => notify(`2차 재구축 파일 준비 실패: ${error.message}`, 'error', 8500));
     }, true);
-  }
-  if (typeof WISH_COMBINED_TRANSFER_BRIDGE !== 'undefined') {
-    WISH_COMBINED_TRANSFER_BRIDGE.captureText = (filename, text) => {
-      const capture = activeTransferCapture;
-      if (!capture || transferKindForName(filename) !== capture.kind || Date.now() - capture.createdAt > 5 * 60 * 1000) return false;
-      void captureTransferDownload({ download:filename }, String(text ?? ''));
-      return true;
-    };
-    WISH_COMBINED_TRANSFER_BRIDGE.captureList = files => {
-      const capture = activeTransferCapture;
-      if (!capture || !Array.isArray(files) || !files.length ||
-          !files.every(file => transferKindForName(file?.filename) === capture.kind && typeof file?.text === 'string')) return false;
-      for (const file of files) WISH_COMBINED_TRANSFER_BRIDGE.captureText(file.filename, file.text);
-      return true;
-    };
   }
 
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -627,7 +546,6 @@
     const messages = [...document.querySelectorAll('[data-message-author-role="user"]')];
     if (!path || messages.length !== 1 || !normalizedText(messages[0].textContent).includes(pending.signature)) return;
     savePendingTitle({ ...pending, path, boundAt:Date.now(), status:'pending' });
-    if (pending.chatId) rememberChatRoomUrl(pending.chatId, location.href);
   }
   async function applyNewConversationTitle(manual = false) {
     const pending = pendingChatTitle;
@@ -702,8 +620,6 @@
     element.dispatchEvent(new InputEvent('input', { bubbles:true, inputType:'insertText', data:addition }));
   }
   async function attachTransferToChat(transfer) {
-    if (transfer.mode === 'incremental' && chatConversationPath(location.href) !== chatConversationPath(transfer.targetUrl))
-      throw new Error('이어서 보내기는 지정한 기존 ChatGPT 대화에서 실행해 주세요.');
     if (typeof DataTransfer !== 'function') throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. TXT 저장 버튼을 사용해 주세요.');
     const newConversation = isNewChatPage();
     const message = transfer.message || transferMessage(transfer);
@@ -711,7 +627,7 @@
     if (!input) throw new Error('파일 입력기를 찾지 못했습니다. 입력창의 + 버튼을 한 번 연 뒤 다시 시도해 주세요.');
     const assign = (target, items) => {
       const data = new DataTransfer();
-      for (const item of items) data.items.add(new File([String(item.text || '')], String(item.name || 'Wish-재구축.txt'), { type:/\.json$/i.test(item.name || '')?'application/json':'text/plain', lastModified:Number(transfer.updatedAt || Date.now()) }));
+      for (const item of items) data.items.add(new File([storedFileBlob(item)], String(item.name || 'Wish-재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
       if (setter) setter.call(target, data.files); else target.files = data.files;
       if (target.files?.length !== items.length) throw new Error('브라우저가 파일 자동 첨부를 허용하지 않았습니다. 전달함의 저장 버튼으로 파일을 받아 첨부해 주세요.');
@@ -731,22 +647,12 @@
     putChatGPTMessage(findChatGPTComposer(), message);
     if (newConversation) savePendingTitle({ transferId:transfer.id, chatId:transfer.chatId, roomName:transfer.roomName,
       signature:normalizedText(message), createdAt:Date.now(), submittedAt:0, path:'', status:'waiting' });
-    const marked = { ...transfer, lastAttachedAt:Date.now(), lastAttachedPath:location.pathname, lastAttachedTab:chatTabToken };
-    gmWrite(CHAT_TRANSFER_KEY, marked);
-    chatTransferCache = marked;
-    if (transfer.chatId && /\/c\/[^/]+/.test(location.pathname)) rememberChatRoomUrl(transfer.chatId, location.href);
+    // "이 방으로 전송"이 파일 첨부와 문구 입력을 마친 순간 임시 원본을 삭제한다.
+    gmWrite(CHAT_TRANSFER_KEY, null);
+    chatTransferCache = null;
   }
   function downloadTransferFiles(transfer) {
-    for (const item of transfer.files) {
-      const url = URL.createObjectURL(new Blob([String(item.text || '')], { type:/\.json$/i.test(item.name || '')?'application/json':'text/plain;charset=utf-8' }));
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = String(item.name || 'Wish-재구축.txt');
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
-    }
+    downloadStoredFiles(transfer.files);
     notify(`전달 파일 ${transfer.files.length}개 저장 요청 완료`, 'success');
   }
   function renderChatGPTBridge() {
@@ -762,15 +668,11 @@
     }
     bindNewConversationTitle();
     const titleForThis = pendingChatTitle?.transferId === transfer.id ? pendingChatTitle : null;
-    const attachedHere = transfer.lastAttachedTab === chatTabToken && Number(transfer.lastAttachedAt || 0) >= Number(transfer.updatedAt || 0) &&
-      (transfer.lastAttachedPath === location.pathname || (titleForThis?.path && titleForThis.path === chatConversationPath(location.href)));
-    if (attachedHere && transfer.chatId && /\/c\/[^/]+/.test(location.pathname)) rememberChatRoomUrl(transfer.chatId, location.href);
-    const kind = transfer.mode === 'incremental' ? `이어서 T${transfer.startTurn}-T${transfer.endTurn}` : transfer.kind === 'secondary' ? '2차 재구축' : '전체 재구축';
-    const checkpointed = Number(transfer.endTurn || 0) > 0 && checkpointForRoom(transfer.chatId) >= Number(transfer.endTurn);
-    const signature = `${transfer.id}:${transfer.updatedAt}:${transfer.lastAttachedAt || 0}:${location.pathname}:${checkpointed}:${titleForThis?.status || ''}`;
+    const kind = transfer.kind === 'secondary' ? '2차 재구축' : transfer.kind === 'lore' ? '자료집 재구축' : '전체 재구축';
+    const signature = `${transfer.id}:${transfer.updatedAt}:${location.pathname}:${titleForThis?.status || ''}`;
     if (widget.dataset.renderSignature === signature) return;
     widget.dataset.renderSignature = signature;
-    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 ${attachedHere?'이 방에 다시 첨부':'이 방으로 전송'}</b><small>${kind} · 파일 ${transfer.files.length}개 · 문구 포함</small></button>${transfer.kind === 'full' && transfer.endTurn > 0 ? `<button type="button" class="wish-gpt-checkpoint" ${attachedHere && !checkpointed?'':'disabled'}>${checkpointed?`T${transfer.endTurn} 저장됨`:`T${transfer.endTurn}까지 전송 완료`}</button>` : ''}<button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
+    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 이 방으로 전송</b><small>${kind} · T${transfer.startTurn}-T${transfer.endTurn} · 파일 ${transfer.files.length}개</small></button><button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
     widget.querySelector('.wish-gpt-send').onclick = async event => {
       if (chatAttachBusy) return;
       chatAttachBusy = true;
@@ -784,7 +686,7 @@
       } catch (error) {
         notify(`ChatGPT 첨부 실패: ${error.message}`, 'error', 8500);
         button.innerHTML = before;
-      } finally { chatAttachBusy = false; button.disabled = false; widget.dataset.renderSignature = ''; renderChatGPTBridge(); }
+      } finally { chatAttachBusy = false; if (button.isConnected) button.disabled = false; if (widget.isConnected) widget.dataset.renderSignature = ''; renderChatGPTBridge(); }
     };
     if (titleForThis?.path && titleForThis.path === chatConversationPath(location.href) && titleForThis.status !== 'done') {
       const titleButton = document.createElement('button');
@@ -796,18 +698,10 @@
       titleButton.onclick = () => { void applyNewConversationTitle(true); };
       widget.appendChild(titleButton);
     }
-    const checkpointButton = widget.querySelector('.wish-gpt-checkpoint');
-    if (checkpointButton) checkpointButton.onclick = () => {
-      if (!attachedHere || !transfer.chatId || !transfer.endTurn) return;
-      if (!confirm(`ChatGPT에서 실제 전송하고 결과를 확인했나요?\n확인하면 ${transfer.endTurn}턴까지 전송 완료로 저장합니다.`)) return;
-      try { saveCheckpoint(transfer.chatId, Number(transfer.endTurn)); notify(`T${transfer.endTurn}까지 전송 완료로 저장했습니다.`, 'success'); renderChatGPTBridge(); }
-      catch (error) { notify(error.message, 'error'); }
-    };
     widget.querySelector('.wish-gpt-save').onclick = () => downloadTransferFiles(transfer);
     widget.querySelector('.wish-gpt-clear').onclick = () => {
       if (!confirm('ChatGPT 전달함의 임시 TXT를 지울까요? 원래 다운로드 파일과 RP Manager 자료는 지워지지 않습니다.')) return;
       gmWrite(CHAT_TRANSFER_KEY, null);
-      if (pendingChatTitle?.transferId === transfer.id) savePendingTitle(null);
       chatTransferCache = null;
       widget.remove();
       notify('ChatGPT 임시 전달 파일을 지웠습니다.', 'success');
@@ -1100,7 +994,7 @@
       return sanitizeBackup({
         _wishRpManagerBackup:true,
         backupSchema:3,
-        version:coreVersion() || '1.5.2',
+        version:coreVersion() || '1.5.3',
         firebasePatchVersion:PATCH_VERSION,
         exportedAt:new Date().toISOString(),
         rooms:data.rooms,
@@ -1133,50 +1027,6 @@
     if (Array.isArray(data.cognitionRooms)) unique(data.cognitionRooms, 'id', '인지 방');
     return sanitizeBackup(data);
   }
-  function normalizeRestoredRoom(record) {
-    const room = clone(record && typeof record === 'object' ? record : {});
-    room.slots = Array.isArray(room.slots) ? room.slots.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
-    for (const key of ['activeLorePackIds','autoLogPinnedKeys','autoLogExcludedKeys','manualLogSelectedKeys','deletedCharacterKeys','speechRelations','relationships']) {
-      room[key] = Array.isArray(room[key]) ? room[key] : [];
-    }
-    const manifests = room.aiSourceManifests && typeof room.aiSourceManifests === 'object' && !Array.isArray(room.aiSourceManifests) ? room.aiSourceManifests : {};
-    room.aiSourceManifests = Object.fromEntries(Object.entries(manifests).map(([key, value]) => [key, Array.isArray(value) ? value.filter(Boolean) : []]));
-    const cursors = room.aiUpdateCursors && typeof room.aiUpdateCursors === 'object' && !Array.isArray(room.aiUpdateCursors) ? room.aiUpdateCursors : {};
-    room.aiUpdateCursors = Object.fromEntries(Object.entries(cursors).filter(([, value]) => value && typeof value === 'object' && !Array.isArray(value)));
-    room.pending = null;
-    delete room.lastVerifiedInjectionAt;
-    return room;
-  }
-  function normalizeRestoredCognition(record) {
-    const value = clone(record && typeof record === 'object' ? record : {});
-    value.id = String(value.id || '');
-    value.actors = Array.isArray(value.actors) ? value.actors.filter(item => item && typeof item === 'object' && !Array.isArray(item) && String(item.id || '').trim()) : [];
-    value.facts = Array.isArray(value.facts) ? value.facts.filter(item => item && typeof item === 'object' && !Array.isArray(item) && String(item.id || '').trim()) : [];
-    const actorIds = new Set(value.actors.map(item => String(item.id)));
-    const factIds = new Set(value.facts.map(item => String(item.id)));
-    const sourceState = value.state && typeof value.state === 'object' && !Array.isArray(value.state) ? value.state : {};
-    const knowledgeSource = sourceState.knowledge && typeof sourceState.knowledge === 'object' && !Array.isArray(sourceState.knowledge) ? sourceState.knowledge : {};
-    const knowledge = {};
-    for (const [actorId, facts] of Object.entries(knowledgeSource)) {
-      if (!actorIds.has(String(actorId)) || !facts || typeof facts !== 'object' || Array.isArray(facts)) continue;
-      const next = Object.fromEntries(Object.entries(facts).filter(([factId, status]) => factIds.has(String(factId)) && ['aware','unaware','unverified'].includes(String(status))));
-      if (Object.keys(next).length) knowledge[actorId] = next;
-    }
-    const concealments = Array.isArray(sourceState.concealments) ? sourceState.concealments.filter(item => item && typeof item === 'object' && !Array.isArray(item) && actorIds.has(String(item.holderId || '')) && actorIds.has(String(item.targetId || '')) && factIds.has(String(item.factId || '')) && String(item.holderId) !== String(item.targetId)) : [];
-    const present = Array.isArray(sourceState.present) ? [...new Set(sourceState.present.map(String).filter(id => actorIds.has(id)))] : [];
-    const catalogSource = sourceState.catalog && typeof sourceState.catalog === 'object' && !Array.isArray(sourceState.catalog) ? sourceState.catalog : {};
-    value.state = { ...sourceState, knowledge, concealments, present };
-    if (sourceState.catalog != null) value.state.catalog = {
-      ...catalogSource,
-      actors:Array.isArray(catalogSource.actors) ? [...new Set(catalogSource.actors.map(String).filter(id => actorIds.has(id)))] : [],
-      facts:Array.isArray(catalogSource.facts) ? [...new Set(catalogSource.facts.map(String).filter(id => factIds.has(id)))] : [],
-    };
-    for (const key of ['reviews','events','pending','deliveries','heldResolved']) value[key] = Array.isArray(value[key]) ? value[key] : [];
-    value.snapshots = value.snapshots && typeof value.snapshots === 'object' && !Array.isArray(value.snapshots) ? value.snapshots : {};
-    value.scanJob = null;
-    value.automation = null;
-    return value;
-  }
   const apiChatIdOf = room => room?.apiChatId || String(room?.chatId || '').split('::')[0] || '';
   const recordMatchesRooms = (record, roomIds) => {
     if (roomIds.has(String(record?.chatId || ''))) return true;
@@ -1199,14 +1049,14 @@
       const existing = await readAllStores(db);
       if (existing.rooms.some(room => selectedRooms.has(String(room?.chatId || '')) && room?.pending)) throw new Error('선택한 방에 활성 주입이 있습니다. 원본 RP Manager에서 먼저 주입을 해제해 주세요.');
       const rooms = data.rooms.filter(room => selectedRooms.has(String(room.chatId))).map(room => {
-        const next = normalizeRestoredRoom(room), old = existing.rooms.find(item => String(item?.chatId) === String(room.chatId));
+        const next = clone(room), old = existing.rooms.find(item => String(item?.chatId) === String(room.chatId));
         next._epoch = crypto.randomUUID ? crypto.randomUUID() : `restore-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         next._rev = Number(old?._rev || 0) + 1;
         return next;
       });
       const apiIds = new Set(rooms.map(apiChatIdOf).filter(Boolean).map(String));
       const cognitionById = new Map((data.cognitionRooms || []).filter(item => apiIds.has(String(item?.id || ''))).map(item => {
-        const normalized = normalizeRestoredCognition(item);
+        const normalized = clone(item);
         return [normalized.id, normalized];
       }));
       const libraries = data.characterLibraries.filter(item => selectedLibraries.has(String(item.scopeId))).map(clone);
@@ -1221,7 +1071,7 @@
             cognitionStore.delete(id);
             const source = cognitionById.get(id);
             if (source) {
-              const old = existing.cognitionRooms.find(item => String(item?.id) === id), next = normalizeRestoredCognition(source);
+              const old = existing.cognitionRooms.find(item => String(item?.id) === id), next = clone(source);
               next.rev = Math.max(Number(old?.rev || 0), Number(next.rev || 0)) + 1;
               next.editRev = Math.max(Number(old?.editRev || 0), Number(next.editRev || 0)) + 1;
               cognitionStore.put(next);
@@ -1308,10 +1158,10 @@
       const meta = {
         id,
         manager:MANAGER_ID,
-        source:typeof WISH_COMBINED_TRANSFER_BRIDGE !== 'undefined' ? 'integrated' : 'companion-patch',
+        source:'cloud-patch-1.0.0',
         label:String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`,
         createdAt:payload.exportedAt,
-        version:String(payload.version || '1.5.2'),
+        version:String(payload.version || '1.5.3'),
         patchVersion:PATCH_VERSION,
         roomCount:payload.rooms.length,
         libraryCount:payload.characterLibraries.length,
@@ -1440,7 +1290,7 @@
       const metadata = {
         name:`${safeName}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
         mimeType:'application/json', parents:[folderId], description:`Wish RP Manager Core 백업 · ${name}`,
-        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.5.2'), patchVersion:PATCH_VERSION },
+        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.5.3'), patchVersion:PATCH_VERSION },
       };
       const session = await driveHttp({
         method:'POST', url:'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name', raw:true,
@@ -1493,45 +1343,6 @@
     overlay.querySelector('[data-fbp-close]').onclick = close;
     overlay.onclick = event => { if (event.target === overlay) close(); };
     return { overlay, body:overlay.querySelector('.wish-fbp-body'), footer:overlay.querySelector('footer'), close };
-  }
-  function openIncrementalTransferDialog() {
-    const chatId = currentApiChatId();
-    if (!chatId) { notify('현재 채팅방 ID를 찾지 못했습니다.', 'error'); return; }
-    const checkpoint = checkpointForRoom(chatId);
-    const modal = createModal('이어서 ChatGPT 전송', '이전 결과 JSON과 선택한 시작 턴 이후의 새 RP만 같은 ChatGPT 대화에 보냅니다.');
-    modal.body.innerHTML = `<div class="wish-fbp-note">기존 “지침 + TXT 받기”와 “ChatGPT 전송”의 전체 로그 기능은 그대로 유지됩니다. 이전 결과 JSON은 이 채팅방의 완결된 전체 재구축 결과를 선택하세요.</div><label class="wish-inc-field"><span>시작 턴 · 이 턴부터 포함</span><input type="number" min="1" step="1" data-inc-start value="${checkpoint + 1}"><small data-inc-count>확정 RP 턴 수 확인 중… · 마지막 저장 턴 ${checkpoint}</small></label><label class="wish-inc-field"><span>이전 결과 JSON 파일</span><input type="file" accept=".json,application/json" data-inc-file></label><label class="wish-inc-field"><span>또는 이전 결과 JSON 붙여넣기</span><textarea data-inc-json rows="4" placeholder="JSON 파일을 선택했다면 비워 두세요"></textarea></label><label class="wish-inc-field"><span>이어서 보낼 기존 ChatGPT 대화 주소</span><input type="url" data-inc-url value="${esc(chatRoomUrl(chatId))}" placeholder="https://chatgpt.com/c/..."></label>`;
-    modal.footer.innerHTML = '<button type="button" data-inc-cancel>취소</button><span></span><button type="button" class="primary" data-inc-send>새 턴 준비·전송</button>';
-    modal.footer.querySelector('[data-inc-cancel]').onclick = modal.close;
-    const countPromise = currentCompletedTurnCount().catch(() => visibleCompletedTurnCount());
-    void countPromise.then(count => { const label = modal.body.querySelector('[data-inc-count]'); if (label) label.textContent = `현재 확인된 확정 RP ${count || '?'}턴 · 마지막 저장 턴 ${checkpoint}`; });
-    modal.footer.querySelector('[data-inc-send]').onclick = async event => {
-      const button = event.currentTarget;
-      button.disabled = true;
-      try {
-        const startTurn = Number(modal.body.querySelector('[data-inc-start]').value);
-        if (!Number.isSafeInteger(startTurn) || startTurn < 1) throw new Error('시작 턴을 1 이상의 정수로 입력해 주세요.');
-        const count = await countPromise;
-        if (count > 0 && startTurn > count) throw new Error(`시작 턴이 현재 확정된 ${count}턴보다 큽니다.`);
-        if (checkpoint > 0 && startTurn !== checkpoint + 1 && !confirm(`저장된 마지막 전송 턴은 T${checkpoint}입니다. T${startTurn}부터 다시 보내면 구간이 겹치거나 빠질 수 있습니다. 계속할까요?`)) { button.disabled = false; return; }
-        const file = modal.body.querySelector('[data-inc-file]').files?.[0];
-        if (file && file.size > 25 * 1024 * 1024) throw new Error('이전 결과 JSON 파일은 25MB 이하여야 합니다.');
-        const previousJsonText = String(modal.body.querySelector('[data-inc-json]').value || '').trim() || (file ? await file.text() : '');
-        if (!previousJsonText || previousJsonText.length > 25 * 1024 * 1024) throw new Error('이전 결과 JSON을 파일로 선택하거나 붙여넣어 주세요 (25MB 이하).');
-        let previous;
-        try { previous = JSON.parse(previousJsonText); } catch (_) { throw new Error('이전 결과 JSON을 읽지 못했습니다.'); }
-        if (previous?.format !== 'wish-rp-rebuild-2.3' || !previous?.source?.last_message_id || !previous?.source?.sha256 || !Array.isArray(previous.stateSections) || !Array.isArray(previous.events))
-          throw new Error('Wish 전체 재구축 결과 JSON이 아닙니다.');
-        if (!confirm(`선택한 이전 JSON이 ${startTurn > 1 ? `T${startTurn - 1}까지의 내용` : '이전 상태'}을 포함하고 있나요? 잘못된 JSON이면 과거 설정·기억이 빠질 수 있습니다.`)) { button.disabled = false; return; }
-        const targetUrl = validChatRoomUrl(modal.body.querySelector('[data-inc-url]').value);
-        const source = fullExportSource(document.getElementById('wish-rp-root'));
-        if (!source || source.disabled) throw new Error('전체 재구축 TXT 버튼을 찾지 못했습니다. 자료 관리 화면을 다시 열어 주세요.');
-        rememberChatRoomUrl(chatId, targetUrl);
-        beginTransferCapture('full', { mode:'incremental', startTurn, previousJsonText, targetUrl });
-        modal.close();
-        notify(`새 RP ${startTurn}턴부터 ChatGPT 전송용으로 준비합니다. 다운로드 없음`, 'info', 6500);
-        source.click();
-      } catch (error) { notify(error.message, 'error', 7600); button.disabled = false; }
-    };
   }
   async function openBackupList() {
     if (busy) return;
@@ -1844,6 +1655,7 @@
       body.appendChild(drivePanel);
       injectDriveSettings(dialog);
     }
+    const providerChanged = dialog.dataset.wishCloudProvider !== cloudProvider;
     updateCloudModeStyle(dialog);
     dialog.querySelectorAll('[data-wish-provider]').forEach(button => {
       const chosen = button.dataset.wishProvider === cloudProvider;
@@ -1851,7 +1663,7 @@
       button.setAttribute('aria-pressed', String(chosen));
     });
     if (cloudProvider === 'firebase') {
-      renderFirebaseCloudPanel(dialog);
+      if (providerChanged || !dialog.querySelector('[data-wish-fbp-cloud]')?.firstElementChild) renderFirebaseCloudPanel(dialog);
       if (!firebaseAutoListed.has(dialog) && connected()) {
         firebaseAutoListed.add(dialog);
         void refreshFirebaseCloud();
@@ -1866,17 +1678,18 @@
           if (target && target.textContent !== error.message) { target.textContent = error.message; target.className = 'wish-fbp-status error'; }
         });
       }
-      renderDriveCloudPanel(dialog);
+      if (providerChanged || !dialog.querySelector('[data-wish-drive-cloud]')?.firstElementChild) renderDriveCloudPanel(dialog);
       if (!driveAutoListed.has(dialog) && driveConnected()) {
         driveAutoListed.add(dialog);
         void refreshDriveCloud();
       }
     }
+    dialog.dataset.wishCloudProvider = cloudProvider;
   }
   function injectPatchVersion(root) {
     const line = root.querySelector('.m3-sub-line');
     if (!line) return;
-    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.5\.2$/.test(span.textContent.trim()));
+    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.5\.3$/.test(span.textContent.trim()));
     if (!version) return;
     const existing = line.querySelector('[data-wish-patch-version]');
     if (existing) {
@@ -1902,424 +1715,7 @@
   }
   function refreshButtonContrast(root) {
     root.querySelectorAll('[data-wish-fbp-upload],[data-wish-fbp-list]').forEach(button => applyButtonContrast(button, '#285d73', '#173c4d'));
-    root.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental],[data-wish-gpt-secondary-open],[data-wish-gpt-secondary-run]').forEach(button => applyButtonContrast(button, '#334894', '#263b80'));
-  }
-  function patchChatButton(label = 'ChatGPT 전송') {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'm3-btn mini wish-gpt-prepare-button';
-    button.setAttribute('data-fx-node', '');
-    button.textContent = label;
-    return button;
-  }
-  function fullExportSource(root) {
-    return root?.querySelector('[data-key="external"] button[data-act="externalExport"][data-arg="all"]')
-      || root?.querySelector('[data-key="external"] [data-act="rebuildExport"]') || null;
-  }
-  function fullExportActionRow(root, source) {
-    return root?.querySelector('[data-key="external"] .m3-external-actions') || source?.parentElement || null;
-  }
-  function injectChatTransferButtons(root) {
-    const fullSource = fullExportSource(root), fullRow = fullExportActionRow(root, fullSource);
-    if (fullSource && fullRow && !fullRow.querySelector('[data-wish-gpt-full]')) {
-      const button = patchChatButton();
-      button.setAttribute('data-wish-gpt-full', '');
-      button.disabled = fullSource.disabled;
-      button.onclick = event => {
-        event.preventDefault(); event.stopPropagation();
-        const source = fullExportSource(root);
-        if (!source || source.disabled) return;
-        beginTransferCapture('full');
-        notify('전체 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
-        source.click();
-      };
-      const guide = fullRow.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
-      (guide || fullSource).insertAdjacentElement('afterend', button);
-    }
-    if (fullSource && fullRow && !fullRow.querySelector('[data-wish-gpt-incremental]')) {
-      const button = patchChatButton('이어서 ChatGPT 전송');
-      button.setAttribute('data-wish-gpt-incremental', '');
-      button.disabled = fullSource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = fullExportSource(root); if (source && !source.disabled) openIncrementalTransferDialog(); };
-      const preceding = fullRow.querySelector('[data-wish-gpt-full]') || fullRow.querySelector('[data-act="promptGuides"][data-arg="externalAll"]');
-      (preceding || fullSource).insertAdjacentElement('afterend', button);
-    }
-    const secondarySource = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]');
-    if (secondarySource && !secondarySource.parentElement.querySelector('[data-wish-gpt-secondary-open]')) {
-      const button = patchChatButton();
-      button.setAttribute('data-wish-gpt-secondary-open', '');
-      button.disabled = secondarySource.disabled;
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); const source = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]'); if (source && !source.disabled) source.click(); };
-      const guide = secondarySource.parentElement.querySelector('[data-act="promptGuides"][data-arg="externalSecondary"]');
-      (guide || secondarySource).insertAdjacentElement('afterend', button);
-    }
-    if (fullSource && fullRow) fullRow.querySelectorAll('[data-wish-gpt-full],[data-wish-gpt-incremental]').forEach(button => { button.disabled = fullSource.disabled; });
-    if (secondarySource) secondarySource.parentElement.querySelectorAll('[data-wish-gpt-secondary-open]').forEach(button => { button.disabled = secondarySource.disabled; });
-  }
-  // BEGIN SECONDARY DIAGNOSTIC PARSERS
-  // Exact Core 1.5.2 parsers keep diagnostic log keys identical to rebuild keys.
-  const secondaryDiagnosticParsers = (() => {
-const text = value => String(value ?? "");
-function normalizeLineBreaks(text) {
-    return String(text || '').replace(/\r\n/g, '\n');
-  }
-function cleanedPastedText(value) {
-    let text = String(value == null ? '' : value).replace(/\r\n?/g, '\n').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '');
-    const fenced = text.match(/^\s*```(?:text|txt|markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i);
-    if (fenced) text = fenced[1];
-    return text.split('\n').map(line => line.replace(/[\t ]+$/g, '')).join('\n').replace(/\n{4,}/g, '\n\n\n').trim();
-  }
-function simpleHash(value) {
-    let h = 2166136261;
-    const str = String(value || '');
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return (h >>> 0).toString(36);
-  }
-
-  function looksLikeCustomLogDate(value) {
-    const text = String(value || '').normalize('NFKC').trim();
-    if (!text) return false;
-    return /(?:\d\s*(?:년|월|일|시|분|초|주|개월|세기|기|력|째)|오늘|어제|그제|내일|모레|당일|그날|다음\s*날|전날|직전|직후|이후|이전|사흘|나흘|며칠|아침|오전|오후|저녁|밤|새벽|정오|무렵|시점|계절|봄|여름|가을|겨울|축제|즉위|재위|창세|개국|제국력|왕국력|성력|마력|황력)/iu.test(text);
-  }
-function parseDatedLogBlocks(text) {
-    const src = normalizeLineBreaks(text);
-    // 기본 양력형·ISO·연도-only·공인 연호뿐 아니라 명시적인 상대시점/작품 고유 달력도 보존한다.
-    // 임의 [소제목-제목] 오인식을 줄이기 위해 자유형 날짜는 전각 구분자이거나 시간 표현일 때만 허용한다.
-    const re = /^[ \t]*\[([^\]\n]+)\][ \t]*$/gm;
-    const hits = [];
-    let m;
-    while ((m = re.exec(src))) {
-      const inner = String(m[1] || '').trim();
-      const standard = inner.match(/^((?:(\d{1,6})년[ \t]*)?(\d{1,2})월[ \t]*(\d{1,2})일)(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
-      const iso = inner.match(/^((\d{4,6})[-/.](\d{1,2})[-/.](\d{1,2}))(?:[ \t]*(?:[|｜–—]|-)[ \t]*(.+))?$/);
-      const yearOnly = inner.match(/^((\d{1,6})년)(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
-      const unknown = inner.match(/^(날짜[ \t]*(미상|미정|불명|없음))(?:[ \t]*[-–—|｜][ \t]*(.+))?$/);
-      const eraNamePattern = 'B\\.?[ \\t]*C\\.?(?:[ \\t]*E\\.?)?|A\\.?[ \\t]*D\\.?|C\\.?[ \\t]*E\\.?|기원전|서기';
-      const eraRe = new RegExp(`^((${eraNamePattern})[ \\t]*(\\d{1,6})(?:년)?(?:[ \\t]*(\\d{1,2})월[ \\t]*(\\d{1,2})일)?(?:[ \\t]*[~～](?:[ \\t]*(?:${eraNamePattern}[ \\t]*)?\\d{1,6}(?:년)?(?:[ \\t]*\\d{1,2}월[ \\t]*\\d{1,2}일)?)?)?)(?:[ \\t]*[-–—|｜][ \\t]*(.+))?$`, 'i');
-      const era = inner.match(eraRe);
-      const legacyExplicit = inner.match(/^시점:[ \t]*(.+?)[ \t]+\|[ \t]+(.+)$/);
-      const explicitCustom = inner.match(/^(.+?)[ \t]*[|｜][ \t]*(.+)$/);
-      const dashedCustom = inner.match(/^(.+?)[ \t]*[-–—][ \t]*(.+)$/);
-      const custom = !standard && !iso && !yearOnly && !unknown && !era
-        ? (legacyExplicit || explicitCustom || (dashedCustom && looksLikeCustomLogDate(dashedCustom[1]) ? dashedCustom : null))
-        : null;
-      if (!standard && !iso && !yearOnly && !unknown && !era && !custom) continue;
-
-      const isUnknown = !!unknown;
-      const isYearOnly = !!yearOnly;
-      const isCustomDate = !!custom;
-      const isSpecialDate = !!era || isCustomDate;
-      const dateKind = standard ? (standard[2] ? 'exact' : 'month_day')
-        : iso ? 'exact'
-          : yearOnly ? 'year'
-            : unknown ? 'unknown'
-              : era ? 'era' : 'custom';
-      let fullDate = '';
-      let year = null;
-      let month = null;
-      let day = null;
-      let sortYear = null;
-      let unknownLabel = '';
-      let events = '';
-      if (standard) {
-        fullDate = standard[1];
-        year = standard[2] ? Number(standard[2]) : null;
-        month = Number(standard[3]);
-        day = Number(standard[4]);
-        sortYear = year;
-        events = String(standard[5] || '').trim();
-      } else if (iso) {
-        fullDate = iso[1];
-        year = Number(iso[2]);
-        month = Number(iso[3]);
-        day = Number(iso[4]);
-        sortYear = year;
-        events = String(iso[5] || '').trim();
-        const leap=year%4===0&&(year%100!==0||year%400===0),days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31];
-        if(month<1||month>12||day<1||day>days[month-1])continue;
-      } else if (yearOnly) {
-        fullDate = yearOnly[1];
-        year = Number(yearOnly[2]);
-        sortYear = year;
-        events = String(yearOnly[3] || '').trim();
-      } else if (unknown) {
-        fullDate = `날짜 ${unknown[2]}`;
-        unknownLabel = fullDate;
-        events = String(unknown[3] || '').trim();
-      } else if (era) {
-        fullDate = String(era[1] || '').trim();
-        const eraName = String(era[2] || '').replace(/[.\s]/g, '').toUpperCase();
-        const eraYear = Number(era[3]);
-        const isBeforeCommonEra = eraName === 'BC' || eraName === 'BCE' || eraName === '기원전';
-        sortYear = isBeforeCommonEra ? -eraYear : eraYear;
-        month = era[4] ? Number(era[4]) : null;
-        day = era[5] ? Number(era[5]) : null;
-        events = String(era[6] || '').trim();
-      } else {
-        fullDate = String(custom[1] || '').trim();
-        events = String(custom[2] || '').trim();
-      }
-      hits.push({
-        index: m.index,
-        endTitle: re.lastIndex,
-        headingEnd: re.lastIndex,
-        fullDate,
-        year,
-        sortYear,
-        month,
-        day,
-        unknownLabel,
-        isUnknown,
-        isYearOnly,
-        isSpecialDate,
-        isCustomDate,
-        // Keep the uploaded fork's selection identity when reading older "시점:" headings.
-        customKeyDate: custom ? String(explicitCustom?.[1] || custom[1]).trim() : '',
-        dateKind,
-        events,
-        heading: m[0].trim(),
-        headingRaw: m[0],
-      });
-    }
-    if (!hits.length) return [];
-    return hits.map((h, i) => {
-      const end = i + 1 < hits.length ? hits[i + 1].index : src.length;
-      const body = src.slice(h.endTitle, end).trim();
-      const raw = `${h.heading}${body ? `\n${body}` : ''}`;
-      const dateKey = h.isUnknown
-        ? `unknown-${i}-${simpleHash(h.heading)}`
-        : h.isCustomDate
-          ? `custom-${String(h.customKeyDate || h.fullDate || '').normalize('NFKC').toLowerCase().replace(/\s+/g, '')}`
-          : h.isSpecialDate
-          ? `era-${String(h.fullDate || '').toLowerCase().replace(/\s+/g, '')}`
-          : h.isYearOnly
-            ? `year-${h.year}-${simpleHash(h.events || h.heading)}`
-            : `${h.year || 'x'}-${String(h.month).padStart(2,'0')}-${String(h.day).padStart(2,'0')}`;
-      const key = `${dateKey}-${simpleHash(h.heading)}`;
-      const yearPrefix = h.year ? `${h.year}.` : '';
-      return {
-        ...h,
-        key,
-        dateKey,
-        raw,
-        body,
-        index: i,
-        weekOfMonth: h.isUnknown || !h.day ? null : Math.min(5, Math.floor((h.day - 1) / 7) + 1),
-        titleText: h.isUnknown
-          ? `${h.unknownLabel}${h.events ? ` ${h.events}` : ''}`
-          : h.isSpecialDate || h.isYearOnly
-            ? `${h.fullDate}${h.events ? ` ${h.events}` : ''}`
-            : `${yearPrefix}${h.month}/${h.day}${h.events ? ` ${h.events}` : ''}`,
-        sourceStart: h.index,
-        sourceEnd: end,
-      };
-    });
-  }
-function isCurrentStateSeparator(line) {
-    return /^[\s\u200b\ufeff]*[━─═]{5,}[\s\u200b\ufeff]*$/.test(String(line || ''));
-  }
-
-  function parseCurrentStateSections(text) {
-    const src = cleanedPastedText(normalizeLineBreaks(String(text || '')));
-    if (!src) return [];
-    const lines = src.split('\n');
-    const sections = [];
-    let i = 0;
-    const titleOf = line => String(line || '').trim().match(/^(\d+)\s*[.)．]\s*(.+?)\s*$/);
-    while (i < lines.length) {
-      while (i < lines.length && !String(lines[i] || '').trim()) i++;
-      if (i >= lines.length) break;
-      // 사람이 붙여넣은 ━━━ / ─── / ═══ 구분선을 길이 차이와 공백에 상관없이 허용합니다.
-      if (!isCurrentStateSeparator(lines[i])) return [];
-      const titleMatch = titleOf(lines[i + 1]);
-      if (!titleMatch || !isCurrentStateSeparator(lines[i + 2])) return [];
-      const bodyStartLine = i + 3;
-      let j = bodyStartLine;
-      while (j < lines.length) {
-        if (isCurrentStateSeparator(lines[j]) && titleOf(lines[j + 1]) && isCurrentStateSeparator(lines[j + 2])) break;
-        j++;
-      }
-      sections.push({
-        number: Number(titleMatch[1]),
-        title: String(titleMatch[2] || '').trim(),
-        body: lines.slice(bodyStartLine, j).join('\n').trim(),
-        index: sections.length,
-      });
-      i = j;
-    }
-    return sections;
-  }
-function trimSpan(src,start,end){while(start<end&&/\s/.test(src[start]))start++;while(end>start&&/\s/.test(src[end-1]))end--;return {start,end,source:src.slice(start,end)};}
-    function stateSpans(src){
-      const parsed=parseCurrentStateSections(src);if(!parsed.length)return [];
-      const lines=src.split('\n'),offsets=[];let off=0;for(const l of lines){offsets.push(off);off+=l.length+1;}offsets.push(src.length);
-      const title=l=>text(l).trim().match(/^(\d+)\s*[.)．]\s*(.+?)\s*$/),heads=[];
-      for(let i=0;i<lines.length-2;i++)if(isCurrentStateSeparator(lines[i])&&title(lines[i+1])&&isCurrentStateSeparator(lines[i+2])){heads.push({line:i,title:title(lines[i+1])[2].trim()});i+=2;}
-      if(heads.length!==parsed.length)return [];
-      const spans=heads.map((h,i)=>({...trimSpan(src,offsets[h.line+3]??src.length,i+1<heads.length?offsets[heads[i+1].line]:src.length),title:h.title,index:i}));
-      return spans.every((s,i)=>s.title===parsed[i].title&&normalizeLineBreaks(s.source)===parsed[i].body)?spans:[];
-    }
-return { parseDatedLogBlocks, stateSpans };
-  })();
-  // END SECONDARY DIAGNOSTIC PARSERS
-  function collectSecondaryDuplicates(room, cog, libraries, options = {}) {
-    const groups = new Map();
-    const text = value => String(value ?? '');
-    const add = (kind, identity, title, path, body = '') => {
-      const key = JSON.stringify([kind, ...identity].map(String));
-      if (!groups.has(key)) groups.set(key, { kind, key, identity:identity.map(String), items:[] });
-      groups.get(key).items.push({ title:text(title) || '(제목 없음)', path, preview:text(body).replace(/\s+/g, ' ').slice(0, 180) });
-    };
-    for (const [index, slot] of (room.slots || []).entries()) {
-      if (!slot?.id || !['fixed','character','extra'].includes(slot.group)) continue;
-      const path = `rooms[${JSON.stringify(room.chatId)}].slots[${index}]`;
-      const source = text(slot.content).trim();
-      const sections = slot.id === 'currentState' ? secondaryDiagnosticParsers.stateSpans(source) : [];
-      const blocks = slot.id === 'logSummary' ? secondaryDiagnosticParsers.parseDatedLogBlocks(source) : [];
-      if (sections.length) {
-        for (const section of sections) add('section', [slot.id, section.index, section.title], section.title, `${path} · 섹션 ${section.index + 1}`, section.source);
-      } else if (blocks.length) {
-        for (const block of blocks) {
-          const line = source.slice(0, block.sourceStart).split('\n').length;
-          add('log', [block.key], block.heading, `${path}.content · 로그 ${block.index + 1}번째 · ${line}행`, block.body);
-        }
-      } else add('slot', [slot.id], slot.title, path, slot.content);
-    }
-    const active = new Set((room.activeLorePackIds || []).map(String));
-    for (const [packIndex, pack] of (libraries || []).entries()) {
-      if (!pack || !(pack.kind === 'lore' || pack.format === 'wish-lore-pack')) continue;
-      if (!(text(pack.ownerChatId) === text(room.chatId) || pack.scopeId === `lore:auto:${room.chatId}` || (!pack.ownerChatId && !pack.autoManaged && active.has(text(pack.scopeId))))) continue;
-      for (const [index, entry] of (pack.entries || []).entries()) {
-        if (!entry) continue;
-        add('lore', [pack.scopeId, entry.id], `${text(pack.name)} / ${text(entry.name)}`, `characterLibraries[${packIndex}] · scopeId=${text(pack.scopeId)} · entries[${index}]`, entry.summary?.full || entry.inject?.full || entry.notes);
-      }
-    }
-    for (const [index, fact] of (cog?.facts || []).entries()) if (fact) add('fact', [fact.id], fact.label, `cognitionRooms[${JSON.stringify(cog.id)}].facts[${index}]`, fact.content);
-    for (const [index, speech] of (room.speechRelations || []).entries()) if (speech) add('speech', [speech.id], `${text(speech.speaker)} → ${text(speech.target)}`, `rooms[${JSON.stringify(room.chatId)}].speechRelations[${index}]`, speech.note);
-    if (options.includeRelationships !== false) for (const [index, relation] of (room.relationships || []).entries()) if (relation) add('relationship', [relation.id], `${text(relation.speaker)} → ${text(relation.target)}`, `rooms[${JSON.stringify(room.chatId)}].relationships[${index}]`, relation.current);
-    return [...groups.values()].filter(group => group.items.length > 1);
-  }
-  function secondaryRoomScope() {
-    const apiId = currentApiChatId();
-    if (!apiId) return '';
-    const url = new URL(location.href);
-    for (const key of ['branchId','branch','forkId','threadId','conversationId']) {
-      const value = url.searchParams.get(key);
-      if (value) return `${apiId}::${key}=${value}`;
-    }
-    return apiId;
-  }
-  async function readSecondaryDiagnosticSnapshot(scopeId) {
-    const db = await openWishDatabase();
-    try {
-      return await new Promise((resolve, reject) => {
-        const tx = db.transaction(['rooms','cognitionRooms','characterLibraries'], 'readonly');
-        const data = {};
-        for (const [request, key] of [[tx.objectStore('rooms').get(scopeId),'room'], [tx.objectStore('cognitionRooms').get(scopeId.split('::')[0]),'cog'], [tx.objectStore('characterLibraries').getAll(),'libraries']]) {
-          request.onsuccess = () => { data[key] = request.result; };
-          request.onerror = () => reject(request.error);
-        }
-        tx.oncomplete = () => resolve(data);
-        tx.onerror = tx.onabort = () => reject(tx.error || new Error('중복값 확인용 자료를 읽지 못했습니다.'));
-      });
-    } finally { db.close(); }
-  }
-  async function showSecondaryDuplicateDetails(options = {}) {
-    const scopeId = secondaryRoomScope();
-    const modal = createModal('2차 재구축 · 중복 식별값 확인', '현재 방의 저장 자료에서 중복된 값과 위치를 확인합니다.');
-    modal.overlay.setAttribute('data-wish-secondary-diagnostics', '');
-    modal.body.textContent = '중복값 확인 중…';
-    modal.footer.innerHTML = '<button type="button" data-secondary-copy>상세 내용 복사</button><span></span><button type="button" data-secondary-close>닫기</button>';
-    modal.footer.querySelector('[data-secondary-close]').onclick = modal.close;
-    const copy = modal.footer.querySelector('[data-secondary-copy]');
-    copy.disabled = true;
-    try {
-      if (!scopeId) throw new Error('현재 방 ID를 확인할 수 없습니다. 해당 채팅방에서 다시 실행해 주세요.');
-      const snapshot = await readSecondaryDiagnosticSnapshot(scopeId);
-      if (!snapshot.room) throw new Error('현재 방의 저장 자료가 없습니다. 먼저 저장한 뒤 다시 확인해 주세요.');
-      if (scopeId !== secondaryRoomScope() || !modal.overlay.isConnected) return;
-      const groups = collectSecondaryDuplicates(snapshot.room, snapshot.cog, snapshot.libraries, options);
-      const labels = { log:'날짜별 로그', section:'현재상태 섹션', slot:'기억·설정 카드', lore:'자료집 카드', fact:'인지 정보', speech:'호칭·말투', relationship:'관계·감정선' };
-      const report = groups.length ? `방 ID: ${scopeId}\n중복 ${groups.length}건\n\n` + groups.map((group, index) => `${index + 1}. ${labels[group.kind] || group.kind}\n중복 식별값: ${group.key}\n` + group.items.map((item, i) => `항목 ${i + 1}: ${item.title}\n위치: ${item.path}\n본문 일부: ${item.preview}`).join('\n\n')).join('\n\n━━━━━━━━━━━━\n\n') + '\n\n같은 날짜·제목의 로그는 로그요약에서 표시된 행을 비교하세요. ID 중복은 표시된 카드와 위치를 확인하세요. 이 확인창은 원본 자료를 변경하지 않습니다.' : `방 ID: ${scopeId}\n현재 저장 자료에서 중복을 찾지 못했습니다.\n저장 전 편집 내용이나 다른 탭의 변경일 수 있습니다. 저장·새로고침 후 다시 확인하고 원본 실패 기록도 함께 확인해 주세요.`;
-      const pre = document.createElement('pre');
-      pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:0;';
-      pre.textContent = report;
-      modal.body.replaceChildren(pre);
-      copy.disabled = false;
-      copy.onclick = async () => {
-        try { await navigator.clipboard.writeText(report); copy.textContent = '복사 완료'; }
-        catch (_) {
-          const textarea = document.createElement('textarea');
-          textarea.value = report; textarea.style.cssText = 'position:fixed;opacity:0';
-          modal.body.appendChild(textarea); textarea.focus(); textarea.select();
-          try { copy.textContent = document.execCommand('copy') ? '복사 완료' : '본문을 직접 선택해 복사하세요'; } finally { textarea.remove(); }
-        }
-      };
-    } catch (error) { if (modal.overlay.isConnected) modal.body.textContent = `중복값 확인 실패: ${error.message}`; }
-  }
-  let secondaryDiagnosticAttempt = 0, secondaryDiagnosticShown = 0;
-  function observeSecondaryDuplicateFailure(root) {
-    const source = root.querySelector('[data-key="secondary-rebuild"] [data-act="secondaryExport"]');
-    if (source && !source.parentElement.querySelector('[data-wish-secondary-check]')) {
-      const button = document.createElement('button');
-      button.type = 'button'; button.className = 'm3-btn mini'; button.textContent = '중복값 확인';
-      button.setAttribute('data-wish-secondary-check', ''); button.setAttribute('data-fx-node', '');
-      button.onclick = event => { event.preventDefault(); event.stopPropagation(); void showSecondaryDuplicateDetails(); };
-      source.parentElement.appendChild(button);
-    }
-    if (!secondaryDiagnosticAttempt || secondaryDiagnosticShown === secondaryDiagnosticAttempt || Date.now() - secondaryDiagnosticAttempt > 30000) return;
-    const failure = [...root.querySelectorAll('.m3-toast,.m3-error,.m3-warning,.wp-err-msg')].find(node => /2차 재구축 대상의 식별값이 중복|자료집 카드 ID가 비어 있거나 중복/.test(node.textContent || ''));
-    if (!failure || document.querySelector('[data-wish-secondary-diagnostics]')) return;
-    secondaryDiagnosticShown = secondaryDiagnosticAttempt;
-    if (activeTransferCapture?.kind === 'secondary') activeTransferCapture = null;
-    void showSecondaryDuplicateDetails({ includeRelationships:true });
-  }
-  function injectSecondaryDialogButton(root) {
-    root.querySelectorAll('.m3-dialog[aria-label="외부 AI로 2차 재구축"]').forEach(dialog => {
-      const original = dialog.querySelector('footer [data-act="secondaryExportRun"]');
-      if (!original) return;
-      const existing = dialog.querySelector('[data-wish-gpt-secondary-run]');
-      if (existing) { existing.disabled = original.disabled; return; }
-      const button = patchChatButton('ChatGPT 전송');
-      button.setAttribute('data-wish-gpt-secondary-run', '');
-      button.disabled = original.disabled;
-      button.onclick = event => {
-        event.preventDefault(); event.stopPropagation();
-        const source = dialog.querySelector('footer [data-act="secondaryExportRun"]');
-        if (!source || source.disabled) return;
-        beginTransferCapture('secondary');
-        notify('2차 재구축 TXT를 ChatGPT 전송용으로 준비합니다. 파일은 다운로드하지 않습니다.', 'info', 6500);
-        source.click();
-      };
-      original.insertAdjacentElement('afterend', button);
-    });
-  }
-  function processAppleTransferDialog(root) {
-    const capture = activeTransferCapture;
-    if (!capture || capture.kind !== 'full' || !capture.suppressDownload) return;
-    const dialog = root.querySelector('.m3-dialog[aria-label="전체 재구축 TXT 받기"]');
-    if (!dialog || dialog.dataset.wishGptProcessing === '1') return;
-    const links = [...dialog.querySelectorAll('a[data-txt-download][download]')].filter(link => transferKindForName(link.download) === 'full');
-    if (!links.length) return;
-    dialog.dataset.wishGptProcessing = '1';
-    dialog.style.pointerEvents = 'none';
-    void Promise.all(links.map(link => captureTransferDownload(link))).finally(() => {
-      dialog.style.pointerEvents = '';
-      dialog.querySelector('[data-act="closeDlg"]')?.click();
-    });
-  }
-  function injectChatTransferNote(root) {
-    const panel = root.querySelector('[data-key="external"]');
-    if (!panel || panel.querySelector('[data-wish-gpt-transfer-note]')) return;
-    const note = document.createElement('div');
-    note.className = 'wish-gpt-transfer-note';
-    note.setAttribute('data-wish-gpt-transfer-note', '');
-    note.setAttribute('data-fx-node', '');
-    note.textContent = '🪽 “ChatGPT 전송”은 턴 범위 파일과 요청 문구를 준비하고 열려 있는 ChatGPT 탭으로 이동합니다. 열린 탭이 없으면 새 탭을 엽니다. ChatGPT의 “이 방으로 전송”으로 첨부한 뒤 보내기를 눌러 주세요. 전달함 보관 12시간.';
-    panel.appendChild(note);
+    root.querySelectorAll('[data-wish-gpt-final]').forEach(button => applyButtonContrast(button, '#334894', '#263b80'));
   }
   function scan() {
     scanQueued = false;
@@ -2335,12 +1731,8 @@ return { parseDatedLogBlocks, stateSpans };
     }
     injectPatchVersion(root);
     root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
-    injectChatTransferButtons(root);
-    injectSecondaryDialogButton(root);
-    observeSecondaryDuplicateFailure(root);
+    root.querySelectorAll('.m3-dialog').forEach(injectFinalGptButton);
     refreshButtonContrast(root);
-    injectChatTransferNote(root);
-    processAppleTransferDialog(root);
   }
   function queueScan() {
     if (scanQueued) return;
@@ -2350,10 +1742,6 @@ return { parseDatedLogBlocks, stateSpans };
   function installObserver() {
     if (!document.documentElement) { document.addEventListener('DOMContentLoaded', installObserver, { once:true }); return; }
     new MutationObserver(queueScan).observe(document.documentElement, { childList:true, subtree:true });
-    document.addEventListener('click', event => {
-      const button = event.target.closest?.('[data-act="secondaryExport"],[data-act="secondaryExportRun"],[data-act="secondaryImport"],[data-act="secondaryApply"],[data-act="secondaryManage"]');
-      if (button && !button.disabled) secondaryDiagnosticAttempt = Math.max(Date.now(), secondaryDiagnosticAttempt + 1);
-    }, true);
     queueScan();
     const notice = sessionStorage.getItem(RESTORE_NOTICE_KEY);
     if (notice) { sessionStorage.removeItem(RESTORE_NOTICE_KEY); setTimeout(() => notify(notice, 'success', 6500), 1200); }
@@ -2386,7 +1774,7 @@ return { parseDatedLogBlocks, stateSpans };
   mountStyle();
   if (IS_CHATGPT) installChatGPTBridge();
   else {
-    installTransferCapture();
+    installSecondaryDownloadCapture();
     installObserver();
   }
 })();
