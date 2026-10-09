@@ -36,7 +36,7 @@
   'use strict';
 
   const PATCH_VERSION = '1.0.1';
-  const SUPPORTED_CORE_VERSION = '1.5.3.2';
+  const SUPPORTED_CORE_VERSION = '1.5.3.5';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
