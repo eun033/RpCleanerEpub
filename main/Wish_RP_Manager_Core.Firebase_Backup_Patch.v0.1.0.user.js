@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      1.0.1
-// @description  Wish RP Manager Core v1.5.3에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
+// @version      1.1.0
+// @description  Wish RP Manager Core 1.6 이상 2.0 미만에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
 // @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
@@ -35,8 +35,9 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.0.1';
-  const SUPPORTED_CORE_VERSION = '1.6.1';
+  const PATCH_VERSION = '1.1.0';
+  const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
+  const MAX_SUPPORTED_CORE_MAJOR = 2;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
@@ -59,7 +60,7 @@
   const META_ROOT = 'rpManagerBackupMeta';
   const DATA_ROOT = 'rpManagerBackupData';
   const MANAGER_ID = 'wish-rp-manager-core';
-  const GUIDE_BASE_VERSION = '1.5.0';
+  const GUIDE_BASE_VERSION = '1.10.0';
   const GUIDE_STORAGE_KEYS = Object.freeze({
     externalMemory:'Wish-RP-Manager-Core-external-memory-guide-v1',
     externalPeople:'Wish-RP-Manager-Core-external-people-guide-v1',
@@ -68,6 +69,7 @@
     apiLoreBundle:'wish-rp-core-prompt-apiLoreBundle-v1',
     apiCommon:'wish-rp-core-prompt-v1-apiCommon',
     apiMemory:'wish-rp-core-prompt-v1-apiMemory',
+    apiThreads:'wish-rp-core-prompt-v1-apiThreads',
     apiObserve:'wish-rp-core-prompt-v1-apiObserve',
     apiSpeech:'wish-rp-core-prompt-v1-apiSpeech',
     apiRelationships:'wish-rp-core-prompt-v1-apiRelationships',
@@ -86,6 +88,7 @@
     loreExternal:'WISH_RP_guide_lore_external_v1',
   });
   const DEFAULT_EXTRA_PRESET_KEY = 'WISH_RP_default_extra_preset_v1';
+  const DEFAULT_CHARACTER_PRESET_KEY = 'WISH_RP_default_character_preset_v1';
 
   let busy = false;
   let scanQueued = false;
@@ -136,6 +139,12 @@
     const value = runtime();
     if (typeof value === 'string') return value.match(/@([\d.]+)$/)?.[1] || '';
     return String(value?.version || document.querySelector('#wish-rp-root .m3-sub-line span')?.textContent?.match(/Wish Core\s+([\d.]+)/)?.[1] || '');
+  }
+  function coreVersionSupported(value) {
+    const match = String(value || '').match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+    if (!match) return false;
+    const major = Number(match[1]), minor = Number(match[2]);
+    return major < MAX_SUPPORTED_CORE_MAJOR && (major > 1 || major === 1 && minor >= 6);
   }
   const bridge = () => {
     try { return unsafeWindow?.__WishCognitionBridge || window.__WishCognitionBridge || null; }
@@ -967,9 +976,10 @@
         ? { format:'wish-rp-guide', isCustom:true, baseVersion:String(parsed.baseVersion || 'legacy'), text:parsed.text }
         : { format:'wish-rp-guide', isCustom:true, baseVersion:'legacy', text:String(raw || '') };
     }
-    let defaultExtraPreset = {};
+    let defaultExtraPreset = {}, defaultCharacterPreset = {};
     try { defaultExtraPreset = JSON.parse(localStorage.getItem(DEFAULT_EXTRA_PRESET_KEY) || '{}'); } catch (_) {}
-    return { guides, defaultExtraPreset };
+    try { defaultCharacterPreset = JSON.parse(localStorage.getItem(DEFAULT_CHARACTER_PRESET_KEY) || '{}'); } catch (_) {}
+    return { guides, defaultExtraPreset, defaultCharacterPreset };
   }
   async function restoreGlobalSettings(data) {
     for (const [id, key] of Object.entries(GUIDE_STORAGE_KEYS)) {
@@ -981,6 +991,7 @@
       } else if (typeof value === 'string') localStorage.setItem(key, JSON.stringify({ format:'wish-rp-guide', baseVersion:'legacy-backup', text:value }));
     }
     if (data.defaultExtraPreset != null) localStorage.setItem(DEFAULT_EXTRA_PRESET_KEY, JSON.stringify(data.defaultExtraPreset));
+    if (data.defaultCharacterPreset != null) localStorage.setItem(DEFAULT_CHARACTER_PRESET_KEY, JSON.stringify(data.defaultCharacterPreset));
     if (data.cognitionSettings) {
       await bridge()?.validateSettings?.(data.cognitionSettings);
       await bridge()?.saveSettings?.(data.cognitionSettings);
@@ -995,7 +1006,7 @@
       return sanitizeBackup({
         _wishRpManagerBackup:true,
         backupSchema:3,
-        version:coreVersion() || '1.5.3',
+        version:coreVersion() || '1.6.1',
         firebasePatchVersion:PATCH_VERSION,
         exportedAt:new Date().toISOString(),
         rooms:data.rooms,
@@ -1005,6 +1016,7 @@
         autoHistory:data.autoHistory,
         guides:globalSettings.guides,
         defaultExtraPreset:globalSettings.defaultExtraPreset,
+        defaultCharacterPreset:globalSettings.defaultCharacterPreset,
         cognitionSettings:cognitionSettings || null,
       });
     } finally { db.close(); }
@@ -1104,6 +1116,29 @@
     return sanitizeBackup(data);
   }
   const apiChatIdOf = room => room?.apiChatId || String(room?.chatId || '').split('::')[0] || '';
+  function roomDisplayName(room) {
+    const id = String(room?.chatId || room?.apiChatId || '');
+    return String(room?.backupDisplayName || room?.displayName || room?.label || room?.name || `RP ${id.slice(-8) || '알 수 없음'}`).trim();
+  }
+  function libraryOwnerRoom(library, rooms) {
+    const ownerChatId = String(library?.ownerChatId || '');
+    const ownerApiChatId = String(library?.ownerApiChatId || '');
+    const scopeRoomId = String(library?.scopeId || '').match(/^lore:auto:(.+)$/)?.[1] || '';
+    return (rooms || []).find(room => {
+      const chatId = String(room?.chatId || ''), apiChatId = String(apiChatIdOf(room) || '');
+      return !!(
+        ownerChatId && (ownerChatId === chatId || ownerChatId === apiChatId) ||
+        ownerApiChatId && (ownerApiChatId === apiChatId || ownerApiChatId === chatId) ||
+        scopeRoomId && (scopeRoomId === chatId || scopeRoomId === apiChatId)
+      );
+    }) || null;
+  }
+  function libraryOwnerLabel(library, rooms) {
+    const room = libraryOwnerRoom(library, rooms);
+    if (room) return `연결 방: ${roomDisplayName(room)}`;
+    const owner = String(library?.ownerChatId || library?.ownerApiChatId || String(library?.scopeId || '').match(/^lore:auto:(.+)$/)?.[1] || '');
+    return owner ? `연결 방 ID: ${owner.length > 18 ? `${owner.slice(0, 8)}…${owner.slice(-6)}` : owner}` : '';
+  }
   const recordMatchesRooms = (record, roomIds) => {
     if (roomIds.has(String(record?.chatId || ''))) return true;
     if ([...roomIds].some(id => String(record?.id || '').includes(id))) return true;
@@ -1196,7 +1231,7 @@
     data.cognitionRooms = (data.cognitionRooms || []).filter(item => apiIds.has(String(item.id || '')));
     data.runtime = (data.runtime || []).filter(item => ids.has(String(item.chatId || '')));
     data.autoHistory = (data.autoHistory || []).filter(item => !item.backup && ids.has(String(item.chatId || '')));
-    if (!includeSettings) for (const key of ['guides','defaultExtraPreset','cognitionSettings']) delete data[key];
+    if (!includeSettings) for (const key of ['guides','defaultExtraPreset','defaultCharacterPreset','cognitionSettings']) delete data[key];
     return validateCoreBackup(data);
   }
   async function openFirebaseBackupRoomPicker(provider = 'firebase') {
@@ -1234,10 +1269,10 @@
       const meta = {
         id,
         manager:MANAGER_ID,
-        source:'cloud-patch-1.0.0',
+        source:'cloud-patch-1.1.0',
         label:String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`,
         createdAt:payload.exportedAt,
-        version:String(payload.version || '1.5.3'),
+        version:String(payload.version || '1.6.1'),
         patchVersion:PATCH_VERSION,
         roomCount:payload.rooms.length,
         libraryCount:payload.characterLibraries.length,
@@ -1366,7 +1401,7 @@
       const metadata = {
         name:`${safeName}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
         mimeType:'application/json', parents:[folderId], description:`Wish RP Manager Core 백업 · ${name}`,
-        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.5.3'), patchVersion:PATCH_VERSION },
+        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.6.1'), patchVersion:PATCH_VERSION },
       };
       const session = await driveHttp({
         method:'POST', url:'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name', raw:true,
@@ -1453,6 +1488,57 @@
     } catch (error) { notify(`서버 백업 목록 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; }
   }
+  async function deleteLocalLibraries(libraryIds) {
+    const selected = new Set([...libraryIds].map(String).filter(Boolean));
+    if (!selected.size) throw new Error('삭제할 기존 자료를 선택해 주세요.');
+    const db = await openWishDatabase();
+    try {
+      const existing = await readAllStores(db);
+      const references = room => [...(Array.isArray(room?.activeLorePackIds) ? room.activeLorePackIds : []), room?.autoCharacterLibraryId, room?.lastExtraLibraryId].filter(Boolean).map(String);
+      const pendingRooms = existing.rooms.filter(room => room?.pending);
+      const blocked = existing.characterLibraries.filter(library => {
+        const id = String(library?.scopeId || '');
+        if (!selected.has(id)) return false;
+        const owner = libraryOwnerRoom(library, pendingRooms);
+        return !!owner || pendingRooms.some(room => references(room).includes(id));
+      });
+      if (blocked.length) {
+        const names = blocked.slice(0, 3).map(item => item?.name || item?.title || item?.scopeId).join(', ');
+        throw new Error(`활성 주입에 연결된 자료는 삭제할 수 없습니다: ${names}${blocked.length > 3 ? ` 외 ${blocked.length - 3}개` : ''}`);
+      }
+      const existingIds = new Set(existing.characterLibraries.map(item => String(item?.scopeId || '')).filter(id => selected.has(id)));
+      if (!existingIds.size) throw new Error('선택한 기존 자료를 찾지 못했습니다.');
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(['rooms', 'characterLibraries'], 'readwrite');
+        try {
+          const libraryStore = tx.objectStore('characterLibraries');
+          for (const id of existingIds) libraryStore.delete(id);
+          const roomStore = tx.objectStore('rooms');
+          for (const room of existing.rooms) {
+            const active = Array.isArray(room?.activeLorePackIds) ? room.activeLorePackIds.map(String) : [];
+            const nextActive = active.filter(id => !existingIds.has(id));
+            const clearAuto = existingIds.has(String(room?.autoCharacterLibraryId || ''));
+            const clearExtra = existingIds.has(String(room?.lastExtraLibraryId || ''));
+            if (nextActive.length === active.length && !clearAuto && !clearExtra) continue;
+            const next = clone(room);
+            next.activeLorePackIds = nextActive;
+            if (clearAuto) delete next.autoCharacterLibraryId;
+            if (clearExtra) delete next.lastExtraLibraryId;
+            next._epoch = crypto.randomUUID ? crypto.randomUUID() : `delete-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            next._rev = Number(room?._rev || 0) + 1;
+            roomStore.put(next);
+          }
+        } catch (error) {
+          try { tx.abort(); } catch (_) {}
+          reject(error);
+          return;
+        }
+        tx.oncomplete = resolve;
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('기존 자료 삭제 트랜잭션에 실패했습니다.'));
+      });
+      return existingIds.size;
+    } finally { db.close(); }
+  }
   async function openRestoreSelection(backup) {
     const db = await openWishDatabase();
     let existing;
@@ -1462,10 +1548,17 @@
     const currentApi = String(location.pathname.match(/\/(?:chats|c|episodes)\/([^/?#]+)/)?.[1] || '');
     const rooms = backup.rooms.filter(room => room?.chatId);
     const libraries = backup.characterLibraries.filter(item => item?.scopeId);
+    const localLibraries = existing.characterLibraries.filter(item => item?.scopeId);
+    const localBlockedIds = new Set(localLibraries.filter(item => {
+      const owner = libraryOwnerRoom(item, existing.rooms);
+      const id = String(item.scopeId);
+      return !!owner?.pending || existing.rooms.some(room => room?.pending && [...(Array.isArray(room.activeLorePackIds) ? room.activeLorePackIds : []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id));
+    }).map(item => String(item.scopeId)));
     const modal = createModal('서버 백업 선택 복원', '선택한 Wish 로컬 데이터만 교체하고 완료 즉시 페이지를 새로고침합니다.');
-    modal.body.innerHTML = `<div class="wish-fbp-toolbar"><button type="button" data-pick-current>현재 방만</button><button type="button" data-pick-all>전체 선택</button><button type="button" data-pick-none>선택 해제</button><span data-pick-count>0개 선택</span></div><h3>RP 채팅방 · ${rooms.length}개</h3>${rooms.map(room => { const id=String(room.chatId), blocked=pendingIds.has(id), current=apiChatIdOf(room)===currentApi; return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" data-room-id="${esc(id)}" ${blocked?'disabled':''}><span><b>${current?'● ':''}${esc(room.backupDisplayName || room.label || `RP ${id.slice(-8)}`)}</b><small>${blocked?'현재 활성 주입 때문에 복원 제외':`기억 슬롯 ${Array.isArray(room.slots)?room.slots.length:0}개`}</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">백업에 채팅방 데이터가 없습니다.</div>'}<h3>자료집 · ${libraries.length}개</h3>${libraries.map(item => `<label class="wish-fbp-row"><input type="checkbox" data-library-id="${esc(item.scopeId)}"><span><b>${esc(item.name || item.title || item.scopeId)}</b><small>${Array.isArray(item.entries)?item.entries.length:Array.isArray(item.characters)?item.characters.length:0}개 항목${item.ownerChatId?' · 방 연결 자료':''}</small></span></label>`).join('') || '<div class="wish-fbp-empty">백업에 자료집 데이터가 없습니다.</div>'}<h3>공용 설정</h3><label class="wish-fbp-row"><input type="checkbox" data-global-settings><span><b>공용 지침 · 기본 프리셋 · 인지 설정</b><small>원본 파일 백업과 같은 전역 설정 묶음</small></span></label><div class="wish-fbp-note">활성 주입 중인 방은 선택할 수 없습니다. API 키와 패치 로그인 정보는 백업에 포함되지 않습니다.</div>`;
+    modal.body.innerHTML = `<div class="wish-fbp-toolbar"><button type="button" data-pick-current>현재 방만</button><button type="button" data-pick-all>전체 선택</button><button type="button" data-pick-none>선택 해제</button><span data-pick-count>0개 선택</span></div><h3>RP 채팅방 · ${rooms.length}개</h3>${rooms.map(room => { const id=String(room.chatId), blocked=pendingIds.has(id), current=apiChatIdOf(room)===currentApi; return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" data-room-id="${esc(id)}" ${blocked?'disabled':''}><span><b>${current?'● ':''}${esc(roomDisplayName(room))}</b><small>${blocked?'현재 활성 주입 때문에 복원 제외':`기억 슬롯 ${Array.isArray(room.slots)?room.slots.length:0}개`}</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">백업에 채팅방 데이터가 없습니다.</div>'}<h3>자료집 · ${libraries.length}개</h3>${libraries.map(item => { const owner=libraryOwnerLabel(item, rooms); return `<label class="wish-fbp-row"><input type="checkbox" data-library-id="${esc(item.scopeId)}"><span><b>${esc(item.name || item.title || item.scopeId)}${owner?` <em class="wish-fbp-owner">· ${esc(owner)}</em>`:''}</b><small>${Array.isArray(item.entries)?item.entries.length:Array.isArray(item.characters)?item.characters.length:0}개 항목</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">백업에 자료집 데이터가 없습니다.</div>'}<h3>공용 설정</h3><label class="wish-fbp-row"><input type="checkbox" data-global-settings><span><b>공용 지침 · 기본 프리셋 · 인지 설정</b><small>원본 파일 백업과 같은 전역 설정 묶음</small></span></label><div class="wish-fbp-note">활성 주입 중인 방은 선택할 수 없습니다. API 키와 패치 로그인 정보는 백업에 포함되지 않습니다.</div><details class="wish-fbp-local-cleanup"><summary>현재 기기에 있는 기존 자료 삭제 · ${localLibraries.length}개</summary><p>복원 전에 필요 없는 로컬 자료집만 별도로 삭제합니다. 서버의 백업 파일은 삭제되지 않습니다.</p><div data-local-library-list>${localLibraries.map(item => { const id=String(item.scopeId), blocked=localBlockedIds.has(id), owner=libraryOwnerLabel(item, existing.rooms); return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" data-delete-library-id="${esc(id)}" ${blocked?'disabled':''}><span><b>${esc(item.name || item.title || id)}${owner?` <em class="wish-fbp-owner">· ${esc(owner)}</em>`:''}</b><small>${blocked?'활성 주입에 연결되어 삭제할 수 없음':`${Array.isArray(item.entries)?item.entries.length:Array.isArray(item.characters)?item.characters.length:0}개 항목`}</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">삭제할 기존 자료가 없습니다.</div>'}</div><div class="wish-fbp-local-actions"><span data-delete-count>0개 선택</span><button type="button" class="danger" data-delete-local-libraries disabled>선택한 기존 자료 삭제</button></div></details>`;
     modal.footer.innerHTML = '<span></span><button type="button" data-fbp-cancel>취소</button><button type="button" class="primary" data-fbp-restore disabled>선택 항목 복원</button>';
-    const boxes = () => [...modal.body.querySelectorAll('input[type="checkbox"]:not(:disabled)')];
+    const boxes = () => [...modal.body.querySelectorAll('[data-room-id]:not(:disabled),[data-library-id]:not(:disabled),[data-global-settings]:not(:disabled)')];
+    const deleteBoxes = () => [...modal.body.querySelectorAll('[data-delete-library-id]:not(:disabled)')];
     const update = () => {
       const count = boxes().filter(box => box.checked).length;
       modal.body.querySelector('[data-pick-count]').textContent = `${count}개 선택`;
@@ -1475,6 +1568,23 @@
     modal.body.querySelector('[data-pick-all]').onclick = () => { boxes().forEach(box => { box.checked = true; }); update(); };
     modal.body.querySelector('[data-pick-none]').onclick = () => { boxes().forEach(box => { box.checked = false; }); update(); };
     boxes().forEach(box => box.onchange = update);
+    const updateDelete = () => {
+      const count = deleteBoxes().filter(box => box.checked).length;
+      modal.body.querySelector('[data-delete-count]').textContent = `${count}개 선택`;
+      modal.body.querySelector('[data-delete-local-libraries]').disabled = count === 0;
+    };
+    deleteBoxes().forEach(box => box.onchange = updateDelete);
+    modal.body.querySelector('[data-delete-local-libraries]').onclick = async event => {
+      const ids = new Set(deleteBoxes().filter(box => box.checked).map(box => box.dataset.deleteLibraryId));
+      const labels = localLibraries.filter(item => ids.has(String(item.scopeId))).slice(0, 4).map(item => item.name || item.title || item.scopeId).join('\n• ');
+      if (!ids.size || !confirm(`선택한 기존 자료 ${ids.size}개를 이 기기에서 삭제할까요?\n\n• ${labels}${ids.size > 4 ? `\n• 외 ${ids.size - 4}개` : ''}\n\n서버 백업은 삭제되지 않으며, 이 작업 후 페이지가 새로고침됩니다.`)) return;
+      event.currentTarget.disabled = true;
+      try {
+        const count = await deleteLocalLibraries(ids);
+        sessionStorage.setItem(RESTORE_NOTICE_KEY, `기존 로컬 자료 ${count}개를 삭제했습니다.`);
+        location.reload();
+      } catch (error) { notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000); event.currentTarget.disabled = false; }
+    };
     modal.footer.querySelector('[data-fbp-cancel]').onclick = modal.close;
     modal.footer.querySelector('[data-fbp-restore]').onclick = async event => {
       const roomIds = new Set(boxes().filter(box => box.checked && box.dataset.roomId).map(box => box.dataset.roomId));
@@ -1489,6 +1599,7 @@
       } catch (error) { notify(`서버 백업 복원 실패: ${error.message}`, 'error', 8000); event.currentTarget.disabled = false; }
     };
     update();
+    updateDelete();
   }
 
   function readSectionSettings(section) {
@@ -1780,7 +1891,7 @@
   function injectPatchVersion(root) {
     const line = root.querySelector('.m3-sub-line');
     if (!line) return;
-    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core 1\.5\.3$/.test(span.textContent.trim()));
+    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core\s+\d+\.\d+(?:\.\d+)?$/.test(span.textContent.trim()));
     if (!version) return;
     const existing = line.querySelector('[data-wish-patch-version]');
     if (existing) {
@@ -1813,10 +1924,10 @@
     const root = document.getElementById('wish-rp-root');
     if (!root) return;
     const version = coreVersion();
-    if (version && version !== SUPPORTED_CORE_VERSION) {
+    if (version && !coreVersionSupported(version)) {
       if (!coreMismatchNotified) {
         coreMismatchNotified = true;
-        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${SUPPORTED_CORE_VERSION}용입니다. 현재 ${version}에서는 실행하지 않습니다. 패치 업데이트를 확인해 주세요.`, 'warn', 9000);
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${MIN_SUPPORTED_CORE_VERSION} 이상, 2.0.0 미만에서만 실행합니다. 현재 ${version}에는 패치 업데이트가 필요합니다.`, 'warn', 9000);
       }
       return;
     }
@@ -1850,6 +1961,7 @@
     @media(max-width:600px){.wish-fbp-providers{top:-16px;gap:5px}.wish-fbp-providers .m3-btn{font-size:10.5px!important}.m3-cloud-row.wish-cloud-choice{display:grid!important;grid-template-columns:minmax(0,1fr)!important}.wish-cloud-choice .m3-cloud-info{width:100%}.wish-cloud-choice .m3-cloud-actions{width:100%;justify-content:flex-end}}
     .m3-dialog.wish-fbp-firebase-mode .m3-dialog-body>*:not([data-wish-cloud-providers]):not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]),.m3-dialog.wish-fbp-drive-mode .m3-dialog-body>*:not([data-wish-cloud-providers]):not([data-wish-drive-cloud]):not([data-wish-drive-settings]){display:none!important}.m3-dialog.wish-fbp-firebase-mode .m3-sheet>footer,.m3-dialog.wish-fbp-drive-mode .m3-sheet>footer{display:none!important}.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-cloud],.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-settings],.m3-dialog:not(.wish-fbp-drive-mode) [data-wish-drive-cloud],.m3-dialog:not(.wish-fbp-drive-mode) [data-wish-drive-settings]{display:none!important}[data-wish-fbp-cloud] .m3-cloud-row,[data-wish-drive-cloud] .m3-cloud-row{display:flex;align-items:center;justify-content:space-between;gap:10px}[data-wish-fbp-cloud] .m3-cloud-info,[data-wish-drive-cloud] .m3-cloud-info{min-width:0;flex:1}[data-wish-fbp-cloud] .m3-cloud-actions,[data-wish-drive-cloud] .m3-cloud-actions{flex:none}[data-wish-fbp-cloud] .m3-btn.primary,[data-wish-fbp-settings] .m3-btn.primary,[data-wish-drive-cloud] .m3-btn.primary,[data-wish-drive-settings] .m3-btn.primary{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}.wish-drive-help{margin:8px 0 12px;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-drive-help summary{display:inline-grid;place-items:center;width:22px;height:22px;border:1px solid var(--m3-line,#60718f);border-radius:50%;cursor:pointer;font-weight:800;list-style:none}.wish-drive-help summary::-webkit-details-marker{display:none}.wish-drive-help>div{margin-top:7px;line-height:1.7;overflow-wrap:anywhere}.wish-drive-help a{color:var(--m3-accent,#5890df);text-decoration:underline}.wish-drive-help code{overflow-wrap:anywhere}
     .wish-fbp-overlay{position:fixed;z-index:2147483646;inset:0;display:grid;place-items:center;padding:16px;background:#080b11c7;backdrop-filter:blur(5px);font:12px/1.5 system-ui,sans-serif;color:#edf1f8}.wish-fbp-modal{width:min(640px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;border:1px solid #354258;border-radius:14px;background:#141b27;box-shadow:0 28px 80px #000c;overflow:hidden}.wish-fbp-modal>header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;border-bottom:1px solid #2b3547}.wish-fbp-modal>header>div{flex:1}.wish-fbp-modal>header b{display:block;font-size:16px}.wish-fbp-modal>header small{display:block;margin-top:3px;color:#94a1b6}.wish-fbp-modal>header button{border:0;background:none;color:#aab5c7;font-size:18px;cursor:pointer}.wish-fbp-body{min-height:0;overflow:auto;padding:14px 18px}.wish-fbp-modal>footer{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid #2b3547;background:#101722}.wish-fbp-modal>footer>span{flex:1}.wish-fbp-modal button,.wish-fbp-toolbar button{border:1px solid #3b485e;border-radius:8px;background:#202a3a;color:#dbe3ef;padding:8px 11px;cursor:pointer;font:inherit}.wish-fbp-modal button:hover{border-color:#60789e}.wish-fbp-modal button:disabled{opacity:.45;cursor:default}.wish-fbp-modal button.primary{border-color:#557bc0;background:#294979;color:#fff}.wish-fbp-modal button.danger{border-color:#75434c;background:#3a2228;color:#ffc2cb}.wish-fbp-row{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;margin:7px 0;padding:11px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e;cursor:pointer}.wish-fbp-row:hover{border-color:#50647f}.wish-fbp-row.blocked{opacity:.55;cursor:not-allowed}.wish-fbp-row input{margin-top:3px;accent-color:#719be1}.wish-fbp-row span{min-width:0}.wish-fbp-row b,.wish-fbp-row small{display:block;overflow-wrap:anywhere}.wish-fbp-row small{margin-top:3px;color:#93a0b3}.wish-fbp-body h3{margin:18px 0 8px;color:#b7c5d9;font-size:12px}.wish-fbp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}.wish-fbp-toolbar span{margin-left:auto;color:#9eabbd}.wish-fbp-note{margin-top:14px;padding:10px 12px;border:1px solid #5b4e33;border-radius:9px;background:#282316;color:#d9c28c}.wish-fbp-empty{padding:30px 12px;text-align:center;color:#8996aa}
+    .wish-fbp-owner{display:inline;font-style:normal;font-weight:750;color:#8fc5ff}.wish-fbp-local-cleanup{margin-top:16px;border:1px solid #70454d;border-radius:10px;background:#211a20;overflow:hidden}.wish-fbp-local-cleanup>summary{padding:11px 13px;color:#ffc0c8;cursor:pointer;font-weight:800;list-style-position:inside}.wish-fbp-local-cleanup>p{margin:0;padding:0 13px 9px;color:#aeb9ca;font-size:11px}.wish-fbp-local-cleanup>[data-local-library-list]{max-height:270px;overflow:auto;padding:0 10px}.wish-fbp-local-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:10px 13px;border-top:1px solid #54363c}.wish-fbp-local-actions>span{margin-right:auto;color:#aeb9ca}
     #wish-gpt-transfer-widget{position:fixed;z-index:2147483645;right:18px;bottom:92px;display:grid;grid-template-columns:minmax(180px,auto) auto auto;align-items:stretch;gap:5px;max-width:calc(100vw - 28px);padding:6px;border:1px solid #526786;border-radius:14px;background:#151d29eF;box-shadow:0 16px 48px #0008;backdrop-filter:blur(12px);font:12px/1.35 system-ui,sans-serif;color:#eef4ff}#wish-gpt-transfer-widget button{border:1px solid #40516b;border-radius:9px;background:#212d40;color:#e8f0fd;padding:8px 10px;cursor:pointer;font:inherit}#wish-gpt-transfer-widget button:hover{border-color:#7ca2df;background:#293954}#wish-gpt-transfer-widget button:disabled{opacity:.6;cursor:wait}.wish-gpt-send{display:grid;text-align:left}.wish-gpt-send b{font-size:12px}.wish-gpt-send small{margin-top:2px;color:#a9b7ca;font-size:10px}.wish-gpt-save,.wish-gpt-clear{min-width:42px}.wish-gpt-clear{font-size:18px!important;padding-inline:9px!important}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:168px}
     @media(max-width:600px){.wish-fbp-grid{grid-template-columns:1fr}.wish-fbp-overlay{padding:0;place-items:end stretch}.wish-fbp-modal{width:100%;max-height:88vh;border-radius:16px 16px 0 0}.wish-fbp-modal>footer{flex-wrap:wrap}.wish-fbp-modal>footer>span{display:none}.wish-fbp-modal>footer button{flex:1}.wish-fbp-toolbar span{flex-basis:100%;margin-left:0}}
     @media(max-width:600px){#wish-gpt-transfer-widget{left:10px;right:10px;bottom:76px;grid-template-columns:minmax(0,1fr) auto auto}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:154px}}
