@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      1.1.0
+// @version      1.2.0
 // @description  Wish RP Manager Core 1.6 이상 2.0 미만에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
 // @author       User
 // @license      All Rights Reserved
@@ -35,7 +35,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.1.0';
+  const PATCH_VERSION = '1.2.0';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
   const MAX_SUPPORTED_CORE_MAJOR = 2;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -196,7 +196,7 @@
     return `RP_${rid.slice(-8) || 'chat'}`;
   }
   function safeFilenamePart(value) {
-    return String(value || 'RP').normalize('NFKC').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').replace(/[. ]+$/g, '').replace(/\s+/g, ' ').trim().slice(0, 100) || 'RP';
+    return String(value || 'RP').normalize('NFKC').trim().replace(/\s+/g, '_').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').replace(/_+/g, '_').replace(/[._]+$/g, '').slice(0, 100) || 'RP';
   }
   function crackToken() {
     const row = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('access_token='));
@@ -449,12 +449,26 @@
   }
 
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const chatPageWindow = () => {
+    try { return typeof unsafeWindow !== 'undefined' && unsafeWindow ? unsafeWindow : window; }
+    catch (_) { return window; }
+  };
+  function chatComposerRegion() {
+    const composer = findChatGPTComposer();
+    return composer?.closest('form') || composer?.closest('[data-testid*="composer"],[class*="composer"]') || composer?.parentElement || document;
+  }
   function findChatGPTFileInput() {
-    const inputs = [...document.querySelectorAll('input[type="file"]')].filter(input => !input.disabled);
-    return inputs.find(input => {
-      const accept = String(input.accept || '').toLowerCase();
-      return !accept || accept.includes('text') || accept.includes('.txt') || accept.includes('application');
-    }) || null;
+    const region = chatComposerRegion();
+    const inputs = [...new Set([...(region?.querySelectorAll?.('input[type="file"]') || []), ...document.querySelectorAll('input[type="file"]')])].filter(input => !input.disabled);
+    const scored = inputs.map(input => {
+      const accept = String(input.accept || '').toLowerCase(), imageOnly = !!accept && /image|video|audio/.test(accept) && !/text|application|\.txt|\.zip|\.json|\*/.test(accept);
+      if (imageOnly || input.hasAttribute('capture')) return { input, score:-1 };
+      let score = region?.contains?.(input) ? 100 : 0;
+      if (!accept || /text|application|\.txt|\.zip|\.json|\*/.test(accept)) score += 30;
+      if (input.multiple) score += 10;
+      return { input, score };
+    }).filter(item => item.score >= 0).sort((a, b) => b.score - a.score);
+    return scored[0]?.input || null;
   }
   async function getChatGPTFileInput() {
     let input = findChatGPTFileInput();
@@ -462,7 +476,7 @@
     const plus = document.querySelector('button[data-testid="composer-plus-btn"],button[aria-label*="파일 첨부"],button[aria-label*="파일 추가"],button[aria-label*="Add files"],button[aria-label*="Attach"]');
     if (plus && !plus.disabled) {
       plus.click();
-      for (let attempt = 0; attempt < 8 && !input; attempt++) { await wait(150); input = findChatGPTFileInput(); }
+      for (let attempt = 0; attempt < 16 && !input; attempt++) { await wait(150); input = findChatGPTFileInput(); }
     }
     return input;
   }
@@ -605,56 +619,98 @@
       notify(`대화 이름: ${error.message}`, 'warn', 8000);
     } finally { titleRenameBusy = false; renderChatGPTBridge(); }
   }
-  function putChatGPTMessage(element, message) {
+  function chatInputEvent(type, init = {}) {
+    const page = chatPageWindow();
+    try { return new page.InputEvent(type, { bubbles:true, composed:true, ...init }); }
+    catch (_) { return new page.Event(type, { bubbles:true, composed:true }); }
+  }
+  async function putChatGPTMessage(element, message) {
     if (!element) throw new Error('ChatGPT 메시지 입력창을 찾지 못했습니다.');
     const current = String('value' in element ? element.value : element.innerText || element.textContent || '').trim();
-    if (current.includes(message)) return;
+    if (normalizedText(current).includes(normalizedText(message))) return true;
     const addition = `${current ? '\n\n' : ''}${message}`;
+    const desired = `${current}${addition}`;
     element.focus();
     if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
       const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-      if (setter) setter.call(element, `${current}${addition}`); else element.value = `${current}${addition}`;
-      element.dispatchEvent(new Event('input', { bubbles:true }));
-      element.dispatchEvent(new Event('change', { bubbles:true }));
-      return;
+      if (setter) setter.call(element, desired); else element.value = desired;
+      element.dispatchEvent(chatInputEvent('input', { inputType:'insertText', data:addition }));
+      element.dispatchEvent(chatInputEvent('change'));
+    } else {
+      const selection = window.getSelection(), range = document.createRange();
+      range.selectNodeContents(element); range.collapse(false); selection.removeAllRanges(); selection.addRange(range);
+      let inserted = false;
+      try { inserted = !!document.execCommand?.('insertText', false, addition); } catch (_) {}
+      if (!inserted || !normalizedText(element.innerText || element.textContent).includes(normalizedText(message))) {
+        const fragment = document.createDocumentFragment();
+        for (const line of desired.split('\n')) {
+          const paragraph = document.createElement('p');
+          if (line) paragraph.textContent = line; else paragraph.appendChild(document.createElement('br'));
+          fragment.appendChild(paragraph);
+        }
+        element.replaceChildren(fragment);
+      }
+      element.dispatchEvent(chatInputEvent('input', { inputType:'insertText', data:addition }));
     }
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    const inserted = document.execCommand?.('insertText', false, addition);
-    if (!inserted) element.textContent = `${current}${addition}`;
-    element.dispatchEvent(new InputEvent('input', { bubbles:true, inputType:'insertText', data:addition }));
+    await wait(120);
+    const live = findChatGPTComposer();
+    if (!normalizedText(live && ('value' in live ? live.value : live.innerText || live.textContent)).includes(normalizedText(message))) throw new Error('ChatGPT 입력창에 요청 문구가 반영되지 않았습니다. 전달함은 유지됩니다.');
+    return true;
+  }
+  function chatAttachmentState() {
+    const nodes = [...document.querySelectorAll('[data-testid*="attachment"]:not(input),[data-testid*="file-preview"],[data-testid*="file-thumbnail"],[data-testid*="upload-preview"],[aria-label*="Remove file"],[aria-label*="파일 제거"],[aria-label*="첨부 파일 제거"]')];
+    const text = nodes.map(node => [node.textContent, node.getAttribute('aria-label'), node.getAttribute('title')].filter(Boolean).join(' ')).join('\n');
+    return { count:nodes.length, text:normalizedText(text) };
+  }
+  async function confirmChatAttachments(transfer, before) {
+    const names = transfer.files.map(item => normalizedText(item.name));
+    const until = Date.now() + 15000;
+    do {
+      const state = chatAttachmentState();
+      if (names.every(name => state.text.includes(name)) || state.count >= before.count + transfer.files.length) return true;
+      await wait(250);
+    } while (Date.now() < until);
+    throw new Error('ChatGPT에서 파일 첨부 표시를 확인하지 못했습니다. 임시 파일은 지우지 않았습니다. 입력창의 + 버튼으로 직접 첨부하거나 다시 시도해 주세요.');
   }
   async function attachTransferToChat(transfer) {
-    if (typeof DataTransfer !== 'function') throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. TXT 저장 버튼을 사용해 주세요.');
+    const page = chatPageWindow();
+    const message = transfer.message || [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${transfer.roomName || 'RP'}`, `최종 결과에 반영된 턴 범위: T${Number(transfer.startTurn || 0)}-T${Number(transfer.endTurn || 0)}`].join('\n');
+    const putMessage = async () => putChatGPTMessage(findChatGPTComposer(), message);
+    if (typeof page.DataTransfer !== 'function' || typeof page.File !== 'function') {
+      await putMessage();
+      throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. 요청 문구는 입력했으며, 전달함의 저장 버튼으로 파일을 받아 직접 첨부해 주세요.');
+    }
     const newConversation = isNewChatPage();
-    const message = transfer.message || transferMessage(transfer);
     let input = await getChatGPTFileInput();
-    if (!input) throw new Error('파일 입력기를 찾지 못했습니다. 입력창의 + 버튼을 한 번 연 뒤 다시 시도해 주세요.');
+    if (!input) {
+      await putMessage();
+      throw new Error('파일 입력기를 찾지 못했습니다. 요청 문구는 입력했으며, 입력창의 + 버튼을 한 번 연 뒤 다시 시도해 주세요.');
+    }
+    const before = chatAttachmentState();
     const assign = (target, items) => {
-      const data = new DataTransfer();
-      for (const item of items) data.items.add(new File([storedFileBlob(item)], String(item.name || 'Wish-재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set;
+      const data = new page.DataTransfer();
+      for (const item of items) data.items.add(new page.File([storedFileBlob(item)], String(item.name || 'Wish-재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
+      const setter = Object.getOwnPropertyDescriptor(page.HTMLInputElement.prototype, 'files')?.set;
       if (setter) setter.call(target, data.files); else target.files = data.files;
       if (target.files?.length !== items.length) throw new Error('브라우저가 파일 자동 첨부를 허용하지 않았습니다. 전달함의 저장 버튼으로 파일을 받아 첨부해 주세요.');
-      target.dispatchEvent(new Event('input', { bubbles:true }));
-      target.dispatchEvent(new Event('change', { bubbles:true }));
+      target.dispatchEvent(new page.Event('input', { bubbles:true, composed:true }));
+      target.dispatchEvent(new page.Event('change', { bubbles:true, composed:true }));
     };
-    if (input.multiple || transfer.files.length === 1) assign(input, transfer.files);
-    else {
-      for (const item of transfer.files) {
-        input = await getChatGPTFileInput();
-        if (!input) throw new Error(`${item.name}을 첨부할 파일 입력기를 찾지 못했습니다.`);
-        assign(input, [item]);
-        await wait(350);
+    try {
+      if (input.multiple || transfer.files.length === 1) assign(input, transfer.files);
+      else {
+        for (const item of transfer.files) {
+          input = await getChatGPTFileInput();
+          if (!input) throw new Error(`${item.name}을 첨부할 파일 입력기를 찾지 못했습니다.`);
+          assign(input, [item]);
+          await wait(350);
+        }
       }
+      await confirmChatAttachments(transfer, before);
     }
-    await wait(650);
-    putChatGPTMessage(findChatGPTComposer(), message);
+    catch (error) { await putMessage(); throw error; }
+    await putMessage();
     if (newConversation) savePendingTitle({ transferId:transfer.id, chatId:transfer.chatId, roomName:transfer.roomName,
       signature:normalizedText(message), createdAt:Date.now(), submittedAt:0, path:'', status:'waiting' });
     // "이 방으로 전송"이 파일 첨부와 문구 입력을 마친 순간 임시 원본을 삭제한다.
@@ -1006,7 +1062,7 @@
       return sanitizeBackup({
         _wishRpManagerBackup:true,
         backupSchema:3,
-        version:coreVersion() || '1.6.1',
+        version:coreVersion() || '1.7.2',
         firebasePatchVersion:PATCH_VERSION,
         exportedAt:new Date().toISOString(),
         rooms:data.rooms,
@@ -1269,10 +1325,10 @@
       const meta = {
         id,
         manager:MANAGER_ID,
-        source:'cloud-patch-1.1.0',
+        source:'cloud-patch-1.2.0',
         label:String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`,
         createdAt:payload.exportedAt,
-        version:String(payload.version || '1.6.1'),
+        version:String(payload.version || '1.7.2'),
         patchVersion:PATCH_VERSION,
         roomCount:payload.rooms.length,
         libraryCount:payload.characterLibraries.length,
@@ -1401,7 +1457,7 @@
       const metadata = {
         name:`${safeName}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
         mimeType:'application/json', parents:[folderId], description:`Wish RP Manager Core 백업 · ${name}`,
-        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.6.1'), patchVersion:PATCH_VERSION },
+        appProperties:{ manager:MANAGER_ID, label:name, roomCount:String(payload.rooms.length), libraryCount:String(payload.characterLibraries.length), version:String(payload.version || '1.7.2'), patchVersion:PATCH_VERSION },
       };
       const session = await driveHttp({
         method:'POST', url:'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name', raw:true,
