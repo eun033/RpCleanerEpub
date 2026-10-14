@@ -37,7 +37,7 @@
 
   const PATCH_VERSION = '1.2.0';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
-  const MAX_SUPPORTED_CORE_MAJOR = 2;
+  const MAX_SUPPORTED_CORE_MAJOR = 3;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
