@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         🪽 Wish RP Manager Core · Cloud Patch
-// @namespace    local.rp.context.manager.firebase.backup.patch
-// @version      1.2.0
-// @description  Wish RP Manager Core 1.6 이상 2.0 미만에 Firebase·Google Drive 백업과 ChatGPT 재구축 전송을 추가하는 동반 패치입니다.
+// @name         🪽🐡 Wish RP Manager Core · Cloud Patch
+// @namespace    local.rp.context.manager.cloud.patch
+// @version      1.3.1
+// @description  Wish RP Manager Core 1.6–2.x cloud backup and ChatGPT transfer patch
 // @author       User
 // @license      All Rights Reserved
 // @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
@@ -11,13 +11,19 @@
 // @match        https://chatgpt.com/*
 // @match        https://www.chatgpt.com/*
 // @match        https://chat.openai.com/*
+// @noframes
+// @connect      crack-api.wrtn.ai
+// @connect      contents-api.wrtn.ai
 // @connect      identitytoolkit.googleapis.com
 // @connect      securetoken.googleapis.com
+// @connect      content-firebaseappcheck.googleapis.com
 // @connect      *.firebaseio.com
 // @connect      *.firebasedatabase.app
 // @connect      www.googleapis.com
-// @connect      *
+// @connect      accounts.google.com
+// @connect      apis.google.com
 // @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -29,13 +35,12 @@
 // @grant        window.focus
 // @grant        unsafeWindow
 // @run-at       document-start
-// @noframes
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.2.0';
+  const PATCH_VERSION = '1.3.1';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
   const MAX_SUPPORTED_CORE_MAJOR = 3;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -56,7 +61,7 @@
   const CHAT_TRANSFER_MESSAGE = '파일 내용 확인 후 지침 실행해줘';
   const IS_CHATGPT = /^(?:www\.)?chatgpt\.com$|^chat\.openai\.com$/i.test(location.hostname);
   // 배포 파일에는 개인 Firebase 정보나 Google OAuth Client ID를 넣지 않습니다.
-  const DEFAULTS = Object.freeze({ apiKey:'', databaseURL:'', email:'' });
+  const DEFAULTS = Object.freeze({ apiKey:'', databaseURL:'', email:'', appId:'', appCheckDebugToken:'' });
   const META_ROOT = 'rpManagerBackupMeta';
   const DATA_ROOT = 'rpManagerBackupData';
   const MANAGER_ID = 'wish-rp-manager-core';
@@ -110,6 +115,7 @@
   let cloudError = '';
   let cloudLoaded = false;
   let cloudLoading = false;
+  let firebaseAppCheckSession = null;
   const apiDrafts = new Map();
   const firebaseAutoListed = new WeakSet();
   const driveAutoListed = new WeakSet();
@@ -197,6 +203,21 @@
   }
   function safeFilenamePart(value) {
     return String(value || 'RP').normalize('NFKC').trim().replace(/\s+/g, '_').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').replace(/_+/g, '_').replace(/[._]+$/g, '').slice(0, 100) || 'RP';
+  }
+  function normalizeDownloadFilename(value, fallback = 'Wish_download.txt') {
+    const source = String(value || fallback).normalize('NFKC').trim();
+    if (!/\.(?:json|txt|zip)$/i.test(source)) return source;
+    const dot = source.lastIndexOf('.'), extension = source.slice(dot).toLowerCase();
+    const stem = source.slice(0, dot).replace(/\s+/gu, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+    return `${stem || 'Wish_download'}${extension}`;
+  }
+  function installDownloadFilenameNormalizer() {
+    document.addEventListener('click', event => {
+      const anchor = event.target?.closest?.('a[download]');
+      if (!anchor) return;
+      const normalized = normalizeDownloadFilename(anchor.download);
+      if (normalized && normalized !== anchor.download) anchor.download = normalized;
+    }, true);
   }
   function crackToken() {
     const row = document.cookie.split(';').map(value => value.trim()).find(value => value.startsWith('access_token='));
@@ -339,6 +360,7 @@
       : new Blob([String(item.data ?? item.text ?? '')], { type:item.mime || mimeForName(item.name) });
   }
   async function portableFile(blob, sourceName, index) {
+    sourceName = normalizeDownloadFilename(sourceName, `Wish_export_${index + 1}.txt`);
     const textLike = /^text\//i.test(blob.type) || /\.(?:txt|json|md)$/i.test(sourceName);
     if (textLike) return { sourceName, name:sourceName, mime:blob.type || mimeForName(sourceName), encoding:'text', data:await blob.text(), bytes:blob.size, index };
     return { sourceName, name:sourceName, mime:blob.type || mimeForName(sourceName), encoding:'base64', data:await blobToBase64(blob), bytes:blob.size, index };
@@ -404,7 +426,7 @@
   function downloadStoredFiles(files) {
     for (const item of files) {
       const url = URL.createObjectURL(storedFileBlob(item)), anchor = document.createElement('a');
-      anchor.href = url; anchor.download = item.name; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      anchor.href = url; anchor.download = normalizeDownloadFilename(item.name); document.body.appendChild(anchor); anchor.click(); anchor.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
   }
@@ -435,7 +457,7 @@
     modal.footer.innerHTML = '<button type="button" data-secondary-download>TXT 다운로드</button><span></span><button type="button" data-secondary-close>닫기</button><button type="button" class="primary" data-secondary-gpt>GPT 전송</button>';
     modal.footer.querySelector('[data-secondary-close]').onclick = modal.close;
     modal.footer.querySelector('[data-secondary-download]').onclick = () => downloadStoredFiles(transfer.files);
-    modal.footer.querySelector('[data-secondary-gpt]').onclick = async event => { event.currentTarget.disabled = true; try { await sendPreparedTransfer(transfer); } catch (error) { notify(`ChatGPT 탭 이동 실패: ${error.message}`, 'error'); event.currentTarget.disabled = false; } };
+    modal.footer.querySelector('[data-secondary-gpt]').onclick = async event => { const button = event.currentTarget; button.disabled = true; try { await sendPreparedTransfer(transfer); } catch (error) { notify(`ChatGPT 탭 이동 실패: ${error.message}`, 'error'); button.disabled = false; } };
   }
   function installSecondaryDownloadCapture() {
     document.addEventListener('click', event => {
@@ -658,6 +680,31 @@
     if (!normalizedText(live && ('value' in live ? live.value : live.innerText || live.textContent)).includes(normalizedText(message))) throw new Error('ChatGPT 입력창에 요청 문구가 반영되지 않았습니다. 전달함은 유지됩니다.');
     return true;
   }
+  async function ensureChatGPTMessage(message, timeout = 8000, stableFor = 1200) {
+    const until = Date.now() + timeout;
+    let stableElement = null, stableSince = 0, lastError = null;
+    while (Date.now() < until) {
+      const element = findChatGPTComposer();
+      const text = String(element && ('value' in element ? element.value : element.innerText || element.textContent) || '');
+      if (!element || !normalizedText(text).includes(normalizedText(message))) {
+        stableElement = null;
+        stableSince = 0;
+        if (element) {
+          try { await putChatGPTMessage(element, message); lastError = null; }
+          catch (error) { lastError = error; }
+        }
+        await wait(150);
+        continue;
+      }
+      if (element !== stableElement) {
+        stableElement = element;
+        stableSince = Date.now();
+      }
+      if (Date.now() - stableSince >= stableFor) return true;
+      await wait(150);
+    }
+    throw new Error(lastError?.message || 'ChatGPT 입력창이 계속 새로고침되어 요청 문구를 안정적으로 넣지 못했습니다. 전달함은 유지됩니다.');
+  }
   function chatAttachmentState() {
     const nodes = [...document.querySelectorAll('[data-testid*="attachment"]:not(input),[data-testid*="file-preview"],[data-testid*="file-thumbnail"],[data-testid*="upload-preview"],[aria-label*="Remove file"],[aria-label*="파일 제거"],[aria-label*="첨부 파일 제거"]')];
     const text = nodes.map(node => [node.textContent, node.getAttribute('aria-label'), node.getAttribute('title')].filter(Boolean).join(' ')).join('\n');
@@ -676,7 +723,9 @@
   async function attachTransferToChat(transfer) {
     const page = chatPageWindow();
     const message = transfer.message || [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${transfer.roomName || 'RP'}`, `최종 결과에 반영된 턴 범위: T${Number(transfer.startTurn || 0)}-T${Number(transfer.endTurn || 0)}`].join('\n');
-    const putMessage = async () => putChatGPTMessage(findChatGPTComposer(), message);
+    // 모바일 Edge는 첨부 직후 composer를 늦게 교체할 수 있다. 새 입력창에도 문구가
+    // 일정 시간 유지된 것을 확인해야만 전송 완료로 간주하고 임시 파일을 지운다.
+    const putMessage = async () => ensureChatGPTMessage(message);
     if (typeof page.DataTransfer !== 'function' || typeof page.File !== 'function') {
       await putMessage();
       throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. 요청 문구는 입력했으며, 전달함의 저장 버튼으로 파일을 받아 직접 첨부해 주세요.');
@@ -690,7 +739,7 @@
     const before = chatAttachmentState();
     const assign = (target, items) => {
       const data = new page.DataTransfer();
-      for (const item of items) data.items.add(new page.File([storedFileBlob(item)], String(item.name || 'Wish-재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
+      for (const item of items) data.items.add(new page.File([storedFileBlob(item)], normalizeDownloadFilename(item.name, 'Wish_재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
       const setter = Object.getOwnPropertyDescriptor(page.HTMLInputElement.prototype, 'files')?.set;
       if (setter) setter.call(target, data.files); else target.files = data.files;
       if (target.files?.length !== items.length) throw new Error('브라우저가 파일 자동 첨부를 허용하지 않았습니다. 전달함의 저장 버튼으로 파일을 받아 첨부해 주세요.');
@@ -816,6 +865,8 @@
       apiKey: String(saved.apiKey || DEFAULTS.apiKey).trim(),
       databaseURL: normalizeDatabaseURL(saved.databaseURL || DEFAULTS.databaseURL),
       email: String(saved.email || DEFAULTS.email).trim(),
+      appId: String(saved.appId || DEFAULTS.appId).trim(),
+      appCheckDebugToken: String(saved.appCheckDebugToken || DEFAULTS.appCheckDebugToken).trim(),
     };
   }
   function validateSettings(settings) {
@@ -825,15 +876,21 @@
     catch (_) { throw new Error('Realtime Database URL 형식이 올바르지 않습니다.'); }
     if (url.protocol !== 'https:' || !/(^|\.)(firebaseio\.com|firebasedatabase\.app)$/i.test(url.hostname)) throw new Error('Firebase Realtime Database HTTPS 주소를 입력해 주세요.');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.email)) throw new Error('Firebase 로그인 이메일 형식이 올바르지 않습니다.');
+    if (settings.appCheckDebugToken && !settings.appId) throw new Error('App Check 디버그 토큰을 쓰려면 Firebase Web App ID도 입력해 주세요.');
+    if (settings.appId && !/^\d+:\d+:web:[0-9a-f]+$/i.test(settings.appId)) throw new Error('Firebase Web App ID 형식이 올바르지 않습니다. 예: 1:123456789:web:abcdef');
     return settings;
   }
   function saveSettings(settings) {
+    const previous = loadSettings();
     const next = validateSettings({
       apiKey: String(settings?.apiKey || '').trim(),
       databaseURL: normalizeDatabaseURL(settings?.databaseURL),
       email: String(settings?.email || '').trim(),
+      appId: String(settings?.appId || '').trim(),
+      appCheckDebugToken: String(settings?.appCheckDebugToken || previous.appCheckDebugToken || '').trim(),
     });
     gmWrite(SETTINGS_KEY, next);
+    firebaseAppCheckSession = null;
     return next;
   }
   function sessionMatches(session, settings) {
@@ -844,6 +901,32 @@
     return sessionMatches(session, settings) && !!session?.refreshToken;
   }
   function clearSession() { gmWrite(SESSION_KEY, null); }
+
+  function firebaseProjectId(settings) {
+    const firstLabel = new URL(settings.databaseURL).hostname.split('.')[0];
+    return firstLabel.replace(/-default-rtdb$/i, '');
+  }
+  async function getFirebaseAppCheckToken(settings, forceRefresh = false) {
+    const debugToken = String(settings?.appCheckDebugToken || '').trim();
+    if (!debugToken) return '';
+    const projectId = firebaseProjectId(settings), appId = String(settings.appId || '').trim();
+    if (!projectId || !appId) throw new Error('App Check에 필요한 Firebase 프로젝트 ID 또는 Web App ID를 확인하지 못했습니다.');
+    const cacheKey = `${settings.apiKey}|${projectId}|${appId}|${debugToken}`;
+    if (!forceRefresh && firebaseAppCheckSession?.key === cacheKey && firebaseAppCheckSession.expiresAt > Date.now() + 90000) return firebaseAppCheckSession.token;
+    const data = await http({
+      method:'POST',
+      url:`https://content-firebaseappcheck.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}:exchangeDebugToken?key=${encodeURIComponent(settings.apiKey)}`,
+      headers:{ 'Content-Type':'application/json' },
+      data:JSON.stringify({ debug_token:debugToken }),
+      timeout:30000,
+      label:'Firebase App Check',
+    });
+    const token = String(data?.token || ''), ttl = String(data?.ttl || '').match(/^([\d.]+)s$/);
+    if (!token) throw new Error('Firebase App Check 토큰 응답이 비어 있습니다.');
+    const ttlMs = Math.max(60, ttl ? Number(ttl[1]) : 3600) * 1000;
+    firebaseAppCheckSession = { key:cacheKey, token, expiresAt:Date.now() + Math.max(ttlMs / 2, ttlMs - 300000) };
+    return token;
+  }
 
   function firebaseError(text, status, fallback) {
     let parsed = null;
@@ -943,16 +1026,18 @@
     const safePath = String(path || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
     const silent = String(method).toUpperCase() === 'GET' ? '' : '&print=silent';
     try {
+      const appCheckToken = await getFirebaseAppCheckToken(settings);
       return await http({
         method,
         url:`${settings.databaseURL}/${safePath}.json?auth=${encodeURIComponent(session.idToken)}${silent}`,
-        headers:{ 'Content-Type':'application/json' },
+        headers:{ 'Content-Type':'application/json', ...(appCheckToken ? { 'X-Firebase-AppCheck':appCheckToken } : {}) },
         data:body === undefined ? undefined : JSON.stringify(body),
         timeout:120000,
         label:'Firebase Database',
       });
     } catch (error) {
       if (retry && [401, 403].includes(Number(error.status))) {
+        if (settings.appCheckDebugToken) await getFirebaseAppCheckToken(settings, true);
         session = await getSession(settings, true);
         if (session) return databaseRequest(settings, method, path, body, false);
       }
@@ -1523,23 +1608,25 @@
       const selectedId = () => modal.overlay.querySelector('input[name="wish-fbp-backup"]:checked')?.value || '';
       modal.footer.querySelector('[data-fbp-cancel]').onclick = modal.close;
       modal.footer.querySelector('[data-fbp-delete]').onclick = async event => {
+        const button = event.currentTarget;
         const id = selectedId(), item = listed.items.find(row => String(row.id) === String(id));
         if (!item || !confirm(`서버 백업을 영구 삭제할까요?\n\n${item.label || '이름 없는 백업'}\n${item.createdAt ? new Date(item.createdAt).toLocaleString('ko-KR') : '생성 시각 미상'}\n\n이 작업은 되돌릴 수 없습니다.`)) return;
-        event.currentTarget.disabled = true;
+        button.disabled = true;
         try { await deleteBackup(listed, id); notify('서버 백업을 삭제했습니다.', 'success'); modal.close(); busy = false; await openBackupList(); }
-        catch (error) { notify(`서버 백업 삭제 실패: ${error.message}`, 'error', 7000); event.currentTarget.disabled = false; }
+        catch (error) { notify(`서버 백업 삭제 실패: ${error.message}`, 'error', 7000); button.disabled = false; }
       };
       modal.footer.querySelector('[data-fbp-load]').onclick = async event => {
+        const button = event.currentTarget;
         const id = selectedId();
         if (!id) return;
-        event.currentTarget.disabled = true;
+        button.disabled = true;
         try {
           notify('서버 백업을 내려받아 검사하는 중…', 'info', 1800);
           const raw = await databaseRequest(listed.settings, 'GET', `${DATA_ROOT}/${listed.session.localId}/${id}`);
           const backup = validateCoreBackup(raw);
           modal.close();
           await openRestoreSelection(backup);
-        } catch (error) { notify(`서버 백업 불러오기 실패: ${error.message}`, 'error', 7600); event.currentTarget.disabled = false; }
+        } catch (error) { notify(`서버 백업 불러오기 실패: ${error.message}`, 'error', 7600); button.disabled = false; }
       };
     } catch (error) { notify(`서버 백업 목록 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; }
@@ -1631,28 +1718,30 @@
     };
     deleteBoxes().forEach(box => box.onchange = updateDelete);
     modal.body.querySelector('[data-delete-local-libraries]').onclick = async event => {
+      const button = event.currentTarget;
       const ids = new Set(deleteBoxes().filter(box => box.checked).map(box => box.dataset.deleteLibraryId));
       const labels = localLibraries.filter(item => ids.has(String(item.scopeId))).slice(0, 4).map(item => item.name || item.title || item.scopeId).join('\n• ');
       if (!ids.size || !confirm(`선택한 기존 자료 ${ids.size}개를 이 기기에서 삭제할까요?\n\n• ${labels}${ids.size > 4 ? `\n• 외 ${ids.size - 4}개` : ''}\n\n서버 백업은 삭제되지 않으며, 이 작업 후 페이지가 새로고침됩니다.`)) return;
-      event.currentTarget.disabled = true;
+      button.disabled = true;
       try {
         const count = await deleteLocalLibraries(ids);
         sessionStorage.setItem(RESTORE_NOTICE_KEY, `기존 로컬 자료 ${count}개를 삭제했습니다.`);
         location.reload();
-      } catch (error) { notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000); event.currentTarget.disabled = false; }
+      } catch (error) { notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000); button.disabled = false; }
     };
     modal.footer.querySelector('[data-fbp-cancel]').onclick = modal.close;
     modal.footer.querySelector('[data-fbp-restore]').onclick = async event => {
+      const button = event.currentTarget;
       const roomIds = new Set(boxes().filter(box => box.checked && box.dataset.roomId).map(box => box.dataset.roomId));
       const libraryIds = new Set(boxes().filter(box => box.checked && box.dataset.libraryId).map(box => box.dataset.libraryId));
       const restoreSettings = !!modal.body.querySelector('[data-global-settings]')?.checked;
       if (!confirm(`선택한 서버 백업을 복원할까요?\n\n방 ${roomIds.size}개 · 직접 선택 자료집 ${libraryIds.size}개 · 공용 설정 ${restoreSettings?'포함':'제외'}\n기존 Wish 로컬 데이터가 교체되고 페이지가 바로 새로고침됩니다.`)) return;
-      event.currentTarget.disabled = true;
+      button.disabled = true;
       try {
         const result = await restoreCoreBackup(backup, roomIds, libraryIds, restoreSettings);
         sessionStorage.setItem(RESTORE_NOTICE_KEY, `서버 백업 복원 완료 · 방 ${result.rooms}개 · 자료집 ${result.libraries}개 · 인지 ${result.cognition}개${result.settings?' · 공용 설정 포함':''}`);
         location.reload();
-      } catch (error) { notify(`서버 백업 복원 실패: ${error.message}`, 'error', 8000); event.currentTarget.disabled = false; }
+      } catch (error) { notify(`서버 백업 복원 실패: ${error.message}`, 'error', 8000); button.disabled = false; }
     };
     update();
     updateDelete();
@@ -1663,6 +1752,8 @@
       apiKey:section.querySelector('[data-fbp-api-key]')?.value || '',
       databaseURL:section.querySelector('[data-fbp-db-url]')?.value || '',
       email:section.querySelector('[data-fbp-email]')?.value || '',
+      appId:section.querySelector('[data-fbp-app-id]')?.value || '',
+      appCheckDebugToken:section.querySelector('[data-fbp-app-check-debug]')?.value || '',
     };
   }
   function setSectionStatus(section, message, type = '') {
@@ -1676,24 +1767,25 @@
     if (!body || body.querySelector('[data-wish-fbp-settings]')) return;
     const id = String(dialog.dataset.dlg || 'cloud');
     const saved = loadSettings();
-    const draft = apiDrafts.get(id) || { ...saved, password:'' };
+    const draft = apiDrafts.get(id) || { ...saved, appCheckDebugToken:'', password:'' };
     apiDrafts.set(id, draft);
     const section = document.createElement('section');
     section.className = 'm3-grp wish-fbp-settings';
     section.setAttribute('data-wish-fbp-settings', '');
     section.setAttribute('data-fx-node', '');
-    section.innerHTML = `<div class="m3-gt">☁ Firebase 서버 백업 · Patch v${PATCH_VERSION}</div><label><span>Web API Key</span><input type="text" data-fbp-api-key value="${esc(draft.apiKey)}" placeholder="AIza…"></label><label><span>Realtime Database URL</span><input type="url" data-fbp-db-url value="${esc(draft.databaseURL)}" placeholder="https://project.firebaseio.com"></label><div class="wish-fbp-grid"><label><span>로그인 이메일</span><input type="email" data-fbp-email value="${esc(draft.email)}"></label><label><span>비밀번호 · 연결할 때만</span><input type="password" data-fbp-password value="${esc(draft.password)}" placeholder="저장하지 않음"></label></div><div class="wish-fbp-status ${connected(saved)?'ok':''}" data-fbp-status>${connected(saved)?'Firebase 서버 백업 연결됨':'설정값은 이 패치에만 저장됩니다. 비밀번호는 저장하지 않습니다.'}</div><div class="wish-fbp-actions"><button type="button" class="m3-btn mini" data-fbp-save>설정 저장</button><button type="button" class="m3-btn mini primary" data-fbp-connect>저장 후 연결</button><button type="button" class="m3-btn mini quiet" data-fbp-logout>서버 로그아웃</button></div>`;
+    section.innerHTML = `<div class="m3-gt">☁ Firebase 서버 백업 · Patch v${PATCH_VERSION}</div><label><span>Web API Key</span><input type="text" data-fbp-api-key value="${esc(draft.apiKey)}" placeholder="AIza…"></label><label><span>Realtime Database URL</span><input type="url" data-fbp-db-url value="${esc(draft.databaseURL)}" placeholder="https://project.firebaseio.com"></label><div class="wish-fbp-grid"><label><span>로그인 이메일</span><input type="email" data-fbp-email value="${esc(draft.email)}"></label><label><span>비밀번호 · 연결할 때만</span><input type="password" data-fbp-password value="${esc(draft.password)}" placeholder="저장하지 않음"></label></div><label><span>Firebase Web App ID · App Check 사용 시</span><input type="text" data-fbp-app-id value="${esc(draft.appId)}" placeholder="1:123456789:web:abcdef" autocapitalize="off" spellcheck="false"></label><label><span>App Check 디버그 토큰 · 선택</span><input type="password" data-fbp-app-check-debug value="" placeholder="${saved.appCheckDebugToken ? '저장됨 · 새 토큰을 넣으면 교체' : 'Firebase 콘솔에 등록한 디버그 토큰'}" autocomplete="new-password" autocapitalize="off" spellcheck="false"></label><p class="m3-muted">App Check를 적용한 Realtime Database라면 Web App ID와 Firebase 콘솔에 등록한 디버그 토큰을 함께 입력하세요. 디버그 토큰은 비밀번호처럼 취급해야 합니다.</p><div class="wish-fbp-status ${connected(saved)?'ok':''}" data-fbp-status>${connected(saved)?'Firebase 서버 백업 연결됨':'설정값은 이 패치에만 저장됩니다. 비밀번호는 저장하지 않습니다.'}</div><div class="wish-fbp-actions"><button type="button" class="m3-btn mini" data-fbp-save>설정 저장</button><button type="button" class="m3-btn mini primary" data-fbp-connect>저장 후 연결</button><button type="button" class="m3-btn mini quiet" data-fbp-app-check-clear>App Check 토큰 삭제</button><button type="button" class="m3-btn mini quiet" data-fbp-logout>서버 로그아웃</button></div>`;
     body.appendChild(section);
     const syncDraft = () => Object.assign(draft, readSectionSettings(section), { password:section.querySelector('[data-fbp-password]').value });
     section.addEventListener('input', syncDraft);
     section.querySelector('[data-fbp-save]').onclick = () => {
-      try { syncDraft(); saveSettings(draft); setSectionStatus(section, '서버 백업 설정을 저장했습니다.', 'ok'); notify('Firebase 서버 백업 설정 저장 완료', 'success'); }
+      try { syncDraft(); saveSettings(draft); draft.appCheckDebugToken = ''; section.querySelector('[data-fbp-app-check-debug]').value = ''; setSectionStatus(section, '서버 백업 설정을 저장했습니다.', 'ok'); notify('Firebase 서버 백업 설정 저장 완료', 'success'); }
       catch (error) { setSectionStatus(section, error.message, 'error'); }
     };
     section.querySelector('[data-fbp-connect]').onclick = async event => {
       if (busy) return;
+      const button = event.currentTarget;
       busy = true;
-      event.currentTarget.disabled = true;
+      button.disabled = true;
       try {
         syncDraft();
         const settings = saveSettings(draft);
@@ -1701,12 +1793,20 @@
         let session = await getSession(settings);
         if (!session || draft.password) session = await signIn(settings, draft.password);
         await databaseRequest(settings, 'GET', `${META_ROOT}/${session.localId}`);
-        draft.password = '';
+        draft.password = ''; draft.appCheckDebugToken = '';
         section.querySelector('[data-fbp-password]').value = '';
+        section.querySelector('[data-fbp-app-check-debug]').value = '';
         setSectionStatus(section, 'Firebase 서버 백업 연결됨', 'ok');
         notify('Firebase 서버 백업 연결 완료', 'success');
       } catch (error) { setSectionStatus(section, error.message, 'error'); notify(`서버 백업 연결 실패: ${error.message}`, 'error', 7000); }
-      finally { busy = false; event.currentTarget.disabled = false; }
+      finally { busy = false; button.disabled = false; }
+    };
+    section.querySelector('[data-fbp-app-check-clear]').onclick = () => {
+      if (!loadSettings().appCheckDebugToken) { setSectionStatus(section, '저장된 App Check 디버그 토큰이 없습니다.', ''); return; }
+      if (!confirm('저장된 App Check 디버그 토큰을 삭제할까요?')) return;
+      const next = loadSettings(); next.appCheckDebugToken = ''; gmWrite(SETTINGS_KEY, next); firebaseAppCheckSession = null;
+      draft.appCheckDebugToken = ''; section.querySelector('[data-fbp-app-check-debug]').value = ''; section.querySelector('[data-fbp-app-check-debug]').placeholder = 'Firebase 콘솔에 등록한 디버그 토큰';
+      setSectionStatus(section, '저장된 App Check 디버그 토큰을 삭제했습니다.', 'ok');
     };
     section.querySelector('[data-fbp-logout]').onclick = () => {
       clearSession();
@@ -1776,20 +1876,21 @@
     };
     section.querySelector('[data-drive-connect]').onclick = event => {
       if (driveBusy) return;
+      const button = event.currentTarget;
       let promise;
       try {
         const clientId = saveDriveClientId(section.querySelector('[data-drive-client-id]').value);
         promise = connectDrive(clientId);
       } catch (error) { status(error.message, 'error'); void loadDriveIdentityScript().catch(() => {}); return; }
       driveBusy = true;
-      event.currentTarget.disabled = true;
+      button.disabled = true;
       status('Google 계정 승인 대기 중…', 'busy');
       void promise.then(async () => {
         status('Google Drive 연결됨', 'ok');
         notify('Google Drive 연결 완료', 'success');
         driveLoaded = false;
       }).catch(error => { status(error.message, 'error'); notify(`Google Drive 연결 실패: ${error.message}`, 'error', 7600); })
-        .finally(() => { driveBusy = false; event.currentTarget.disabled = false; renderDriveCloudPanel(dialog); if (driveConnected()) void refreshDriveCloud(); });
+        .finally(() => { driveBusy = false; button.disabled = false; renderDriveCloudPanel(dialog); if (driveConnected()) void refreshDriveCloud(); });
     };
     section.querySelector('[data-drive-disconnect]').onclick = () => {
       const token = driveAccessToken;
@@ -1983,7 +2084,7 @@
     if (version && !coreVersionSupported(version)) {
       if (!coreMismatchNotified) {
         coreMismatchNotified = true;
-        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${MIN_SUPPORTED_CORE_VERSION} 이상, 2.0.0 미만에서만 실행합니다. 현재 ${version}에는 패치 업데이트가 필요합니다.`, 'warn', 9000);
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${MIN_SUPPORTED_CORE_VERSION} 이상, 3.0.0 미만에서만 실행합니다. 현재 ${version}에는 패치 업데이트가 필요합니다.`, 'warn', 9000);
       }
       return;
     }
@@ -2017,9 +2118,10 @@
     @media(max-width:600px){.wish-fbp-providers{top:-16px;gap:5px}.wish-fbp-providers .m3-btn{font-size:10.5px!important}.m3-cloud-row.wish-cloud-choice{display:grid!important;grid-template-columns:minmax(0,1fr)!important}.wish-cloud-choice .m3-cloud-info{width:100%}.wish-cloud-choice .m3-cloud-actions{width:100%;justify-content:flex-end}}
     .m3-dialog.wish-fbp-firebase-mode .m3-dialog-body>*:not([data-wish-cloud-providers]):not([data-wish-fbp-cloud]):not([data-wish-fbp-settings]),.m3-dialog.wish-fbp-drive-mode .m3-dialog-body>*:not([data-wish-cloud-providers]):not([data-wish-drive-cloud]):not([data-wish-drive-settings]){display:none!important}.m3-dialog.wish-fbp-firebase-mode .m3-sheet>footer,.m3-dialog.wish-fbp-drive-mode .m3-sheet>footer{display:none!important}.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-cloud],.m3-dialog:not(.wish-fbp-firebase-mode) [data-wish-fbp-settings],.m3-dialog:not(.wish-fbp-drive-mode) [data-wish-drive-cloud],.m3-dialog:not(.wish-fbp-drive-mode) [data-wish-drive-settings]{display:none!important}[data-wish-fbp-cloud] .m3-cloud-row,[data-wish-drive-cloud] .m3-cloud-row{display:flex;align-items:center;justify-content:space-between;gap:10px}[data-wish-fbp-cloud] .m3-cloud-info,[data-wish-drive-cloud] .m3-cloud-info{min-width:0;flex:1}[data-wish-fbp-cloud] .m3-cloud-actions,[data-wish-drive-cloud] .m3-cloud-actions{flex:none}[data-wish-fbp-cloud] .m3-btn.primary,[data-wish-fbp-settings] .m3-btn.primary,[data-wish-drive-cloud] .m3-btn.primary,[data-wish-drive-settings] .m3-btn.primary{background:#315999!important;border-color:#254579!important;color:#fff!important;-webkit-text-fill-color:#fff!important}.wish-drive-help{margin:8px 0 12px;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-drive-help summary{display:inline-grid;place-items:center;width:22px;height:22px;border:1px solid var(--m3-line,#60718f);border-radius:50%;cursor:pointer;font-weight:800;list-style:none}.wish-drive-help summary::-webkit-details-marker{display:none}.wish-drive-help>div{margin-top:7px;line-height:1.7;overflow-wrap:anywhere}.wish-drive-help a{color:var(--m3-accent,#5890df);text-decoration:underline}.wish-drive-help code{overflow-wrap:anywhere}
     .wish-fbp-overlay{position:fixed;z-index:2147483646;inset:0;display:grid;place-items:center;padding:16px;background:#080b11c7;backdrop-filter:blur(5px);font:12px/1.5 system-ui,sans-serif;color:#edf1f8}.wish-fbp-modal{width:min(640px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;border:1px solid #354258;border-radius:14px;background:#141b27;box-shadow:0 28px 80px #000c;overflow:hidden}.wish-fbp-modal>header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;border-bottom:1px solid #2b3547}.wish-fbp-modal>header>div{flex:1}.wish-fbp-modal>header b{display:block;font-size:16px}.wish-fbp-modal>header small{display:block;margin-top:3px;color:#94a1b6}.wish-fbp-modal>header button{border:0;background:none;color:#aab5c7;font-size:18px;cursor:pointer}.wish-fbp-body{min-height:0;overflow:auto;padding:14px 18px}.wish-fbp-modal>footer{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid #2b3547;background:#101722}.wish-fbp-modal>footer>span{flex:1}.wish-fbp-modal button,.wish-fbp-toolbar button{border:1px solid #3b485e;border-radius:8px;background:#202a3a;color:#dbe3ef;padding:8px 11px;cursor:pointer;font:inherit}.wish-fbp-modal button:hover{border-color:#60789e}.wish-fbp-modal button:disabled{opacity:.45;cursor:default}.wish-fbp-modal button.primary{border-color:#557bc0;background:#294979;color:#fff}.wish-fbp-modal button.danger{border-color:#75434c;background:#3a2228;color:#ffc2cb}.wish-fbp-row{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;margin:7px 0;padding:11px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e;cursor:pointer}.wish-fbp-row:hover{border-color:#50647f}.wish-fbp-row.blocked{opacity:.55;cursor:not-allowed}.wish-fbp-row input{margin-top:3px;accent-color:#719be1}.wish-fbp-row span{min-width:0}.wish-fbp-row b,.wish-fbp-row small{display:block;overflow-wrap:anywhere}.wish-fbp-row small{margin-top:3px;color:#93a0b3}.wish-fbp-body h3{margin:18px 0 8px;color:#b7c5d9;font-size:12px}.wish-fbp-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}.wish-fbp-toolbar span{margin-left:auto;color:#9eabbd}.wish-fbp-note{margin-top:14px;padding:10px 12px;border:1px solid #5b4e33;border-radius:9px;background:#282316;color:#d9c28c}.wish-fbp-empty{padding:30px 12px;text-align:center;color:#8996aa}
+    .wish-fbp-overlay .wish-fbp-room-row{display:grid!important;grid-template-columns:24px minmax(0,1fr)!important;align-items:center;gap:10px;min-height:44px;margin:7px 0;padding:10px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e;cursor:pointer}.wish-fbp-overlay .wish-fbp-room-row>input[type="checkbox"]{position:static!important;display:block!important;width:20px!important;height:20px!important;margin:0!important;opacity:1!important;pointer-events:auto!important;-webkit-appearance:checkbox!important;appearance:auto!important;accent-color:#719be1}.wish-fbp-overlay .wish-fbp-room-row>.m3-box{display:none!important}.wish-fbp-overlay .wish-fbp-room-row>.m3-t{min-width:0}.wish-fbp-overlay .wish-fbp-room-row b,.wish-fbp-overlay .wish-fbp-room-row small{display:block;overflow-wrap:anywhere}.wish-fbp-overlay .wish-fbp-room-row small{margin-top:3px;color:#93a0b3}
     .wish-fbp-owner{display:inline;font-style:normal;font-weight:750;color:#8fc5ff}.wish-fbp-local-cleanup{margin-top:16px;border:1px solid #70454d;border-radius:10px;background:#211a20;overflow:hidden}.wish-fbp-local-cleanup>summary{padding:11px 13px;color:#ffc0c8;cursor:pointer;font-weight:800;list-style-position:inside}.wish-fbp-local-cleanup>p{margin:0;padding:0 13px 9px;color:#aeb9ca;font-size:11px}.wish-fbp-local-cleanup>[data-local-library-list]{max-height:270px;overflow:auto;padding:0 10px}.wish-fbp-local-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:10px 13px;border-top:1px solid #54363c}.wish-fbp-local-actions>span{margin-right:auto;color:#aeb9ca}
     #wish-gpt-transfer-widget{position:fixed;z-index:2147483645;right:18px;bottom:92px;display:grid;grid-template-columns:minmax(180px,auto) auto auto;align-items:stretch;gap:5px;max-width:calc(100vw - 28px);padding:6px;border:1px solid #526786;border-radius:14px;background:#151d29eF;box-shadow:0 16px 48px #0008;backdrop-filter:blur(12px);font:12px/1.35 system-ui,sans-serif;color:#eef4ff}#wish-gpt-transfer-widget button{border:1px solid #40516b;border-radius:9px;background:#212d40;color:#e8f0fd;padding:8px 10px;cursor:pointer;font:inherit}#wish-gpt-transfer-widget button:hover{border-color:#7ca2df;background:#293954}#wish-gpt-transfer-widget button:disabled{opacity:.6;cursor:wait}.wish-gpt-send{display:grid;text-align:left}.wish-gpt-send b{font-size:12px}.wish-gpt-send small{margin-top:2px;color:#a9b7ca;font-size:10px}.wish-gpt-save,.wish-gpt-clear{min-width:42px}.wish-gpt-clear{font-size:18px!important;padding-inline:9px!important}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:168px}
-    @media(max-width:600px){.wish-fbp-grid{grid-template-columns:1fr}.wish-fbp-overlay{padding:0;place-items:end stretch}.wish-fbp-modal{width:100%;max-height:88vh;border-radius:16px 16px 0 0}.wish-fbp-modal>footer{flex-wrap:wrap}.wish-fbp-modal>footer>span{display:none}.wish-fbp-modal>footer button{flex:1}.wish-fbp-toolbar span{flex-basis:100%;margin-left:0}}
+    @media(max-width:600px){.wish-fbp-grid{grid-template-columns:1fr}.wish-fbp-overlay{padding:0;place-items:end stretch}.wish-fbp-modal{width:100%;max-height:88vh;border-radius:16px 16px 0 0}.wish-fbp-modal>footer{flex-wrap:wrap}.wish-fbp-modal>footer>span{display:none}.wish-fbp-modal>footer button{flex:1}.wish-fbp-toolbar span{flex-basis:100%;margin-left:0}.wish-fbp-overlay .wish-fbp-room-row{grid-template-columns:28px minmax(0,1fr)!important;min-height:48px}.wish-fbp-overlay .wish-fbp-room-row>input[type="checkbox"]{width:22px!important;height:22px!important}}
     @media(max-width:600px){#wish-gpt-transfer-widget{left:10px;right:10px;bottom:76px;grid-template-columns:minmax(0,1fr) auto auto}.wish-gpt-bridge-page #wish-fbp-toast-wrap{bottom:154px}}
     .wish-inc-field{display:grid;gap:5px;margin:13px 0;color:#dbe3ef}.wish-inc-field>span{font-weight:700}.wish-inc-field>small{color:#a7b4c8}.wish-inc-field input,.wish-inc-field textarea{box-sizing:border-box;width:100%;border:1px solid #465773;border-radius:8px;background:#101a29;color:#f1f5ff;padding:9px 10px;font:12px/1.5 system-ui,sans-serif}.wish-inc-field textarea{resize:vertical;max-height:240px}
     #wish-gpt-transfer-widget{display:flex;flex-wrap:wrap}#wish-gpt-transfer-widget .wish-gpt-send{flex:1 1 170px}#wish-gpt-transfer-widget .wish-gpt-checkpoint{flex:0 1 auto;white-space:normal}
@@ -2030,6 +2132,7 @@
     if (target) { target.appendChild(style); return; }
     document.addEventListener('DOMContentLoaded', () => (document.head || document.documentElement)?.appendChild(style), { once:true });
   }
+  installDownloadFilenameNormalizer();
   mountStyle();
   if (IS_CHATGPT) installChatGPTBridge();
   else {
