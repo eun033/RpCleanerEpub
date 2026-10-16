@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.3.1
+// @version      5.3.2
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억과 최신 에리 로어를 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -246,6 +246,48 @@
     return !Number.isFinite(major) || major < 12 || (major === 12 && (!Number.isFinite(minor) || minor < 8))
       ? "12.12.0"
       : version;
+  }
+
+  let activeFirebaseDebugToken = null;
+  const firebaseAppCheckPromises = new WeakMap();
+
+  async function initializeFirebaseAppCheck(app, version) {
+    const debugToken = String(GM_getValue("firebaseAppCheckDebugToken", "")).trim();
+    // App Check의 디버그 상태는 SDK에서 한 번만 읽으므로 변경·해제 후에는 새로고침이 필요하다.
+    if (activeFirebaseDebugToken !== null && debugToken !== activeFirebaseDebugToken) {
+      throw new Error("App Check 디버그 토큰이 변경되었습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.");
+    }
+    if (!debugToken) return;
+
+    activeFirebaseDebugToken = debugToken;
+    let pending = firebaseAppCheckPromises.get(app);
+    if (!pending) {
+      // 유저스크립트와 동적 import SDK가 사용하는 페이지 전역 양쪽에 먼저 설정한다.
+      globalThis.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
+      const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+      pageWindow.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
+      pending = (async () => {
+        const { initializeAppCheck, CustomProvider } = await import(
+          `https://www.gstatic.com/firebasejs/${version}/firebase-app-check.js`
+        );
+        // 디버그 모드에서는 SDK가 등록된 디버그 토큰을 교환한다. 직접 인증 토큰으로 보내지 않는다.
+        return initializeAppCheck(app, {
+          provider: new CustomProvider({
+            getToken: async () => {
+              throw new Error("App Check 디버그 모드를 활성화하지 못했습니다. 페이지를 새로고침해주세요.");
+            },
+          }),
+          isTokenAutoRefreshEnabled: true,
+        });
+      })();
+      firebaseAppCheckPromises.set(app, pending);
+    }
+    try {
+      await pending;
+    } catch (error) {
+      firebaseAppCheckPromises.delete(app);
+      throw error;
+    }
   }
 
   function firebaseGenerationConfig(model, config) {
@@ -2162,6 +2204,11 @@
                     <input type="password" id="cfg-api-key" class="expand-input" placeholder="키를 입력하세요">
                     <textarea id="cfg-firebase-script" class="expand-input" rows="5" placeholder="파이어베이스에서 복사한 코드 전체를 여기에 그대로 붙여넣어 주세요!" style="display:none; font-family: monospace; font-size:12px;"></textarea>
                 </div>
+                <div class="setting-group" id="cfg-firebase-app-check-group" style="display:none;">
+                    <label class="setting-label" for="cfg-firebase-app-check-debug-token">Firebase App Check 디버그 토큰 (선택)</label>
+                    <input type="password" id="cfg-firebase-app-check-debug-token" class="expand-input" placeholder="Firebase 콘솔에 등록한 디버그 토큰" autocomplete="off" spellcheck="false" aria-describedby="cfg-firebase-app-check-help">
+                    <div class="field-note" id="cfg-firebase-app-check-help">Firebase 콘솔 → App Check → 앱의 디버그 토큰 관리에 등록한 값을 입력하세요. 설정 저장 후 페이지를 새로고침하면 적용됩니다. 빈칸으로 저장 후 새로고침하면 비활성화됩니다.</div>
+                </div>
                 <div class="setting-group">
                     <span class="setting-label">AI 모델 선택</span>
                     <select id="cfg-model" class="expand-input">
@@ -2658,6 +2705,7 @@
     const keyInput = document.getElementById("cfg-api-key");
     const prevProvider = keyInput?.dataset.provider || "";
     if (prevProvider && prevProvider !== provider) saveVisibleKeyForProvider(prevProvider);
+    document.getElementById("cfg-firebase-app-check-group").style.display = provider === "firebase" ? "block" : "none";
 
     if (provider === "firebase") {
       keyInput.style.display = "none";
@@ -3670,6 +3718,7 @@
     const savedProvider = GM_getValue("apiProvider", "google");
     document.getElementById("cfg-api-provider").value = savedProvider;
     document.getElementById("cfg-firebase-script").value = GM_getValue("firebaseScript", "");
+    document.getElementById("cfg-firebase-app-check-debug-token").value = GM_getValue("firebaseAppCheckDebugToken", "");
     const savedModel = GM_getValue("cfgModel_" + savedProvider, GM_getValue("cfgModel", "gemini-3.1-pro-preview"));
     toggleProviderUI(savedModel);
 
@@ -3801,6 +3850,10 @@
       addEntry(
         "firebaseScript",
         requireElement("cfg-firebase-script").value.trim(),
+      );
+      addEntry(
+        "firebaseAppCheckDebugToken",
+        requireElement("cfg-firebase-app-check-debug-token").value.trim(),
       );
       addEntry("cfgModel", currentModel);
       addEntry("cfgModel_" + currentProvider, currentModel);
@@ -4534,8 +4587,9 @@ ${conversation}`;
         ? `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-ai.js`
         : `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-vertexai.js`;
       const { initializeApp, getApps, getApp } = await import(appUrl);
-      const sdk = await import(aiUrl);
       const app = getApps().length === 0 ? initializeApp(configObj) : getApp();
+      await initializeFirebaseAppCheck(app, fbVersion);
+      const sdk = await import(aiUrl);
       const ai = majorVersion >= 12
         ? sdk.getAI(app, { backend: new sdk.VertexAIBackend("global") })
         : sdk.getVertexAI(app);
@@ -4731,6 +4785,8 @@ ${conversation}`;
             ? `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-ai.js`
             : `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-vertexai.js`;
           const { initializeApp, getApps, getApp } = await import(appUrl);
+          const app = getApps().length === 0 ? initializeApp(configObj) : getApp();
+          await initializeFirebaseAppCheck(app, fbVersion);
           let ai;
           let generativeModel;
 
@@ -4743,7 +4799,6 @@ ${conversation}`;
 
           if (majorVersion >= 12) {
             const { HarmBlockThreshold, HarmCategory, getAI, getGenerativeModel, VertexAIBackend } = await import(aiUrl);
-            const app = getApps().length === 0 ? initializeApp(configObj) : getApp();
             ai = getAI(app, { backend: new VertexAIBackend("global") });
             generativeModel = getGenerativeModel(ai, {
               model,
@@ -4753,7 +4808,6 @@ ${conversation}`;
             });
           } else {
             const { HarmBlockThreshold, HarmCategory, getVertexAI, getGenerativeModel } = await import(aiUrl);
-            const app = getApps().length === 0 ? initializeApp(configObj) : getApp();
             ai = getVertexAI(app);
             generativeModel = getGenerativeModel(ai, {
               model,
@@ -5272,6 +5326,8 @@ ${styleInstruction}`);
               : `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-vertexai.js`;
 
           const { initializeApp, getApps, getApp } = await import(appUrl);
+          const app = getApps().length === 0 ? initializeApp(configObj) : getApp();
+          await initializeFirebaseAppCheck(app, fbVersion);
           let ai, generativeModel;
 
           if (majorVersion >= 12) {
@@ -5282,8 +5338,6 @@ ${styleInstruction}`);
               getGenerativeModel,
               VertexAIBackend,
             } = await import(aiUrl);
-            const apps = getApps();
-            const app = apps.length === 0 ? initializeApp(configObj) : getApp();
             ai = getAI(app, { backend: new VertexAIBackend("global") });
 
             const safetySettings = [
@@ -5306,8 +5360,6 @@ ${styleInstruction}`);
               getVertexAI,
               getGenerativeModel,
             } = await import(aiUrl);
-            const apps = getApps();
-            const app = apps.length === 0 ? initializeApp(configObj) : getApp();
             ai = getVertexAI(app);
 
             const safetySettings = [
