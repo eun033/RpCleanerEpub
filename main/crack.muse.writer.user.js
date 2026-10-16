@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.4.4
+// @version      5.4.5
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억을 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -9,10 +9,11 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
-// @grant        unsafeWindow
 // @connect      generativelanguage.googleapis.com
 // @connect      api.deepseek.com
 // @connect      openrouter.ai
+// @connect      content-firebaseappcheck.googleapis.com
+// @connect      firebasevertexai.googleapis.com
 // ==/UserScript==
 
 (function () {
@@ -236,15 +237,6 @@
     return normalizeGeminiThinkingLevel(model, visible || saved);
   }
 
-  function resolveFirebaseSdkVersion() {
-    // 사용자 복사본의 오래된 SDK 버전과 무관하게 동일한 모듈을 재사용한다.
-    // AI Logic의 일회용 App Check 토큰을 지원하는 최소 Firebase JS 버전.
-    return "12.14.0";
-  }
-
-  let activeFirebaseDebugToken = null;
-  const firebaseAppCheckPromises = new WeakMap();
-
   function firebaseHttpStatus(error) {
     const status = Number(error?.customData?.httpStatus || error?.status);
     if (status >= 100 && status <= 599) return status;
@@ -255,83 +247,77 @@
   function isTransientAppCheckError(error) {
     const status = firebaseHttpStatus(error);
     return status === 408 || status === 429 || status >= 500
-      || error?.code === "appCheck/fetch-network-error"
-      || /failed to fetch|fetch failed|network request failed|timed?\s*out/i.test(String(error?.message || error));
+      || error?.code === "appCheck/fetch-network-error";
   }
 
-  async function ensureFirebaseAppCheckToken(state) {
-    if (!state.tokenPromise) {
-      state.tokenPromise = (async () => {
-        for (let attempt = 0; ; attempt++) {
-          try {
-            // initializeAppCheck()는 동기 초기화다. 실제 토큰 교환 성공까지 확인한다.
-            const result = await state.getToken(state.appCheck, attempt > 0);
-            if (!result?.token || result.error) {
-              throw result?.error || new Error("App Check 인증 토큰 응답이 비어 있습니다.");
-            }
-            return result;
-          } catch (error) {
-            // 생성 요청은 재전송하지 않는다. 일시적인 인증 통신 실패만 최대 두 번 재시도한다.
-            if (attempt >= 2 || !isTransientAppCheckError(error)) throw error;
-            await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 500 : 1500));
+  function firebaseJsonRequest(url, body, headers, timeout, phase) {
+    return new Promise((resolve, reject) => {
+      const fail = (message, status = 0, code = "fetch-status-error") => {
+        const error = new Error(message);
+        error.status = status;
+        error.code = (phase === "app-check" ? "appCheck/" : "firebase/") + code;
+        error.firebasePhase = phase;
+        reject(error);
+      };
+      GM_xmlhttpRequest({
+        method: "POST", url, headers, data: JSON.stringify(body), timeout,
+        anonymous: true,
+        onload: (response) => {
+          let data;
+          try { data = JSON.parse(response.responseText); }
+          catch (_) { return fail("Firebase 응답을 해석하지 못했습니다. HTTP status: " + response.status, Number(response.status)); }
+          const status = Number(response.status);
+          if (status < 200 || status >= 300 || data?.error) {
+            return fail(String(data?.error?.message || "Firebase 요청 실패") + " [" + status + "]", Number(data?.error?.code) || status);
           }
-        }
-      })().finally(() => { state.tokenPromise = null; });
-    }
-    return state.tokenPromise;
+          resolve(data);
+        },
+        onerror: () => fail("Firebase 네트워크 연결에 실패했습니다.", 0, "fetch-network-error"),
+        ontimeout: () => fail("Firebase 요청 시간이 초과되었습니다.", 408),
+        onabort: () => fail("Firebase 요청이 취소되었습니다.", 0, "aborted"),
+      });
+    });
   }
 
-  async function initializeFirebaseAppCheck(app, version) {
-    const debugToken = String(GM_getValue("firebaseAppCheckDebugToken", "")).trim();
-    // App Check의 디버그 상태는 SDK에서 한 번만 읽으므로 변경·해제 후에는 새로고침이 필요하다.
-    if (activeFirebaseDebugToken !== null && debugToken !== activeFirebaseDebugToken) {
-      throw new Error("App Check 디버그 토큰이 변경되었습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.");
+  async function exchangeFirebaseDebugToken(config, debugToken, diagnostic) {
+    if (!debugToken) return "";
+    diagnostic.phase = "token-exchange";
+    // 위시 Firebase 패치와 같은 REST 교환 경로. 페이지의 Firebase SDK·전역 디버그 상태와 독립적이다.
+    const url = "https://content-firebaseappcheck.googleapis.com/v1/projects/"
+      + encodeURIComponent(config.projectId) + "/apps/" + encodeURIComponent(config.appId)
+      + ":exchangeDebugToken?key=" + encodeURIComponent(config.apiKey);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await firebaseJsonRequest(url, {
+          debug_token: debugToken,
+          limited_use: true,
+        }, { "Content-Type": "application/json" }, 30000, "app-check");
+        if (typeof result?.token !== "string" || !result.token.trim() || result.token === debugToken) {
+          throw new Error("App Check 인증 토큰 응답이 올바르지 않습니다.");
+        }
+        diagnostic.appCheckReady = true;
+        return result.token;
+      } catch (error) {
+        // 토큰 교환만 재시도한다. 모델 생성 요청은 중복 전송하지 않는다.
+        if (attempt >= 2 || !isTransientAppCheckError(error)) {
+          const failure = new Error("App Check 토큰 교환 실패: " + String(error?.message || error));
+          failure.status = firebaseHttpStatus(error);
+          failure.code = error?.code;
+          failure.firebasePhase = "app-check";
+          throw failure;
+        }
+        await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 500 : 1500));
+      }
     }
-    if (!debugToken) return;
+  }
 
-    activeFirebaseDebugToken = debugToken;
-    let pending = firebaseAppCheckPromises.get(app);
-    if (!pending) {
-      // 유저스크립트와 동적 import SDK가 사용하는 페이지 전역 양쪽에 먼저 설정한다.
-      globalThis.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
-      const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-      pageWindow.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
-      pending = (async () => {
-        const { initializeAppCheck, CustomProvider, getToken } = await import(
-          `https://www.gstatic.com/firebasejs/${version}/firebase-app-check.js`
-        );
-        // 디버그 모드에서는 SDK가 등록된 디버그 토큰을 교환한다. 직접 인증 토큰으로 보내지 않는다.
-        const appCheck = initializeAppCheck(app, {
-          provider: new CustomProvider({
-            getToken: async () => {
-              throw new Error("App Check 디버그 모드를 활성화하지 못했습니다. 페이지를 새로고침해주세요.");
-            },
-          }),
-          isTokenAutoRefreshEnabled: true,
-        });
-        return { appCheck, getToken, tokenPromise: null };
-      })();
-      firebaseAppCheckPromises.set(app, pending);
-    }
-    let state;
-    try {
-      state = await pending;
-    } catch (error) {
-      firebaseAppCheckPromises.delete(app);
-      throw error;
-    }
-    // 인증 실패 뒤에도 이미 초기화된 인스턴스는 유지해 중복 초기화를 피한다.
-    try {
-      await ensureFirebaseAppCheckToken(state);
-      return state;
-    } catch (error) {
-      const failure = new Error("App Check 인증 토큰 발급 실패: " + String(error?.message || error));
-      failure.code = error?.code;
-      failure.customData = error?.customData;
-      failure.status = firebaseHttpStatus(error);
-      failure.firebasePhase = "app-check";
-      throw failure;
-    }
+  function firebaseRequestHeaders(config, appCheckToken) {
+    return {
+      "Content-Type": "application/json",
+      "x-goog-api-key": config.apiKey,
+      "X-Firebase-AppId": config.appId,
+      ...(appCheckToken ? { "X-Firebase-AppCheck": appCheckToken } : {}),
+    };
   }
 
   function firebaseGenerationConfig(model, config) {
@@ -438,84 +424,67 @@
     return config;
   }
 
-  let firebaseModulesPromise = null;
-  let firebaseAiModulePromise = null;
-  const museFirebaseApps = new Map();
-  let firebaseAppSequence = 0;
-
   async function getFirebaseModel(model, sysPrompt, config, kind = "writer", diagnostic = {}) {
     const configObj = parseFirebaseConfig(GM_getValue("firebaseScript", ""));
-    const version = resolveFirebaseSdkVersion();
+    const debugToken = String(GM_getValue("firebaseAppCheckDebugToken", "")).trim();
+    const backend = GM_getValue("firebaseBackend", "vertex") === "google" ? "google" : "vertex";
     Object.assign(diagnostic, {
       projectId: configObj.projectId,
       appId: configObj.appId,
-      debugTokenConfigured: !!String(GM_getValue("firebaseAppCheckDebugToken", "")).trim(),
+      debugTokenConfigured: !!debugToken,
       appCheckReady: false,
       tokenLinked: false,
+      phase: "prepared",
     });
-    if (!firebaseModulesPromise) {
-      firebaseModulesPromise = import("https://www.gstatic.com/firebasejs/" + version + "/firebase-app.js").catch((error) => {
-        firebaseModulesPromise = null;
-        throw new Error("Firebase SDK 로드 실패: " + error.message);
-      });
-    }
-    const appSdk = await firebaseModulesPromise;
-    const identity = JSON.stringify(Object.entries(configObj).sort(([a], [b]) => a.localeCompare(b)));
-    let app = museFirebaseApps.get(identity);
-    if (!app) {
-      let name;
-      do { name = "crack-muse-writer-" + (++firebaseAppSequence); }
-      while (appSdk.getApps().some((existing) => existing.name === name));
-      app = appSdk.initializeApp(configObj, name);
-      museFirebaseApps.set(identity, app);
-    }
-    const appCheckState = await initializeFirebaseAppCheck(app, version);
-    diagnostic.appCheckReady = !!appCheckState;
-    // App Check가 준비된 다음 AI SDK를 불러와 인증 연결이 없는 인스턴스 생성을 방지한다.
-    if (!firebaseAiModulePromise) {
-      firebaseAiModulePromise = import("https://www.gstatic.com/firebasejs/" + version + "/firebase-ai.js").catch((error) => {
-        firebaseAiModulePromise = null;
-        throw new Error("Firebase AI SDK 로드 실패: " + error.message);
-      });
-    }
-    const aiSdk = await firebaseAiModulePromise;
-    const backend = GM_getValue("firebaseBackend", "vertex") === "google"
-      ? new aiSdk.GoogleAIBackend()
-      : new aiSdk.VertexAIBackend("global");
-    const ai = aiSdk.getAI(app, { backend, useLimitedUseAppCheckTokens: true });
-    const modelParams = {
-      model: normalizeModelId(model),
+    const modelName = encodeURIComponent(normalizeModelId(model));
+    const project = encodeURIComponent(configObj.projectId);
+    const path = backend === "google"
+      ? "/v1beta/projects/" + project + "/models/" + modelName
+      : "/v1beta/projects/" + project + "/locations/global/publishers/google/models/" + modelName;
+    const params = {
       systemInstruction: { parts: [{ text: sysPrompt }] },
       generationConfig: firebaseGenerationConfig(model, config),
     };
-    // 집필·번역은 원본 설정을 유지하고, 상담은 SDK 기본 설정을 사용한다.
     if (kind !== "advisor") {
-      modelParams.safetySettings = [
+      params.safetySettings = [
         "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT",
         "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_DANGEROUS_CONTENT",
-      ].map((category) => ({
-        category: aiSdk.HarmCategory[category],
-        threshold: aiSdk.HarmBlockThreshold.OFF,
-      }));
+      ].map((category) => ({ category, threshold: "OFF" }));
     }
-    const generativeModel = aiSdk.getGenerativeModel(ai, modelParams, { timeout: 900000 });
-    // 고정 SDK 버전에서 실제 요청 헤더를 만드는 콜백의 연결 여부만 읽는다. 토큰은 표시하지 않는다.
-    diagnostic.tokenLinked = typeof generativeModel._apiSettings?.getAppCheckToken === "function";
-    if (diagnostic.debugTokenConfigured && !diagnostic.tokenLinked) {
-      throw new Error("App Check 토큰은 발급됐지만 AI SDK의 요청 인증 연결이 없습니다. 아래 인증 정보를 확인해주세요.");
-    }
-    return generativeModel;
+    const getRequestToken = async () => {
+      // 일회용 토큰은 요청끼리 캐시·공유하지 않는다. 재생 보호가 켜져 있어도 각 요청에 새 토큰을 쓴다.
+      const token = await exchangeFirebaseDebugToken(configObj, debugToken, diagnostic);
+      const headers = firebaseRequestHeaders(configObj, token);
+      diagnostic.tokenLinked = !!headers["X-Firebase-AppCheck"];
+      return { token, headers };
+    };
+    return {
+      getRequestToken,
+      generateContent: async (userContent) => {
+        const { headers } = await getRequestToken();
+        diagnostic.phase = "model-request";
+        const response = await firebaseJsonRequest(
+          "https://firebasevertexai.googleapis.com" + path + ":generateContent",
+          { ...params, contents: [{ role: "user", parts: [{ text: String(userContent) }] }] },
+          headers, 900000, "model-request",
+        );
+        diagnostic.phase = "response";
+        return { response };
+      },
+    };
   }
 
   function formatFirebaseDiagnostic(diagnostic) {
+    const phases = { prepared: "설정 확인", "token-exchange": "App Check 토큰 교환", "model-request": "AI 요청", response: "AI 응답 수신" };
     return [
-      "[Muse 5.4.4 인증 정보 — 토큰 값 제외]",
+      "[Muse 5.4.5 인증 정보 — 토큰 값 제외]",
       "프로젝트: " + (diagnostic.projectId || "확인 전"),
       "앱 ID: " + (diagnostic.appId || "확인 전"),
       "디버그 토큰: " + (diagnostic.debugTokenConfigured ? "저장됨" : "없음"),
-      "App Check 발급 확인: " + (diagnostic.appCheckReady ? "성공" : "미완료"),
-      "AI 요청 토큰 연결: " + (diagnostic.tokenLinked ? "확인" : "미확인"),
-      "요청 토큰 방식: 일회용 (SDK " + resolveFirebaseSdkVersion() + ")",
+      "App Check 토큰 교환: " + (diagnostic.appCheckReady ? "성공" : "미완료"),
+      "AI 요청 인증 헤더: " + (diagnostic.tokenLinked ? "설정됨" : "없음"),
+      "진행 단계: " + (phases[diagnostic.phase] || "설정 읽기"),
+      "인증 방식: 직접 REST 교환 · 요청별 일회용 토큰",
     ].join("\n");
   }
 
@@ -523,14 +492,10 @@
     const diagnostic = {};
     try {
       const model = getConfiguredModel("firebase");
-      const generativeModel = await getFirebaseModel(model, "", {}, "advisor", diagnostic);
-      const getRequestToken = generativeModel._apiSettings?.getAppCheckToken;
-      if (typeof getRequestToken !== "function") {
-        throw new Error("AI SDK의 App Check 토큰 연결을 확인하지 못했습니다.");
-      }
-      const result = await getRequestToken();
-      if (!result?.token || result.error) throw result?.error || new Error("AI 요청용 토큰이 비어 있습니다.");
-      return formatFirebaseDiagnostic(diagnostic) + "\nAI 요청용 일회용 토큰: 발급 성공\n모델 생성 요청은 보내지 않았습니다.";
+      const connection = await getFirebaseModel(model, "", {}, "advisor", diagnostic);
+      const result = await connection.getRequestToken();
+      if (!result.token) throw new Error("Muse 엔진 설정에 디버그 토큰을 저장해주세요. 다른 유저스크립트의 설정은 공유되지 않습니다.");
+      return formatFirebaseDiagnostic(diagnostic) + "\n인증 토큰 발급 및 요청 헤더 설정을 확인했습니다.\n모델 생성 요청은 보내지 않았습니다.";
     } catch (error) {
       return formatFirebaseDiagnostic(diagnostic) + "\n점검 오류: " + String(error?.message || error);
     }
