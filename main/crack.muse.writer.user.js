@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.4.2
+// @version      5.4.3
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억을 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -495,7 +495,9 @@
     } catch (error) {
       const message = String(error?.message || error);
       let hint = "";
-      if (/app.?check|attestation/i.test(message)) {
+      if (/must enforce (?:firebase )?app[\s-]?check|app[\s-]?check enforcement (?:is )?required/i.test(message)) {
+        hint = "\nFirebase 콘솔 → App Check → APIs → Firebase AI Logic에서 Baseline protection을 Enforced(강제 적용)로 설정해주세요. 디버그 토큰 등록과 별도 설정이며 스크립트에서 변경할 수 없습니다.";
+      } else if (/app.?check|attestation/i.test(message)) {
         if (isTransientAppCheckError(error)) {
           hint = "\nApp Check 인증 서버와의 통신이 일시적으로 실패했습니다. 토큰을 다시 등록할 필요 없이 잠시 후 다시 시도해주세요.";
         } else if (/변경|새로고침|already-initialized/i.test(message)) {
@@ -2253,7 +2255,7 @@
                         <div style="font-size:11px; color:var(--text_secondary); line-height:1.6; margin-top:8px;">
                             Firebase 콘솔의 AI Logic에서 활성화한 제공자를 선택하세요. Firebase API 키 하나가 아닌 apiKey·projectId·appId가 들어 있는 설정 객체가 필요합니다.<br>
                             Gemini 4의 공식 이름은 Argon입니다. 4 Argon과 3.1 Pro는 Blaze 결제가 필요합니다.<br>
-                            App Check가 강제된 프로젝트는 위 입력란에 Firebase 콘솔에 등록한 디버그 토큰도 입력해주세요.
+                            App Check → APIs → Firebase AI Logic의 Baseline protection을 Enforced(강제 적용)로 설정하고, 위 입력란에 Firebase 콘솔에 등록한 디버그 토큰도 입력해주세요.
                         </div>
                     </div>
                 </div>
