@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.4.3
+// @version      5.4.4
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억을 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -238,8 +238,8 @@
 
   function resolveFirebaseSdkVersion() {
     // 사용자 복사본의 오래된 SDK 버전과 무관하게 동일한 모듈을 재사용한다.
-    // ThinkingLevel을 지원하는 검증된 Firebase JS 12.12.1.
-    return "12.12.1";
+    // AI Logic의 일회용 App Check 토큰을 지원하는 최소 Firebase JS 버전.
+    return "12.14.0";
   }
 
   let activeFirebaseDebugToken = null;
@@ -323,6 +323,7 @@
     // 인증 실패 뒤에도 이미 초기화된 인스턴스는 유지해 중복 초기화를 피한다.
     try {
       await ensureFirebaseAppCheckToken(state);
+      return state;
     } catch (error) {
       const failure = new Error("App Check 인증 토큰 발급 실패: " + String(error?.message || error));
       failure.code = error?.code;
@@ -438,22 +439,27 @@
   }
 
   let firebaseModulesPromise = null;
+  let firebaseAiModulePromise = null;
   const museFirebaseApps = new Map();
   let firebaseAppSequence = 0;
 
-  async function getFirebaseModel(model, sysPrompt, config, kind = "writer") {
+  async function getFirebaseModel(model, sysPrompt, config, kind = "writer", diagnostic = {}) {
     const configObj = parseFirebaseConfig(GM_getValue("firebaseScript", ""));
     const version = resolveFirebaseSdkVersion();
+    Object.assign(diagnostic, {
+      projectId: configObj.projectId,
+      appId: configObj.appId,
+      debugTokenConfigured: !!String(GM_getValue("firebaseAppCheckDebugToken", "")).trim(),
+      appCheckReady: false,
+      tokenLinked: false,
+    });
     if (!firebaseModulesPromise) {
-      firebaseModulesPromise = Promise.all([
-        import("https://www.gstatic.com/firebasejs/" + version + "/firebase-app.js"),
-        import("https://www.gstatic.com/firebasejs/" + version + "/firebase-ai.js"),
-      ]).catch((error) => {
+      firebaseModulesPromise = import("https://www.gstatic.com/firebasejs/" + version + "/firebase-app.js").catch((error) => {
         firebaseModulesPromise = null;
         throw new Error("Firebase SDK 로드 실패: " + error.message);
       });
     }
-    const [appSdk, aiSdk] = await firebaseModulesPromise;
+    const appSdk = await firebaseModulesPromise;
     const identity = JSON.stringify(Object.entries(configObj).sort(([a], [b]) => a.localeCompare(b)));
     let app = museFirebaseApps.get(identity);
     if (!app) {
@@ -463,11 +469,20 @@
       app = appSdk.initializeApp(configObj, name);
       museFirebaseApps.set(identity, app);
     }
-    await initializeFirebaseAppCheck(app, version);
+    const appCheckState = await initializeFirebaseAppCheck(app, version);
+    diagnostic.appCheckReady = !!appCheckState;
+    // App Check가 준비된 다음 AI SDK를 불러와 인증 연결이 없는 인스턴스 생성을 방지한다.
+    if (!firebaseAiModulePromise) {
+      firebaseAiModulePromise = import("https://www.gstatic.com/firebasejs/" + version + "/firebase-ai.js").catch((error) => {
+        firebaseAiModulePromise = null;
+        throw new Error("Firebase AI SDK 로드 실패: " + error.message);
+      });
+    }
+    const aiSdk = await firebaseAiModulePromise;
     const backend = GM_getValue("firebaseBackend", "vertex") === "google"
       ? new aiSdk.GoogleAIBackend()
       : new aiSdk.VertexAIBackend("global");
-    const ai = aiSdk.getAI(app, { backend });
+    const ai = aiSdk.getAI(app, { backend, useLimitedUseAppCheckTokens: true });
     const modelParams = {
       model: normalizeModelId(model),
       systemInstruction: { parts: [{ text: sysPrompt }] },
@@ -483,12 +498,48 @@
         threshold: aiSdk.HarmBlockThreshold.OFF,
       }));
     }
-    return aiSdk.getGenerativeModel(ai, modelParams, { timeout: 900000 });
+    const generativeModel = aiSdk.getGenerativeModel(ai, modelParams, { timeout: 900000 });
+    // 고정 SDK 버전에서 실제 요청 헤더를 만드는 콜백의 연결 여부만 읽는다. 토큰은 표시하지 않는다.
+    diagnostic.tokenLinked = typeof generativeModel._apiSettings?.getAppCheckToken === "function";
+    if (diagnostic.debugTokenConfigured && !diagnostic.tokenLinked) {
+      throw new Error("App Check 토큰은 발급됐지만 AI SDK의 요청 인증 연결이 없습니다. 아래 인증 정보를 확인해주세요.");
+    }
+    return generativeModel;
+  }
+
+  function formatFirebaseDiagnostic(diagnostic) {
+    return [
+      "[Muse 5.4.4 인증 정보 — 토큰 값 제외]",
+      "프로젝트: " + (diagnostic.projectId || "확인 전"),
+      "앱 ID: " + (diagnostic.appId || "확인 전"),
+      "디버그 토큰: " + (diagnostic.debugTokenConfigured ? "저장됨" : "없음"),
+      "App Check 발급 확인: " + (diagnostic.appCheckReady ? "성공" : "미완료"),
+      "AI 요청 토큰 연결: " + (diagnostic.tokenLinked ? "확인" : "미확인"),
+      "요청 토큰 방식: 일회용 (SDK " + resolveFirebaseSdkVersion() + ")",
+    ].join("\n");
+  }
+
+  async function inspectFirebaseConnection() {
+    const diagnostic = {};
+    try {
+      const model = getConfiguredModel("firebase");
+      const generativeModel = await getFirebaseModel(model, "", {}, "advisor", diagnostic);
+      const getRequestToken = generativeModel._apiSettings?.getAppCheckToken;
+      if (typeof getRequestToken !== "function") {
+        throw new Error("AI SDK의 App Check 토큰 연결을 확인하지 못했습니다.");
+      }
+      const result = await getRequestToken();
+      if (!result?.token || result.error) throw result?.error || new Error("AI 요청용 토큰이 비어 있습니다.");
+      return formatFirebaseDiagnostic(diagnostic) + "\nAI 요청용 일회용 토큰: 발급 성공\n모델 생성 요청은 보내지 않았습니다.";
+    } catch (error) {
+      return formatFirebaseDiagnostic(diagnostic) + "\n점검 오류: " + String(error?.message || error);
+    }
   }
 
   async function requestFirebaseText(model, sysPrompt, userContent, config, kind = "writer") {
+    const diagnostic = {};
     try {
-      const generativeModel = await getFirebaseModel(model, sysPrompt, config, kind);
+      const generativeModel = await getFirebaseModel(model, sysPrompt, config, kind, diagnostic);
       const result = await generativeModel.generateContent(userContent);
       if (result.response?.usageMetadata) updateCostUI(result.response.usageMetadata, model, kind);
       return extractGeminiResponseText(result.response);
@@ -496,7 +547,7 @@
       const message = String(error?.message || error);
       let hint = "";
       if (/must enforce (?:firebase )?app[\s-]?check|app[\s-]?check enforcement (?:is )?required/i.test(message)) {
-        hint = "\nFirebase 콘솔 → App Check → APIs → Firebase AI Logic에서 Baseline protection을 Enforced(강제 적용)로 설정해주세요. 디버그 토큰 등록과 별도 설정이며 스크립트에서 변경할 수 없습니다.";
+        hint = "\n서버가 유효한 App Check 토큰을 확인하지 못했습니다. 이미 기본 보호가 적용되어 있다면 설정을 반복하지 말고, 아래 프로젝트·앱과 인증 연결 정보를 확인해주세요.";
       } else if (/app.?check|attestation/i.test(message)) {
         if (isTransientAppCheckError(error)) {
           hint = "\nApp Check 인증 서버와의 통신이 일시적으로 실패했습니다. 토큰을 다시 등록할 필요 없이 잠시 후 다시 시도해주세요.";
@@ -512,7 +563,7 @@
       } else if (/404|not.found|not.supported/i.test(message)) {
         hint = "\n선택한 모델의 프로젝트 이용 권한과 지원 종료 여부를 확인해주세요.";
       }
-      throw new Error("Firebase AI Logic 요청 실패: " + message + hint);
+      throw new Error("Firebase AI Logic 요청 실패: " + message + hint + "\n\n" + formatFirebaseDiagnostic(diagnostic));
     }
   }
 
@@ -2246,6 +2297,8 @@
                             <label class="setting-label" for="cfg-firebase-app-check-debug-token">Firebase App Check 디버그 토큰 (선택)</label>
                             <input type="password" id="cfg-firebase-app-check-debug-token" class="expand-input" placeholder="Firebase 콘솔에 등록한 디버그 토큰" autocomplete="off" spellcheck="false" aria-describedby="cfg-firebase-app-check-help">
                             <div class="field-note" id="cfg-firebase-app-check-help">Firebase 콘솔 → App Check → 앱의 디버그 토큰 관리에 등록한 값을 입력하세요. 설정 저장 후 페이지를 새로고침하면 적용됩니다. 빈칸으로 저장 후 새로고침하면 비활성화됩니다.</div>
+                            <button type="button" id="cfg-firebase-check-btn" class="ref-mini-btn">저장된 Firebase 인증 점검</button>
+                            <pre id="cfg-firebase-check-result" style="white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; line-height:1.6;" role="status" aria-live="polite"></pre>
                         </div>
                         <span class="setting-label">Firebase AI Logic API 제공자</span>
                         <select id="cfg-firebase-backend" class="expand-input">
@@ -3926,6 +3979,18 @@
   };
 
   function initPanelEvents() {
+    const firebaseCheckButton = document.getElementById("cfg-firebase-check-btn");
+    firebaseCheckButton.addEventListener("click", async () => {
+      if (firebaseCheckButton.disabled) return;
+      firebaseCheckButton.disabled = true;
+      const output = document.getElementById("cfg-firebase-check-result");
+      output.textContent = "저장된 Firebase 설정으로 인증 점검 중...";
+      try {
+        output.textContent = await inspectFirebaseConnection();
+      } finally {
+        firebaseCheckButton.disabled = false;
+      }
+    });
     const closePanelBtn = document.getElementById("close-panel");
     const helpBtn = document.getElementById("cmw-help-btn");
     const helpPop = document.getElementById("cmw-help-pop");
