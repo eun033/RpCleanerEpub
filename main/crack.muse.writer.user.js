@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.4.1
+// @version      5.4.2
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억을 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -245,6 +245,42 @@
   let activeFirebaseDebugToken = null;
   const firebaseAppCheckPromises = new WeakMap();
 
+  function firebaseHttpStatus(error) {
+    const status = Number(error?.customData?.httpStatus || error?.status);
+    if (status >= 100 && status <= 599) return status;
+    const match = String(error?.message || error).match(/(?:HTTP status[:\s]*|\[)(\d{3})\b/i);
+    return match ? Number(match[1]) : 0;
+  }
+
+  function isTransientAppCheckError(error) {
+    const status = firebaseHttpStatus(error);
+    return status === 408 || status === 429 || status >= 500
+      || error?.code === "appCheck/fetch-network-error"
+      || /failed to fetch|fetch failed|network request failed|timed?\s*out/i.test(String(error?.message || error));
+  }
+
+  async function ensureFirebaseAppCheckToken(state) {
+    if (!state.tokenPromise) {
+      state.tokenPromise = (async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            // initializeAppCheck()는 동기 초기화다. 실제 토큰 교환 성공까지 확인한다.
+            const result = await state.getToken(state.appCheck, attempt > 0);
+            if (!result?.token || result.error) {
+              throw result?.error || new Error("App Check 인증 토큰 응답이 비어 있습니다.");
+            }
+            return result;
+          } catch (error) {
+            // 생성 요청은 재전송하지 않는다. 일시적인 인증 통신 실패만 최대 두 번 재시도한다.
+            if (attempt >= 2 || !isTransientAppCheckError(error)) throw error;
+            await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 500 : 1500));
+          }
+        }
+      })().finally(() => { state.tokenPromise = null; });
+    }
+    return state.tokenPromise;
+  }
+
   async function initializeFirebaseAppCheck(app, version) {
     const debugToken = String(GM_getValue("firebaseAppCheckDebugToken", "")).trim();
     // App Check의 디버그 상태는 SDK에서 한 번만 읽으므로 변경·해제 후에는 새로고침이 필요하다.
@@ -261,11 +297,11 @@
       const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
       pageWindow.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
       pending = (async () => {
-        const { initializeAppCheck, CustomProvider } = await import(
+        const { initializeAppCheck, CustomProvider, getToken } = await import(
           `https://www.gstatic.com/firebasejs/${version}/firebase-app-check.js`
         );
         // 디버그 모드에서는 SDK가 등록된 디버그 토큰을 교환한다. 직접 인증 토큰으로 보내지 않는다.
-        return initializeAppCheck(app, {
+        const appCheck = initializeAppCheck(app, {
           provider: new CustomProvider({
             getToken: async () => {
               throw new Error("App Check 디버그 모드를 활성화하지 못했습니다. 페이지를 새로고침해주세요.");
@@ -273,14 +309,27 @@
           }),
           isTokenAutoRefreshEnabled: true,
         });
+        return { appCheck, getToken, tokenPromise: null };
       })();
       firebaseAppCheckPromises.set(app, pending);
     }
+    let state;
     try {
-      await pending;
+      state = await pending;
     } catch (error) {
       firebaseAppCheckPromises.delete(app);
       throw error;
+    }
+    // 인증 실패 뒤에도 이미 초기화된 인스턴스는 유지해 중복 초기화를 피한다.
+    try {
+      await ensureFirebaseAppCheckToken(state);
+    } catch (error) {
+      const failure = new Error("App Check 인증 토큰 발급 실패: " + String(error?.message || error));
+      failure.code = error?.code;
+      failure.customData = error?.customData;
+      failure.status = firebaseHttpStatus(error);
+      failure.firebasePhase = "app-check";
+      throw failure;
     }
   }
 
@@ -447,7 +496,15 @@
       const message = String(error?.message || error);
       let hint = "";
       if (/app.?check|attestation/i.test(message)) {
-        hint = "\n엔진 탭의 App Check 디버그 토큰이 Firebase 콘솔에 등록되어 있는지 확인하고, 설정 저장 후 페이지를 새로고침해주세요.";
+        if (isTransientAppCheckError(error)) {
+          hint = "\nApp Check 인증 서버와의 통신이 일시적으로 실패했습니다. 토큰을 다시 등록할 필요 없이 잠시 후 다시 시도해주세요.";
+        } else if (/변경|새로고침|already-initialized/i.test(message)) {
+          hint = "\n저장된 설정을 적용하려면 페이지를 새로고침해주세요.";
+        } else if ([401, 403].includes(firebaseHttpStatus(error))) {
+          hint = "\nApp Check 인증이 거부되었습니다. Firebase 설정의 프로젝트·앱과 디버그 토큰을 등록한 대상이 같은지 확인해주세요.";
+        } else {
+          hint = "\nApp Check 인증을 완료하지 못했습니다. 위 원문 오류로 통신·설정 문제를 확인해주세요.";
+        }
       } else if (/403|permission|API_KEY|SERVICE_DISABLED/i.test(message)) {
         hint = "\nFirebase AI Logic에서 선택한 API 제공자와 결제·API 사용 설정을 확인해주세요.";
       } else if (/404|not.found|not.supported/i.test(message)) {
