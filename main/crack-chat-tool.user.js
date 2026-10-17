@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         크랙 직롤 · 대화 프로필 도구
+// @name         🐡 크랙 채팅 도구
 // @namespace    codex.local.crack-chat-tools
 // @version      1.0.0
 // @description  마지막 AI 답변의 직롤과 대화 프로필 생성·정렬·현재 프로필 고정을 함께 제공합니다.
