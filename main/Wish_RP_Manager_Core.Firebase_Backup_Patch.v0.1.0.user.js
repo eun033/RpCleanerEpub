@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.cloud.patch
-// @version      1.3.1
+// @version      1.3.4
 // @description  Wish RP Manager Core 1.6–2.x cloud backup and ChatGPT transfer patch
 // @author       User
 // @license      All Rights Reserved
@@ -40,7 +40,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.3.1';
+  const PATCH_VERSION = '1.3.4';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
   const MAX_SUPPORTED_CORE_MAJOR = 3;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -65,7 +65,7 @@
   const META_ROOT = 'rpManagerBackupMeta';
   const DATA_ROOT = 'rpManagerBackupData';
   const MANAGER_ID = 'wish-rp-manager-core';
-  const GUIDE_BASE_VERSION = '1.10.0';
+  const GUIDE_BASE_VERSION = '1.13.0';
   const GUIDE_STORAGE_KEYS = Object.freeze({
     externalMemory:'Wish-RP-Manager-Core-external-memory-guide-v1',
     externalPeople:'Wish-RP-Manager-Core-external-people-guide-v1',
@@ -75,6 +75,7 @@
     apiCommon:'wish-rp-core-prompt-v1-apiCommon',
     apiMemory:'wish-rp-core-prompt-v1-apiMemory',
     apiThreads:'wish-rp-core-prompt-v1-apiThreads',
+    apiTimeline:'wish-rp-core-prompt-v1-apiTimeline',
     apiObserve:'wish-rp-core-prompt-v1-apiObserve',
     apiSpeech:'wish-rp-core-prompt-v1-apiSpeech',
     apiRelationships:'wish-rp-core-prompt-v1-apiRelationships',
@@ -101,6 +102,7 @@
   let secondaryCaptureRequestedAt = 0;
   let chatTransferCache;
   let chatAttachBusy = false;
+  let activeChatDraftGuard = null;
   let chatTabToken = '';
   let chatTabData = null;
   let chatLastFocusedAt = Date.now();
@@ -144,7 +146,7 @@
   function coreVersion() {
     const value = runtime();
     if (typeof value === 'string') return value.match(/@([\d.]+)$/)?.[1] || '';
-    return String(value?.version || document.querySelector('#wish-rp-root .m3-sub-line span')?.textContent?.match(/Wish Core\s+([\d.]+)/)?.[1] || '');
+    return String(value?.version || document.querySelector('#wish-rp-root .m3-sub-line')?.textContent?.match(/Wish Core\s+(\d+(?:\.\d+)+)/)?.[1] || '');
   }
   function coreVersionSupported(value) {
     const match = String(value || '').match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
@@ -235,8 +237,8 @@
         if (response.status >= 200 && response.status < 300 && data) resolve(data);
         else reject(Object.assign(new Error(`크랙 대화 조회 실패 (HTTP ${response.status || 0})`), { status:Number(response.status || 0) }));
       },
-      onerror:() => reject(new Error('크랙 대화 조회 네트워크 오류')),
-      ontimeout:() => reject(new Error('크랙 대화 조회 시간 초과')),
+      onerror:() => reject(Object.assign(new Error('크랙 대화 조회 네트워크 오류'), { code:'CRACK_NETWORK' })),
+      ontimeout:() => reject(Object.assign(new Error('크랙 대화 조회 시간 초과'), { code:'CRACK_TIMEOUT' })),
     }));
   }
   async function currentCompletedTurnCount() {
@@ -249,7 +251,14 @@
       let payload;
       try { payload = await crackJson(`${crackFallback?'https://crack-api.wrtn.ai/crack-gen/v3/chats/':'https://contents-api.wrtn.ai/character-chat/v3/chats/'}${suffix}`); }
       catch (error) {
-        if (!crackFallback && !roles.length && [404, 405].includes(error.status)) { crackFallback = true; continue; }
+        // Match Core 2.0.2: on a contents-api outage restart on crack-api without mixing hosts or cursors.
+        const unavailable = [404, 405].includes(error.status) || error.status >= 500 && error.status < 600
+          || ['CRACK_NETWORK', 'CRACK_TIMEOUT'].includes(error.code);
+        if (!crackFallback && unavailable) {
+          crackFallback = true;
+          cursor = ''; roles.length = 0; seen.clear(); cursors.clear();
+          continue;
+        }
         throw error;
       }
       const data = payload?.data || payload || {}, page = data.messages;
@@ -261,7 +270,11 @@
         seen.add(id); roles.push(role);
       }
       const next = data.nextCursor == null ? '' : String(data.nextCursor);
-      if (!next) break;
+      if (page.length && typeof data.hasNext !== 'boolean' && !Object.hasOwn(data, 'nextCursor')) throw new Error('크랙 대화 끝을 확인할 페이지 정보가 없습니다.');
+      if (!next) {
+        if (data.hasNext === true) throw new Error('이전 대화가 남아 있지만 다음 cursor를 받지 못했습니다.');
+        break;
+      }
       if (cursors.has(next)) throw new Error('크랙 대화 cursor가 반복됐습니다.');
       cursors.add(next); cursor = next;
     }
@@ -503,7 +516,15 @@
     return input;
   }
   function findChatGPTComposer() {
-    return document.querySelector('#prompt-textarea,textarea[data-testid="prompt-textarea"],form textarea,div[contenteditable="true"][data-lexical-editor="true"],main div[contenteditable="true"]');
+    const nodes = [...document.querySelectorAll('#prompt-textarea,textarea[data-testid="prompt-textarea"],form textarea,div[contenteditable="true"][data-lexical-editor="true"],main div[contenteditable="true"]')];
+    return nodes.filter(node => chatElementVisible(node) && !node.disabled && !node.readOnly && !node.closest('[inert]'))
+      .sort((a,b) => (Number(b.id === 'prompt-textarea') * 100 + Number(b.isContentEditable) * 20)
+        - (Number(a.id === 'prompt-textarea') * 100 + Number(a.isContentEditable) * 20))[0] || null;
+  }
+  function chatElementVisible(node) {
+    if (!node?.isConnected || !node.getClientRects().length) return false;
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden' && !node.closest('[hidden],[aria-hidden="true"]');
   }
   function composerText() {
     const element = findChatGPTComposer();
@@ -675,22 +696,27 @@
       }
       element.dispatchEvent(chatInputEvent('input', { inputType:'insertText', data:addition }));
     }
-    await wait(120);
+    // Release the write lock before the next user input event. The stability loop checks later redraws.
+    await Promise.resolve();
     const live = findChatGPTComposer();
     if (!normalizedText(live && ('value' in live ? live.value : live.innerText || live.textContent)).includes(normalizedText(message))) throw new Error('ChatGPT 입력창에 요청 문구가 반영되지 않았습니다. 전달함은 유지됩니다.');
     return true;
   }
-  async function ensureChatGPTMessage(message, timeout = 8000, stableFor = 1200) {
+  async function ensureChatGPTMessage(message, timeout = 8000, stableFor = 1200, guard = null) {
     const until = Date.now() + timeout;
     let stableElement = null, stableSince = 0, lastError = null;
     while (Date.now() < until) {
+      const state = guard?.read();
+      if (state?.sent) return state.sent.message;
+      if (state?.userEdited || state?.routeChanged) throw new Error('입력 내용 또는 대화가 바뀌어 문구 자동 입력을 멈췄습니다. 전달함의 문구 복사를 사용해 주세요.');
+      if (state?.sendIntent) { stableElement = null; stableSince = 0; await wait(150); continue; }
       const element = findChatGPTComposer();
       const text = String(element && ('value' in element ? element.value : element.innerText || element.textContent) || '');
       if (!element || !normalizedText(text).includes(normalizedText(message))) {
         stableElement = null;
         stableSince = 0;
         if (element) {
-          try { await putChatGPTMessage(element, message); lastError = null; }
+          try { if (guard) await guard.write(element); else await putChatGPTMessage(element, message); lastError = null; }
           catch (error) { lastError = error; }
         }
         await wait(150);
@@ -705,66 +731,202 @@
     }
     throw new Error(lastError?.message || 'ChatGPT 입력창이 계속 새로고침되어 요청 문구를 안정적으로 넣지 못했습니다. 전달함은 유지됩니다.');
   }
-  function chatAttachmentState() {
-    const nodes = [...document.querySelectorAll('[data-testid*="attachment"]:not(input),[data-testid*="file-preview"],[data-testid*="file-thumbnail"],[data-testid*="upload-preview"],[aria-label*="Remove file"],[aria-label*="파일 제거"],[aria-label*="첨부 파일 제거"]')];
-    const text = nodes.map(node => [node.textContent, node.getAttribute('aria-label'), node.getAttribute('title')].filter(Boolean).join(' ')).join('\n');
-    return { count:nodes.length, text:normalizedText(text) };
+  function chatAttachmentState(region = chatComposerRegion()) {
+    // Edge can render filename cards without test IDs. Inspect only the current draft or a specific sent turn.
+    if (!region || region === document || !chatElementVisible(region)) return { text:'' };
+    const nodes = [region, ...region.querySelectorAll('[title],[aria-label],[data-filename],a[download]')]
+      .filter(node => chatElementVisible(node) && !node.closest('[contenteditable],textarea,input'));
+    const parts = nodes.flatMap(node => ['title','aria-label','data-filename','download'].map(key => node.getAttribute(key)));
+    // A filename typed in the prompt or quoted by an old message is not an attachment.
+    const walker = document.createTreeWalker(region, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const parent = walker.currentNode.parentElement;
+      if (chatElementVisible(parent) && !parent.closest('[contenteditable],textarea,input,script,style,[data-message-author-role="user"]')) parts.push(walker.currentNode.textContent);
+    }
+    for (const node of region.querySelectorAll('[data-testid*="attachment"],[data-testid*="file-preview"],[data-testid*="file-thumbnail"],[data-testid*="upload-preview"]')) {
+      if (chatElementVisible(node)) parts.push(node.innerText);
+    }
+    const text = parts.filter(Boolean).join('\n');
+    return { text:normalizedText(text) };
   }
-  async function confirmChatAttachments(transfer, before) {
-    const names = transfer.files.map(item => normalizedText(item.name));
+  function chatFilesPresent(transfer, state = chatAttachmentState()) {
+    return transfer.files.every(item => state.text.includes(normalizedText(item.name)));
+  }
+  function chatUserTurns() {
+    return [...new Set([...document.querySelectorAll('[data-message-author-role="user"],[data-turn="user"]')]
+      .map(node => node.closest('article,[data-testid^="conversation-turn-"]') || node))];
+  }
+  function chatTurnKey(node) {
+    return node.getAttribute('data-message-id') || node.querySelector('[data-message-id]')?.getAttribute('data-message-id')
+      || node.getAttribute('data-testid') || normalizedText(node.textContent);
+  }
+  function createChatDraftGuard(transfer, message) {
+    activeChatDraftGuard?.stop();
+    const baseline = new Set(chatUserTurns().map(chatTurnKey)), initialPath = location.pathname;
+    const state = { sent:null, sendIntent:false, userEdited:false, routeChanged:false };
+    let writing = false, stopped = false, timer = null;
+    const read = () => {
+      if (!state.sent) for (const turn of chatUserTurns()) {
+        if (!baseline.has(chatTurnKey(turn)) && chatFilesPresent(transfer, chatAttachmentState(turn))) {
+          state.sent = { message:normalizedText(turn.innerText || turn.textContent).includes(normalizedText(message)) };
+          break;
+        }
+      }
+      if (!state.sendIntent && !state.sent && location.pathname !== initialPath) state.routeChanged = true;
+      return state;
+    };
+    const onSend = event => {
+      const composer = findChatGPTComposer(), region = chatComposerRegion();
+      if (event.type === 'keydown') {
+        if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || !composer?.contains(event.target)) return;
+      } else if (event.type === 'submit') {
+        if (region === document || !region.contains(event.target)) return;
+      } else {
+        const button = event.target.closest?.('button');
+        if (!button || button.disabled || !(button.dataset.testid === 'send-button'
+          || region !== document && region.contains(button) && button.type === 'submit'
+          || /^(?:send(?: message| prompt)?|보내기|전송|메시지 보내기|프롬프트 보내기)$/i.test(button.getAttribute('aria-label') || ''))) return;
+      }
+      state.sendIntent = true;
+    };
+    const onEdit = event => {
+      if (!writing && event.isTrusted && findChatGPTComposer()?.contains(event.target)) state.userEdited = true;
+    };
+    for (const type of ['click','submit','keydown']) document.addEventListener(type, onSend, true);
+    document.addEventListener('beforeinput', onEdit, true);
+    const stop = () => {
+      stopped = true; clearTimeout(timer);
+      if (activeChatDraftGuard === guard) activeChatDraftGuard = null;
+      for (const type of ['click','submit','keydown']) document.removeEventListener(type, onSend, true);
+      document.removeEventListener('beforeinput', onEdit, true);
+    };
+    const write = async element => {
+      read();
+      if (writing || stopped || state.sent || state.sendIntent || state.userEdited || state.routeChanged) return;
+      writing = true;
+      try { await putChatGPTMessage(element, message); }
+      finally { writing = false; }
+    };
+    const watch = () => {
+      const until = Date.now() + 30000;
+      const tick = async () => {
+        read();
+        if (stopped || state.sent || state.sendIntent || state.userEdited || state.routeChanged || Date.now() >= until) { stop(); return; }
+        const composer = findChatGPTComposer();
+        if (composer && !normalizedText(composerText()).includes(normalizedText(message))) {
+          try { await write(composer); } catch (_) {}
+        }
+        if (!stopped) timer = setTimeout(tick, 250);
+      };
+      timer = setTimeout(tick, 250);
+    };
+    const guard = { read, write, stop, watch };
+    activeChatDraftGuard = guard;
+    return guard;
+  }
+  async function confirmChatAttachments(transfer, guard) {
     const until = Date.now() + 15000;
     do {
-      const state = chatAttachmentState();
-      if (names.every(name => state.text.includes(name)) || state.count >= before.count + transfer.files.length) return true;
+      const state = guard.read();
+      if (state.sent || !state.sendIntent && chatFilesPresent(transfer)) return true;
+      if (state.routeChanged) return false;
       await wait(250);
     } while (Date.now() < until);
-    throw new Error('ChatGPT에서 파일 첨부 표시를 확인하지 못했습니다. 임시 파일은 지우지 않았습니다. 입력창의 + 버튼으로 직접 첨부하거나 다시 시도해 주세요.');
+    return false;
+  }
+  function chatTransferMessage(transfer) {
+    return transfer.message || [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${transfer.roomName || 'RP'}`, `최종 결과에 반영된 턴 범위: T${Number(transfer.startTurn || 0)}-T${Number(transfer.endTurn || 0)}`].join('\n');
   }
   async function attachTransferToChat(transfer) {
     const page = chatPageWindow();
-    const message = transfer.message || [CHAT_TRANSFER_MESSAGE, `스토리챗 이름: ${transfer.roomName || 'RP'}`, `최종 결과에 반영된 턴 범위: T${Number(transfer.startTurn || 0)}-T${Number(transfer.endTurn || 0)}`].join('\n');
-    // 모바일 Edge는 첨부 직후 composer를 늦게 교체할 수 있다. 새 입력창에도 문구가
-    // 일정 시간 유지된 것을 확인해야만 전송 완료로 간주하고 임시 파일을 지운다.
-    const putMessage = async () => ensureChatGPTMessage(message);
-    if (typeof page.DataTransfer !== 'function' || typeof page.File !== 'function') {
-      await putMessage();
-      throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. 요청 문구는 입력했으며, 전달함의 저장 버튼으로 파일을 받아 직접 첨부해 주세요.');
-    }
-    const newConversation = isNewChatPage();
-    let input = await getChatGPTFileInput();
-    if (!input) {
-      await putMessage();
-      throw new Error('파일 입력기를 찾지 못했습니다. 요청 문구는 입력했으며, 입력창의 + 버튼을 한 번 연 뒤 다시 시도해 주세요.');
-    }
-    const before = chatAttachmentState();
-    const assign = (target, items) => {
-      const data = new page.DataTransfer();
-      for (const item of items) data.items.add(new page.File([storedFileBlob(item)], normalizeDownloadFilename(item.name, 'Wish_재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
-      const setter = Object.getOwnPropertyDescriptor(page.HTMLInputElement.prototype, 'files')?.set;
-      if (setter) setter.call(target, data.files); else target.files = data.files;
-      if (target.files?.length !== items.length) throw new Error('브라우저가 파일 자동 첨부를 허용하지 않았습니다. 전달함의 저장 버튼으로 파일을 받아 첨부해 주세요.');
-      target.dispatchEvent(new page.Event('input', { bubbles:true, composed:true }));
-      target.dispatchEvent(new page.Event('change', { bubbles:true, composed:true }));
+    const message = chatTransferMessage(transfer), newConversation = isNewChatPage();
+    const guard = createChatDraftGuard(transfer, message);
+    const putMessage = async () => ensureChatGPTMessage(message, 8000, 1200, guard);
+    // Prepare text while uploads are being checked, rather than after a 15 s preview wait.
+    const messageJob = putMessage().then(ok => ({ ok }), error => ({ error }));
+    const finish = () => {
+      if (gmRead(CHAT_TRANSFER_KEY, null)?.id === transfer.id) gmWrite(CHAT_TRANSFER_KEY, null);
+      if (chatTransferCache?.id === transfer.id) chatTransferCache = null;
+    };
+    const sentResult = () => {
+      const sent = guard.read().sent;
+      if (!sent) return null;
+      guard.stop();
+      if (sent.message) {
+        if (newConversation) {
+          savePendingTitle({ transferId:transfer.id, chatId:transfer.chatId, roomName:transfer.roomName,
+            signature:normalizedText(message), createdAt:Date.now(), submittedAt:Date.now(), path:'', status:'waiting' });
+          bindNewConversationTitle();
+        }
+        finish(); return { status:'submitted' };
+      }
+      return { status:'files-only', warning:'파일 전송은 확인했습니다. 요청 문구는 확인되지 않아 전달함을 유지했습니다. 문구 복사 버튼으로 요청 문구를 보낼 수 있습니다.' };
     };
     try {
-      if (input.multiple || transfer.files.length === 1) assign(input, transfer.files);
-      else {
-        for (const item of transfer.files) {
-          input = await getChatGPTFileInput();
-          if (!input) throw new Error(`${item.name}을 첨부할 파일 입력기를 찾지 못했습니다.`);
-          assign(input, [item]);
-          await wait(350);
+      // A previous attempt may already have attached the files, even if the input was replaced.
+      if (!chatFilesPresent(transfer)) {
+        if (typeof page.DataTransfer !== 'function' || typeof page.File !== 'function') {
+          const draft = await messageJob;
+          if (draft.error) throw draft.error;
+          throw new Error('이 브라우저는 자동 파일 첨부를 지원하지 않습니다. 요청 문구는 입력했으며, 전달함의 저장 버튼으로 파일을 받아 직접 첨부해 주세요.');
+        }
+        let input = await getChatGPTFileInput();
+        if (!input) {
+          const draft = await messageJob;
+          if (draft.error) throw draft.error;
+          throw new Error('파일 입력기를 찾지 못했습니다. 요청 문구는 입력했으며, 입력창의 + 버튼을 한 번 연 뒤 다시 시도해 주세요.');
+        }
+        const assign = (target, items) => {
+          const data = new page.DataTransfer();
+          for (const item of items) data.items.add(new page.File([storedFileBlob(item)], normalizeDownloadFilename(item.name, 'Wish_재구축.txt'), { type:item.mime || mimeForName(item.name), lastModified:Number(transfer.updatedAt || Date.now()) }));
+          const setter = Object.getOwnPropertyDescriptor(page.HTMLInputElement.prototype, 'files')?.set;
+          if (setter) setter.call(target, data.files); else target.files = data.files;
+          if (target.files?.length !== items.length) throw new Error('브라우저가 파일 자동 첨부를 허용하지 않았습니다. 전달함의 저장 버튼으로 파일을 받아 첨부해 주세요.');
+          target.dispatchEvent(new page.Event('input', { bubbles:true, composed:true }));
+          target.dispatchEvent(new page.Event('change', { bubbles:true, composed:true }));
+        };
+        if (input.multiple || transfer.files.length === 1) assign(input, transfer.files);
+        else {
+          for (const item of transfer.files) {
+            input = await getChatGPTFileInput();
+            if (!input) throw new Error(`${item.name}을 첨부할 파일 입력기를 찾지 못했습니다.`);
+            assign(input, [item]);
+            await wait(350);
+          }
         }
       }
-      await confirmChatAttachments(transfer, before);
+      const attached = await confirmChatAttachments(transfer, guard), draft = await messageJob;
+      const submitted = sentResult();
+      if (submitted) return submitted;
+      const interrupted = guard.read();
+      if (interrupted.sendIntent || interrupted.userEdited || interrupted.routeChanged) {
+        guard.stop();
+        return { status:'interrupted', warning:interrupted.sendIntent
+          ? '전송 버튼 입력을 확인했습니다. 이 대화에 파일과 요청 문구가 보이는지 확인해 주세요. 전달함은 유지했습니다.'
+          : '직접 입력한 내용과 현재 대화를 유지하고 자동 입력을 멈췄습니다. 필요하면 전달함의 문구 복사를 사용해 주세요.' };
+      }
+      if (draft.error) throw draft.error;
+      if (!attached) {
+        guard.stop();
+        return { status:'unconfirmed', warning:'파일 첨부 여부를 자동으로 확인하지 못해 전달함을 유지했습니다. 파일 카드가 보이면 요청 문구와 함께 직접 전송해 주세요.' };
+      }
+      await putMessage();
+      const submittedAfterText = sentResult();
+      if (submittedAfterText) return submittedAfterText;
+      if (newConversation) savePendingTitle({ transferId:transfer.id, chatId:transfer.chatId, roomName:transfer.roomName,
+        signature:normalizedText(message), createdAt:Date.now(), submittedAt:0, path:'', status:'waiting' });
+      // Remove the temporary source only after both files and text have been confirmed.
+      finish();
+      // Edge can replace the editor after upload completion. Stop recovery on a send or user edit.
+      guard.watch();
+      return { status:'prepared' };
+    } catch (error) {
+      await messageJob;
+      const submitted = sentResult();
+      if (submitted) return submitted;
+      guard.stop();
+      throw error;
     }
-    catch (error) { await putMessage(); throw error; }
-    await putMessage();
-    if (newConversation) savePendingTitle({ transferId:transfer.id, chatId:transfer.chatId, roomName:transfer.roomName,
-      signature:normalizedText(message), createdAt:Date.now(), submittedAt:0, path:'', status:'waiting' });
-    // "이 방으로 전송"이 파일 첨부와 문구 입력을 마친 순간 임시 원본을 삭제한다.
-    gmWrite(CHAT_TRANSFER_KEY, null);
-    chatTransferCache = null;
   }
   function downloadTransferFiles(transfer) {
     downloadStoredFiles(transfer.files);
@@ -787,7 +949,7 @@
     const signature = `${transfer.id}:${transfer.updatedAt}:${location.pathname}:${titleForThis?.status || ''}`;
     if (widget.dataset.renderSignature === signature) return;
     widget.dataset.renderSignature = signature;
-    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 이 방으로 전송</b><small>${kind} · T${transfer.startTurn}-T${transfer.endTurn} · 파일 ${transfer.files.length}개</small></button><button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
+    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 이 방으로 전송</b><small>${kind} · T${transfer.startTurn}-T${transfer.endTurn} · 파일 ${transfer.files.length}개</small></button><button type="button" class="wish-gpt-copy">문구 복사</button><button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
     widget.querySelector('.wish-gpt-send').onclick = async event => {
       if (chatAttachBusy) return;
       chatAttachBusy = true;
@@ -796,8 +958,9 @@
       const before = button.innerHTML;
       button.innerHTML = '<b>첨부하는 중…</b><small>잠시 기다려 주세요</small>';
       try {
-        await attachTransferToChat(transfer);
-        notify('파일과 요청 문구를 입력했습니다. ChatGPT 전송 버튼을 직접 눌러 주세요.', 'success', 7500);
+        const result = await attachTransferToChat(transfer);
+        if (result.warning) notify(result.warning, 'warn', 8500);
+        else notify(result.status === 'submitted' ? '이 대화에 파일과 요청 문구가 전달된 것을 확인했습니다.' : '파일과 요청 문구를 입력했습니다. ChatGPT 전송 버튼을 직접 눌러 주세요.', 'success', 7500);
       } catch (error) {
         notify(`ChatGPT 첨부 실패: ${error.message}`, 'error', 8500);
         button.innerHTML = before;
@@ -814,6 +977,15 @@
       widget.appendChild(titleButton);
     }
     widget.querySelector('.wish-gpt-save').onclick = () => downloadTransferFiles(transfer);
+    widget.querySelector('.wish-gpt-copy').onclick = async () => {
+      const message = chatTransferMessage(transfer);
+      try { await navigator.clipboard.writeText(message); notify('요청 문구를 복사했습니다.', 'success'); }
+      catch (_) {
+        const modal = createModal('요청 문구 복사', '아래 문구를 길게 눌러 복사한 뒤 ChatGPT 입력창에 붙여 넣으세요.');
+        const textarea = document.createElement('textarea'); textarea.value = message; textarea.readOnly = true; textarea.rows = 8; textarea.style.width = '100%';
+        modal.body.appendChild(textarea); textarea.focus(); textarea.select();
+      }
+    };
     widget.querySelector('.wish-gpt-clear').onclick = () => {
       if (!confirm('ChatGPT 전달함의 임시 TXT를 지울까요? 원래 다운로드 파일과 RP Manager 자료는 지워지지 않습니다.')) return;
       gmWrite(CHAT_TRANSFER_KEY, null);
@@ -2048,7 +2220,7 @@
   function injectPatchVersion(root) {
     const line = root.querySelector('.m3-sub-line');
     if (!line) return;
-    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core\s+\d+\.\d+(?:\.\d+)?$/.test(span.textContent.trim()));
+    const version = [...line.querySelectorAll('span')].find(span => /^Wish Core\s+\d+(?:\.\d+)+$/.test(span.textContent.trim()));
     if (!version) return;
     const existing = line.querySelector('[data-wish-patch-version]');
     if (existing) {
