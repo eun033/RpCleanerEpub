@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.cloud.patch
-// @version      1.3.5
+// @version      1.3.6
 // @description  Wish RP Manager Core 1.6–2.x cloud backup and ChatGPT transfer patch
 // @author       User
 // @license      All Rights Reserved
@@ -40,7 +40,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.3.5';
+  const PATCH_VERSION = '1.3.6';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
   const MAX_SUPPORTED_CORE_MAJOR = 3;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -524,10 +524,15 @@
     return input;
   }
   function findChatGPTComposer() {
-    const nodes = [...document.querySelectorAll('#prompt-textarea,textarea[data-testid="prompt-textarea"],form textarea,div[contenteditable="true"][data-lexical-editor="true"],main div[contenteditable="true"]')];
-    return nodes.filter(node => chatElementVisible(node) && !node.disabled && !node.readOnly && !node.closest('[inert]'))
-      .sort((a,b) => (Number(b.id === 'prompt-textarea') * 100 + Number(b.isContentEditable) * 20)
-        - (Number(a.id === 'prompt-textarea') * 100 + Number(a.isContentEditable) * 20))[0] || null;
+    const editable = '[contenteditable="true"],[contenteditable="plaintext-only"]';
+    const candidates = [...document.querySelectorAll('#prompt-textarea,textarea[data-testid="prompt-textarea"],form textarea,.ProseMirror[contenteditable],[data-lexical-editor="true"][contenteditable],[role="textbox"][contenteditable],main [contenteditable]')];
+    // Some mobile layouts put prompt-textarea on a wrapper or a paragraph, not the editing host.
+    const nodes = [...new Set(candidates.map(node => /^(TEXTAREA|INPUT)$/.test(node.tagName) ? node
+      : node.matches(editable) ? node : node.closest(editable) || node.querySelector(editable)).filter(Boolean))];
+    const score = node => Number(node.id === 'prompt-textarea' || !!node.closest('#prompt-textarea') || !!node.querySelector('#prompt-textarea')) * 100
+      + Number(!!node.closest('form,[data-testid*="composer"]')) * 30 + Number(node.isContentEditable) * 20;
+    return nodes.filter(node => chatElementVisible(node) && !node.disabled && !node.readOnly && !node.closest('[inert],[aria-disabled="true"],.wish-fbp-overlay,#wish-gpt-transfer-widget'))
+      .sort((a,b) => score(b)-score(a))[0] || null;
   }
   function chatElementVisible(node) {
     if (!node?.isConnected || !node.getClientRects().length) return false;
@@ -682,27 +687,35 @@
     const addition = `${current ? '\n\n' : ''}${message}`;
     const desired = `${current}${addition}`;
     element.focus();
-    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-      const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const page = chatPageWindow();
+    if (/^(TEXTAREA|INPUT)$/.test(element.tagName)) {
+      const proto = element.tagName === 'TEXTAREA' ? page.HTMLTextAreaElement.prototype : page.HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) setter.call(element, desired); else element.value = desired;
       element.dispatchEvent(chatInputEvent('input', { inputType:'insertText', data:addition }));
       element.dispatchEvent(chatInputEvent('change'));
     } else {
-      const selection = window.getSelection(), range = document.createRange();
+      const selection = page.getSelection(), range = element.ownerDocument.createRange();
       range.selectNodeContents(element); range.collapse(false); selection.removeAllRanges(); selection.addRange(range);
-      let inserted = false;
-      try { inserted = !!document.execCommand?.('insertText', false, addition); } catch (_) {}
-      if (!inserted || !normalizedText(element.innerText || element.textContent).includes(normalizedText(message))) {
-        const fragment = document.createDocumentFragment();
-        for (const line of desired.split('\n')) {
-          const paragraph = document.createElement('p');
-          if (line) paragraph.textContent = line; else paragraph.appendChild(document.createElement('br'));
-          fragment.appendChild(paragraph);
+      // Paste handlers use the editor's selection state; sync the moved caret before pasting.
+      element.ownerDocument.dispatchEvent(new page.Event('selectionchange'));
+      // Let ProseMirror/Lexical update their document state through their paste handler.
+      // Replacing DOM paragraphs alone can look successful while the actual draft stays empty.
+      let handled = false;
+      try {
+        const data = new page.DataTransfer(); data.setData('text/plain', addition);
+        const paste = new page.ClipboardEvent('paste', { bubbles:true, cancelable:true, composed:true, clipboardData:data });
+        element.dispatchEvent(paste); handled = paste.defaultPrevented;
+      } catch (_) {}
+      await Promise.resolve();
+      if (!normalizedText(element.innerText || element.textContent).includes(normalizedText(message))) {
+        if (!handled) {
+          try { element.ownerDocument.execCommand?.('insertText', false, addition); } catch (_) {}
         }
-        element.replaceChildren(fragment);
+        if (!normalizedText(element.innerText || element.textContent).includes(normalizedText(message))) {
+          throw new Error('ChatGPT 편집기가 문구 자동 입력을 받지 않았습니다. 문구 넣기를 다시 누르거나 문구 복사 후 입력창에 붙여 넣어 주세요.');
+        }
       }
-      element.dispatchEvent(chatInputEvent('input', { inputType:'insertText', data:addition }));
     }
     // Release the write lock before the next user input event. The stability loop checks later redraws.
     await Promise.resolve();
@@ -957,7 +970,7 @@
     const signature = `${transfer.id}:${transfer.updatedAt}:${location.pathname}:${titleForThis?.status || ''}`;
     if (widget.dataset.renderSignature === signature) return;
     widget.dataset.renderSignature = signature;
-    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 이 방으로 전송</b><small>${kind} · T${transfer.startTurn}-T${transfer.endTurn} · 파일 ${transfer.files.length}개</small></button><button type="button" class="wish-gpt-copy">문구 복사</button><button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
+    widget.innerHTML = `<button type="button" class="wish-gpt-send"><b>🪽 이 방으로 전송</b><small>${kind} · T${transfer.startTurn}-T${transfer.endTurn} · 파일 ${transfer.files.length}개</small></button><button type="button" class="wish-gpt-text">문구 넣기</button><button type="button" class="wish-gpt-copy">문구 복사</button><button type="button" class="wish-gpt-save" title="자동 첨부가 안 될 때 파일 저장">저장</button><button type="button" class="wish-gpt-clear" title="임시 전달 파일 지우기">×</button>`;
     widget.querySelector('.wish-gpt-send').onclick = async event => {
       if (chatAttachBusy) return;
       chatAttachBusy = true;
@@ -970,7 +983,8 @@
         if (result.warning) notify(result.warning, 'warn', 8500);
         else notify(result.status === 'submitted' ? '이 대화에 파일과 요청 문구가 전달된 것을 확인했습니다.' : '파일과 요청 문구를 입력했습니다. ChatGPT 전송 버튼을 직접 눌러 주세요.', 'success', 7500);
       } catch (error) {
-        notify(`ChatGPT 첨부 실패: ${error.message}`, 'error', 8500);
+        const attached = chatFilesPresent(transfer);
+        notify(attached ? `파일은 첨부되었습니다. ${error.message}` : `ChatGPT 전달 실패: ${error.message}`, attached ? 'warn' : 'error', 8500);
         button.innerHTML = before;
       } finally { chatAttachBusy = false; if (button.isConnected) button.disabled = false; if (widget.isConnected) widget.dataset.renderSignature = ''; renderChatGPTBridge(); }
     };
@@ -985,6 +999,19 @@
       widget.appendChild(titleButton);
     }
     widget.querySelector('.wish-gpt-save').onclick = () => downloadTransferFiles(transfer);
+    widget.querySelector('.wish-gpt-text').onclick = async event => {
+      if (chatAttachBusy) return;
+      chatAttachBusy = true;
+      const button = event.currentTarget, message = chatTransferMessage(transfer), guard = createChatDraftGuard(transfer, message);
+      button.disabled = true;
+      try {
+        const ok = await ensureChatGPTMessage(message, 8000, 1200, guard);
+        if (!ok) throw new Error('요청 문구 전송을 확인하지 못했습니다. 문구 복사를 사용해 주세요.');
+        guard.watch();
+        notify('요청 문구를 입력했습니다. 파일과 문구를 확인한 뒤 ChatGPT 전송 버튼을 눌러 주세요.', 'success');
+      } catch (error) { guard.stop(); notify(error.message, 'warn', 8500); }
+      finally { chatAttachBusy = false; if (button.isConnected) button.disabled = false; }
+    };
     widget.querySelector('.wish-gpt-copy').onclick = async () => {
       const message = chatTransferMessage(transfer);
       try { await navigator.clipboard.writeText(message); notify('요청 문구를 복사했습니다.', 'success'); }
