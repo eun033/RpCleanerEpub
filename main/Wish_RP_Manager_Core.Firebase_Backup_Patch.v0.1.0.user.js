@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡 Wish RP Manager Core · Cloud Patch
 // @namespace    local.rp.context.manager.cloud.patch
-// @version      1.3.4
+// @version      1.3.5
 // @description  Wish RP Manager Core 1.6–2.x cloud backup and ChatGPT transfer patch
 // @author       User
 // @license      All Rights Reserved
@@ -40,7 +40,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.3.4';
+  const PATCH_VERSION = '1.3.5';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
   const MAX_SUPPORTED_CORE_MAJOR = 3;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -65,7 +65,7 @@
   const META_ROOT = 'rpManagerBackupMeta';
   const DATA_ROOT = 'rpManagerBackupData';
   const MANAGER_ID = 'wish-rp-manager-core';
-  const GUIDE_BASE_VERSION = '1.13.0';
+  const GUIDE_BASE_VERSION = '2.0.4';
   const GUIDE_STORAGE_KEYS = Object.freeze({
     externalMemory:'Wish-RP-Manager-Core-external-memory-guide-v1',
     externalPeople:'Wish-RP-Manager-Core-external-people-guide-v1',
@@ -244,13 +244,21 @@
   async function currentCompletedTurnCount() {
     const rid = currentApiChatId();
     if (!rid) throw new Error('현재 채팅방 ID를 찾지 못했습니다.');
-    let cursor = '', crackFallback = false;
+    let cursor = '', crackFallback = false, pageLimit = 500;
     const roles = [], seen = new Set(), cursors = new Set();
     for (;;) {
-      const suffix = `${encodeURIComponent(rid)}/messages?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const suffix = `${encodeURIComponent(rid)}/messages?limit=${pageLimit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
       let payload;
       try { payload = await crackJson(`${crackFallback?'https://crack-api.wrtn.ai/crack-gen/v3/chats/':'https://contents-api.wrtn.ai/character-chat/v3/chats/'}${suffix}`); }
       catch (error) {
+        // Core 2.0.5 reads 500 rows. Retry a rejected/slow page at 50 on this host and cursor first.
+        // Keep authentication and rate-limit failures visible without an extra request.
+        const protectedError = [401, 403, 429].includes(error.status);
+        if (pageLimit !== 50 && !protectedError && ([400, 413, 414, 422].includes(error.status)
+          || error.code === 'CRACK_TIMEOUT' || crackFallback)) {
+          pageLimit = 50;
+          continue;
+        }
         // Match Core 2.0.2: on a contents-api outage restart on crack-api without mixing hosts or cursors.
         const unavailable = [404, 405].includes(error.status) || error.status >= 500 && error.status < 600
           || ['CRACK_NETWORK', 'CRACK_TIMEOUT'].includes(error.code);
@@ -1453,8 +1461,10 @@
     return owner ? `연결 방 ID: ${owner.length > 18 ? `${owner.slice(0, 8)}…${owner.slice(-6)}` : owner}` : '';
   }
   const recordMatchesRooms = (record, roomIds) => {
-    if (roomIds.has(String(record?.chatId || ''))) return true;
-    if ([...roomIds].some(id => String(record?.id || '').includes(id))) return true;
+    // An explicit owner wins: a branch ID may contain its original room's entire ID.
+    const owner = String(record?.chatId || '');
+    if (owner) return roomIds.has(owner);
+    if ([...roomIds].some(id => String(record?.id || '') === `wish-bulk-rebuild-v1:${id}`)) return true;
     return !!record?.backup?.rooms?.some(room => roomIds.has(String(room?.chatId || '')));
   };
   async function restoreCoreBackup(raw, roomIds, libraryIds, restoreSettings = false) {
