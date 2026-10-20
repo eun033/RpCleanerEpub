@@ -1,12 +1,10 @@
 // ==UserScript==
-// @name         🪽🐡 Wish RP Core · Cloud Patch
+// @name         🪽🐡 Wish RP Manager Core 2.0.5 · Cloud Patch Native
 // @namespace    local.rp.context.manager.cloud.patch
-// @version      1.3.6
-// @description  Wish RP Manager Core 1.6–2.x cloud backup and ChatGPT transfer patch
+// @version      1.4.0
+// @description  Wish RP Manager Core 2.0.5 전용 cloud backup and ChatGPT transfer patch (Native)
 // @author       User
 // @license      All Rights Reserved
-// @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
-// @downloadURL  https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
 // @match        https://crack.wrtn.ai/*
 // @match        https://chatgpt.com/*
 // @match        https://www.chatgpt.com/*
@@ -40,9 +38,10 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.3.6';
-  const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
-  const MAX_SUPPORTED_CORE_MAJOR = 3;
+  const PATCH_VERSION = '1.4.0-native';
+  const SUPPORTED_CORE_VERSION = '2.0.5';
+  const BACKUP_ENGINE = 'native';
+  const PATCH_RUNTIME_KEY = '__WISH_RP_MANAGER_CLOUD_PATCH_205__';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
   const DB_NAME = 'WishRPManagerDB_v2';
   const STORES = ['rooms', 'characterLibraries', 'cognitionRooms', 'runtime', 'autoHistory'];
@@ -149,10 +148,7 @@
     return String(value?.version || document.querySelector('#wish-rp-root .m3-sub-line')?.textContent?.match(/Wish Core\s+(\d+(?:\.\d+)+)/)?.[1] || '');
   }
   function coreVersionSupported(value) {
-    const match = String(value || '').match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
-    if (!match) return false;
-    const major = Number(match[1]), minor = Number(match[2]);
-    return major < MAX_SUPPORTED_CORE_MAJOR && (major > 1 || major === 1 && minor >= 6);
+    return String(value || '').trim() === SUPPORTED_CORE_VERSION;
   }
   const bridge = () => {
     try { return unsafeWindow?.__WishCognitionBridge || window.__WishCognitionBridge || null; }
@@ -1360,7 +1356,7 @@
         rooms:data.rooms,
         characterLibraries:data.characterLibraries,
         cognitionRooms:data.cognitionRooms,
-        runtime:data.runtime.filter(item => item?.kind !== 'wish-lease'),
+        runtime:data.runtime.filter(item => item?.kind !== 'wish-lease' && !(item?.kind === 'wish-native-bundle' && item?.status === 'applied') && item?.kind !== 'wish-copy-recovery'),
         autoHistory:data.autoHistory,
         guides:globalSettings.guides,
         defaultExtraPreset:globalSettings.defaultExtraPreset,
@@ -1368,6 +1364,49 @@
         cognitionSettings:cognitionSettings || null,
       });
     } finally { db.close(); }
+  }
+  let coreBackupPending = null;
+  async function createCoreBackupThroughNative() {
+    if (!coreVersionSupported(coreVersion())) throw new Error(`이 패치는 Wish Core ${SUPPORTED_CORE_VERSION}에서만 실행됩니다.`);
+    if (coreBackupPending) return coreBackupPending;
+    coreBackupPending = new Promise((resolve, reject) => {
+      const root = document.getElementById('wish-rp-root');
+      if (!root) { reject(new Error('원본 Wish Core 화면이 준비되지 않았습니다.')); return; }
+      const host = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      trigger.hidden = true;
+      trigger.dataset.act = 'fileBackup';
+      root.appendChild(trigger);
+      let settled = false;
+      const cleanup = () => {
+        document.removeEventListener('click', capture, true);
+        clearTimeout(timer);
+        trigger.remove();
+      };
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn(value);
+      };
+      const capture = event => {
+        const link = event.target?.closest?.('a[download]');
+        if (!link || !/^Wish_RP_Manager_백업_.*\.json$/u.test(String(link.download || ''))) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const url = String(link.href || '');
+        void host.fetch(url).then(response => {
+          if (!response.ok) throw new Error(`원본 백업 JSON을 읽지 못했습니다. (${response.status})`);
+          return response.text();
+        }).then(text => finish(resolve, prepareNativeRestoreBackup(JSON.parse(text))))
+          .catch(error => finish(reject, error));
+      };
+      document.addEventListener('click', capture, true);
+      const timer = setTimeout(() => finish(reject, new Error('원본 백업 생성이 끝나지 않았습니다. 진행 중인 Wish 작업을 마친 뒤 다시 시도해 주세요.')), 120000);
+      trigger.click();
+    }).finally(() => { coreBackupPending = null; });
+    return coreBackupPending;
   }
   const isRecordObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
   function normalizeCognitionBackupRecord(raw, fallbackId = '') {
@@ -1444,7 +1483,9 @@
       }
     }, attempt ? 1200 : 1800);
   }
+  const validatedCoreBackups = new WeakSet();
   function validateCoreBackup(data) {
+    if (data && typeof data === 'object' && validatedCoreBackups.has(data)) return data;
     if (!data || typeof data !== 'object' || Array.isArray(data) || data._wishRpManagerBackup !== true) throw new Error('Wish RP Manager Core 백업 데이터가 아닙니다.');
     const schema = Number(data.backupSchema ?? 1);
     if (!Number.isInteger(schema) || schema < 1 || schema > 3) throw new Error(`지원하지 않는 백업 schema입니다: ${data.backupSchema}`);
@@ -1461,7 +1502,29 @@
     unique(data.rooms, 'chatId', '채팅방');
     unique(data.characterLibraries, 'scopeId', '설정집');
     if (Array.isArray(data.cognitionRooms)) unique(data.cognitionRooms, 'id', '인지 방');
-    return sanitizeBackup(data);
+    const sanitized = sanitizeBackup(data);
+    validatedCoreBackups.add(sanitized);
+    return sanitized;
+  }
+  function prepareNativeRestoreBackup(raw) {
+    const data = validateCoreBackup(raw);
+    if (Array.isArray(data.characterLibraries)) {
+      data.characterLibraries = data.characterLibraries.map(item => {
+        if (!isRecordObject(item)) return item;
+        const hasItems = ['entries','lore','characters','extras'].some(key => Object.hasOwn(item, key));
+        // Core can persist/export a newly-created empty room pack before its
+        // entries array is initialized. Its importer requires one item array.
+        return hasItems ? item : { ...item, entries:[] };
+      });
+    }
+    // Cloud Patch 1.3.6 and older accepted cognition records written before all
+    // optional collections existed. Core's file importer validates the current
+    // complete shape before it opens the picker, so repair those optional fields
+    // first. Existing actors, facts, knowledge and every unknown field survive.
+    if (Array.isArray(data.cognitionRooms)) {
+      data.cognitionRooms = data.cognitionRooms.map(item => normalizeCognitionBackupRecord(item));
+    }
+    return data;
   }
   const apiChatIdOf = room => room?.apiChatId || String(room?.chatId || '').split('::')[0] || '';
   function roomDisplayName(room) {
@@ -1495,7 +1558,8 @@
     return !!record?.backup?.rooms?.some(room => roomIds.has(String(room?.chatId || '')));
   };
   async function restoreCoreBackup(raw, roomIds, libraryIds, restoreSettings = false) {
-    const data = validateCoreBackup(raw);
+    if (BACKUP_ENGINE === 'embedded' && document.querySelector('#wish-rp-monitor.is-busy,#wish-rp-monitor.is-holding')) throw new Error('AI 응답·리롤·기억 작업이 끝난 뒤 복원해 주세요.');
+    const data = BACKUP_ENGINE === 'embedded' ? prepareNativeRestoreBackup(raw) : validateCoreBackup(raw);
     const selectedRooms = new Set([...roomIds].map(String));
     const selectedLibraries = new Set([...libraryIds].map(String));
     if (!selectedRooms.size && !selectedLibraries.size && !restoreSettings) throw new Error('복원할 방, 자료집 또는 공용 설정을 선택해 주세요.');
@@ -1572,22 +1636,27 @@
   }
 
   function selectedCoreBackup(raw, roomIds, includeSettings) {
+    // The source is an immutable snapshot. Select by reference first and sanitize once;
+    // the previous deep-clone + two sanitization passes copied a 30–100MB backup repeatedly.
     const ids = new Set(roomIds.map(String));
-    const data = sanitizeBackup(clone(raw));
-    data.rooms = data.rooms.filter(room => ids.has(String(room.chatId))).map(room => ({ ...room, pending:null }));
-    const apiIds = new Set(data.rooms.map(apiChatIdOf).filter(Boolean).map(String));
-    const links = new Set(data.rooms.flatMap(room => [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId, `lore:auto:${room.chatId}`].filter(Boolean)).map(String));
-    data.characterLibraries = data.characterLibraries.filter(item => ids.has(String(item.ownerChatId || '')) || links.has(String(item.scopeId || '')));
-    data.cognitionRooms = (data.cognitionRooms || []).filter(item => apiIds.has(String(item.id || '')));
-    data.runtime = (data.runtime || []).filter(item => ids.has(String(item.chatId || '')));
-    data.autoHistory = (data.autoHistory || []).filter(item => !item.backup && ids.has(String(item.chatId || '')));
+    const rooms = (raw.rooms || []).filter(room => ids.has(String(room.chatId))).map(room => ({ ...room, pending:null }));
+    const apiIds = new Set(rooms.map(apiChatIdOf).filter(Boolean).map(String));
+    const links = new Set(rooms.flatMap(room => [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId, `lore:auto:${room.chatId}`].filter(Boolean)).map(String));
+    const data = {
+      ...raw,
+      rooms,
+      characterLibraries:(raw.characterLibraries || []).filter(item => ids.has(String(item.ownerChatId || '')) || links.has(String(item.scopeId || ''))),
+      cognitionRooms:(raw.cognitionRooms || []).filter(item => apiIds.has(String(item.id || ''))),
+      runtime:(raw.runtime || []).filter(item => ids.has(String(item.chatId || ''))),
+      autoHistory:(raw.autoHistory || []).filter(item => !item.backup && ids.has(String(item.chatId || ''))),
+    };
     if (!includeSettings) for (const key of ['guides','defaultExtraPreset','defaultCharacterPreset','cognitionSettings']) delete data[key];
     return validateCoreBackup(data);
   }
   async function openFirebaseBackupRoomPicker(provider = 'firebase') {
     if (busy || driveBusy) return;
     try {
-      const snapshot = await createCoreBackup();
+      const snapshot = await createCoreBackupThroughNative();
       const isDrive = provider === 'drive';
       const modal = createModal(`${isDrive ? 'Google Drive' : 'Firebase'}에 백업할 방 선택`, `Koofr와 별도 저장소입니다. 선택한 방과 연결 자료만 ${isDrive ? 'Google Drive' : 'Firebase'}에 올립니다.`);
       modal.body.innerHTML = `<label class="wish-inc-field"><span>백업 이름</span><input type="text" data-fbp-backup-label maxlength="80" value="${esc(`Wish 백업 ${new Date().toLocaleString('ko-KR')}`)}"></label><div class="wish-fbp-actions"><button type="button" data-fbp-current>현재 방만</button><button type="button" data-fbp-all>전체 선택</button><button type="button" data-fbp-none>선택 해제</button></div>${snapshot.rooms.map(room => `<label class="m3-cbx wish-fbp-room-row"><input type="checkbox" data-fbp-room value="${esc(room.chatId)}" ${String(apiChatIdOf(room)) === currentApiChatId() ? 'checked' : ''}><span class="m3-box"></span><span class="m3-t"><b>${esc(room.backupDisplayName || room.label || room.chatId)}</b><small>ID ${esc(room.chatId)}</small></span></label>`).join('') || '<p class="m3-muted">백업할 방이 없습니다.</p>'}<label class="m3-cbx wish-fbp-room-row"><input type="checkbox" data-fbp-global checked><span class="m3-box"></span><span class="m3-t">공용 지침·설정도 함께 저장</span></label>`;
@@ -1614,7 +1683,7 @@
     try {
       const ready = await ensureReady();
       notify('선택한 방의 백업을 Firebase에 올리는 중…', 'info', 2600);
-      payload ||= await createCoreBackup();
+      payload ||= await createCoreBackupThroughNative();
       const id = `W${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       const meta = {
         id,
@@ -1793,11 +1862,39 @@
     await driveHttp({ method:'PATCH', url:`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`, headers:{ 'Content-Type':'application/json; charset=UTF-8' }, data:JSON.stringify({ trashed:true }), label:'Google Drive 백업 휴지통 이동' });
   }
 
-  function closePatchModal() { document.querySelector('.wish-fbp-overlay')?.remove(); }
+  const patchRouteKey = () => location.pathname;
+  let observedPatchRoute = patchRouteKey();
+  function closePatchModal() { document.querySelectorAll('.wish-fbp-overlay').forEach(node => node.remove()); }
+  function closeRestoreUiForRouteChange() {
+    closePatchModal();
+    const dialog = nativeRestoreDialog();
+    const close = dialog?.querySelector('[data-act="closeDlg"]');
+    if (close) close.click();
+  }
+  function checkPatchRoute() {
+    const next = patchRouteKey();
+    if (next === observedPatchRoute) return false;
+    observedPatchRoute = next;
+    closeRestoreUiForRouteChange();
+    return true;
+  }
+  function installPatchRouteLifecycle() {
+    observedPatchRoute = patchRouteKey();
+    const checkSoon = () => { queueMicrotask(checkPatchRoute); setTimeout(checkPatchRoute, 80); };
+    addEventListener('popstate', checkSoon, true);
+    addEventListener('hashchange', checkSoon, true);
+    document.addEventListener('click', event => { if (event.target?.closest?.('a[href]')) checkSoon(); }, true);
+    setInterval(checkPatchRoute, 300);
+  }
+  function assertPatchRoute(route) {
+    if (patchRouteKey() !== route) throw new Error('채팅방이 바뀌어 복원 준비를 중단했습니다. 새 방에서 다시 열어 주세요.');
+  }
   function createModal(title, description = '') {
     closePatchModal();
+    const route = patchRouteKey();
     const overlay = document.createElement('div');
     overlay.className = 'wish-fbp-overlay';
+    overlay.dataset.wishRoute = route;
     overlay.innerHTML = `<div class="wish-fbp-modal" role="dialog" aria-modal="true"><header><div><b>${esc(title)}</b>${description ? `<small>${esc(description)}</small>` : ''}</div><button type="button" data-fbp-close aria-label="닫기">✕</button></header><div class="wish-fbp-body"></div><footer></footer></div>`;
     document.body.appendChild(overlay);
     const close = () => overlay.remove();
@@ -1833,8 +1930,10 @@
           notify('서버 백업을 내려받아 검사하는 중…', 'info', 1800);
           const raw = await databaseRequest(listed.settings, 'GET', `${DATA_ROOT}/${listed.session.localId}/${id}`);
           const backup = validateCoreBackup(raw);
+          const route = modal.overlay.dataset.wishRoute;
           modal.close();
-          await openRestoreSelection(backup);
+          assertPatchRoute(route);
+          await openRestoreSelection(backup, route);
         } catch (error) { notify(`서버 백업 불러오기 실패: ${error.message}`, 'error', 7600); button.disabled = false; }
       };
     } catch (error) { notify(`서버 백업 목록 실패: ${error.message}`, 'error', 7600); }
@@ -1891,7 +1990,179 @@
       return existingIds.size;
     } finally { db.close(); }
   }
-  async function openRestoreSelection(backup) {
+  let coreImportPending = false;
+  const coreImportBackups = new WeakMap();
+  const coreCleanupNodes = new WeakMap();
+  const nativeRestoreDialog = () => document.querySelector('#wish-rp-root [data-act="bkApply"]')?.closest('.m3-dialog');
+
+  // Core's closure is intentionally untouched. Hand a JSON File to its existing
+  // file-import action; Core owns validation, selection, locking and the commit.
+  async function openCoreRestoreSelection(backup, expectedRoute = patchRouteKey()) {
+    assertPatchRoute(expectedRoute);
+    const root = document.getElementById('wish-rp-root');
+    if (!root || coreImportPending || nativeRestoreDialog()) throw new Error('열려 있는 복원 창을 먼저 닫고 다시 시도해 주세요.');
+    const prepared = prepareNativeRestoreBackup(backup);
+    const text = JSON.stringify(prepared);
+    const host = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const file = new host.File([text], 'Wish_Cloud_Backup.json', { type:'application/json' });
+    if (file.size > 100 * 1024 * 1024) throw new Error('백업 JSON이 원본 복원 한도(100MB)를 넘습니다.');
+    coreImportPending = true;
+    let input = null, observer, timer, importStarted = false;
+    const capturePicker = event => {
+      const target = event.target;
+      if (!input && target?.matches?.('input[type="file"][data-v2-file]') && event.cancelable) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        input = target;
+      }
+    };
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.hidden = true;
+    trigger.dataset.act = 'fileRestore';
+    root.appendChild(trigger);
+    try {
+      // DOM events cross userscript worlds; changing another world's prototypes
+      // does not. Cancel only this Core input's default file-picker action.
+      document.addEventListener('click', capturePicker, true);
+      try { trigger.click(); }
+      finally {
+        document.removeEventListener('click', capturePicker, true);
+        trigger.remove();
+      }
+      if (!input) throw new Error('원본 파일 복원 경로에 연결하지 못했습니다. 원본의 백업 복원 버튼으로 JSON을 가져와 주세요.');
+      const transfer = new host.DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      await new Promise((resolve, reject) => {
+        const check = () => {
+          const dialog = nativeRestoreDialog();
+          if (!dialog) return;
+          if (patchRouteKey() !== expectedRoute) { dialog.querySelector('[data-act="closeDlg"]')?.click(); reject(new Error('채팅방이 바뀌어 복원 창을 닫았습니다.')); return; }
+          coreImportBackups.set(dialog, prepared);
+          decorateCoreBackupDialog(dialog);
+          resolve();
+        };
+        observer = new MutationObserver(check);
+        observer.observe(root, {childList:true, subtree:true});
+        timer = setTimeout(() => reject(new Error('원본 복원 창이 열리지 않았습니다. 원본 오류 기록을 확인해 주세요. 자동으로 재복원하지 않습니다.')), 15000);
+        // Core removes this input when import/selection/restore finishes. Retain
+        // the lock after a timeout too, until that in-flight operation has ended.
+        const lifetime = new MutationObserver(() => {
+          if (!input.isConnected) { lifetime.disconnect(); coreImportPending = false; }
+        });
+        lifetime.observe(document.body, {childList:true});
+        importStarted = true;
+        input.dispatchEvent(new host.Event('change', {bubbles:true}));
+        check();
+      });
+    } finally {
+      observer?.disconnect();
+      clearTimeout(timer);
+      trigger.remove();
+      // Only clean up a picker whose change handler was never dispatched.
+      if (input && !importStarted) input.dispatchEvent(new host.Event('cancel'));
+      if (!importStarted) coreImportPending = false;
+    }
+  }
+
+  function decorateCoreBackupDialog(dialog) {
+    if (!dialog.querySelector('[data-act="kvRoomAccept"],[data-act="bkApply"]')) return;
+    if (!dialog.classList.contains('wish-fbp-core-selection')) dialog.classList.add('wish-fbp-core-selection');
+    if (dialog.querySelector('[data-act="bkApply"]')) attachCoreLibraryCleanup(dialog);
+    const backup = coreImportBackups.get(dialog);
+    const rows = [...dialog.querySelectorAll('label[data-key^="bi-"]')];
+    const labels = new Map(rows.map(row => {
+      const title = row.querySelector('.m3-t>b')?.cloneNode(true);
+      title?.querySelectorAll('.m3-tag,[data-wish-linked-room]').forEach(el => el.remove());
+      return [row.dataset.key.slice(3), title?.textContent.trim() || ''];
+    }));
+    for (const row of rows) {
+      const id = row.dataset.key.slice(3);
+      const library = backup?.characterLibraries?.find(item => String(item.scopeId) === id);
+      const names = library ? (backup.rooms || []).filter(room =>
+        String(room.chatId) === String(library.ownerChatId || '') ||
+        [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id)
+      ).map(roomDisplayName) : [];
+      // Koofr's room-owned libraries encode the exact room ID, including branches.
+      // Do not guess owners from the current route or substring matches.
+      const ownerId = id.startsWith('lore:auto:') ? id.slice('lore:auto:'.length) : '';
+      if (!names.length && ownerId && labels.has(ownerId)) names.push(labels.get(ownerId));
+      const label = names.length ? `연결 방: ${[...new Set(names)].join(', ')}` : '';
+      let marker = row.querySelector('[data-wish-linked-room]');
+      if (!label) continue;
+      if (!marker) {
+        marker = document.createElement('small');
+        marker.dataset.wishLinkedRoom = '';
+        marker.setAttribute('data-fx-node', '');
+        marker.className = 'wish-fbp-owner';
+        row.querySelector('.m3-t')?.appendChild(marker);
+      }
+      if (marker.textContent !== label) marker.textContent = label;
+    }
+  }
+
+  function attachCoreLibraryCleanup(dialog) {
+    const body = dialog.querySelector('.m3-dialog-body');
+    if (!body) return;
+    const prior = coreCleanupNodes.get(dialog);
+    if (prior) { if (!prior.isConnected) body.appendChild(prior); return; }
+    const details = document.createElement('details');
+    details.className = 'wish-fbp-local-cleanup';
+    details.setAttribute('data-fx-node', '');
+    details.innerHTML = '<summary>현재 기기에 있는 기존 자료 삭제</summary><p>복원할 백업과 별도로 로컬 자료집을 정리합니다. 삭제 후 새로고침되므로 복원할 백업은 다시 열어 주세요.</p><div data-local-library-list>펼치면 기존 자료를 확인합니다.</div><div class="wish-fbp-local-actions"><button type="button" data-delete-local-libraries disabled>선택한 기존 자료 삭제</button></div>';
+    coreCleanupNodes.set(dialog, details);
+    body.appendChild(details);
+    let loading = false, loaded = false, deleting = false, restoreRequested = false;
+    const button = details.querySelector('[data-delete-local-libraries]');
+    const list = details.querySelector('[data-local-library-list]');
+    const selected = () => [...list.querySelectorAll('input:checked:not(:disabled)')].map(input => input.value);
+    dialog.addEventListener('click', event => {
+      if (deleting && event.target.closest('[data-act]')) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (event.target.closest('[data-act="bkApply"]:not(:disabled)')) { restoreRequested = true; button.disabled = true; }
+    }, true);
+    details.addEventListener('change', () => { button.disabled = deleting || restoreRequested || !selected().length; });
+    details.addEventListener('toggle', async () => {
+      if (!details.open || loading || loaded || restoreRequested) return;
+      loading = true;
+      let db;
+      try {
+        db = await openWishDatabase();
+        const existing = await readAllStores(db);
+        const pending = existing.rooms.filter(room => room.pending);
+        list.innerHTML = existing.characterLibraries.map(item => {
+          const id = String(item.scopeId || '');
+          const blocked = !!libraryOwnerRoom(item, pending) || pending.some(room =>
+            [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id));
+          return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" value="${esc(id)}" ${blocked?'disabled':''}><span><b>${esc(item.name || item.title || id)}</b><small>${esc(libraryOwnerLabel(item, existing.rooms))}${blocked?' · 활성 주입에 연결되어 삭제할 수 없음':''}</small></span></label>`;
+        }).join('') || '<p>삭제할 기존 자료가 없습니다.</p>';
+        loaded = true;
+      } catch (error) { list.textContent = `기존 자료 확인 실패: ${error.message}`; }
+      finally { db?.close(); loading = false; }
+    });
+    button.onclick = async event => {
+      event.preventDefault(); event.stopPropagation();
+      const ids = selected();
+      if (restoreRequested || deleting || !ids.length || !confirm(`선택한 기존 로컬 자료 ${ids.length}개를 삭제할까요?\n서버 백업은 유지됩니다. 삭제 후 새로고침되며 복원할 백업은 다시 열어야 합니다.`)) return;
+      deleting = true;
+      button.disabled = true;
+      try {
+        const count = await deleteLocalLibraries(new Set(ids));
+        sessionStorage.setItem(RESTORE_NOTICE_KEY, `기존 로컬 자료 ${count}개를 삭제했습니다.`);
+        location.reload();
+      } catch (error) {
+        notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000);
+        deleting = false;
+        button.disabled = !selected().length;
+      }
+    };
+  }
+
+  async function openRestoreSelection(backup, expectedRoute = patchRouteKey()) {
+    assertPatchRoute(expectedRoute);
+    // Native keeps Core 2.0.5's validator, locking and commit path. Embedded is
+    // an explicit faster alternative and never silently replaces the native path.
+    if (BACKUP_ENGINE === 'native') return openCoreRestoreSelection(backup, expectedRoute);
     const db = await openWishDatabase();
     let existing;
     try { existing = await readAllStores(db); }
@@ -2051,12 +2322,14 @@
   }
   async function restoreFirebaseCloudItem(id) {
     if (busy) return;
+    const route = patchRouteKey();
     busy = true; const dialog = currentCloudDialog(); if (dialog) renderFirebaseCloudPanel(dialog);
     try {
       const listed = await fetchBackups();
       if (!listed.items.some(item => item.id === id)) throw new Error('백업 목록을 다시 확인해 주세요.');
       const raw = await databaseRequest(listed.settings, 'GET', `${DATA_ROOT}/${listed.session.localId}/${id}`);
-      await openRestoreSelection(validateCoreBackup(raw));
+      assertPatchRoute(route);
+      await openRestoreSelection(validateCoreBackup(raw), route);
     } catch (error) { notify(`Firebase 복원 준비 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; const current = currentCloudDialog(); if (current) renderFirebaseCloudPanel(current); }
   }
@@ -2134,10 +2407,13 @@
   }
   async function restoreDriveCloudItem(id) {
     if (driveBusy) return;
+    const route = patchRouteKey();
     driveBusy = true; const dialog = currentCloudDialog(); if (dialog) renderDriveCloudPanel(dialog);
     try {
       if (!driveRows.some(item => item.id === id)) throw new Error('백업 목록을 다시 확인해 주세요.');
-      await openRestoreSelection(await downloadDriveBackup(id));
+      const backup = await downloadDriveBackup(id);
+      assertPatchRoute(route);
+      await openRestoreSelection(backup, route);
     } catch (error) { notify(`Google Drive 복원 준비 실패: ${error.message}`, 'error', 7600); }
     finally { driveBusy = false; const current = currentCloudDialog(); if (current) renderDriveCloudPanel(current); }
   }
@@ -2293,13 +2569,14 @@
     if (version && !coreVersionSupported(version)) {
       if (!coreMismatchNotified) {
         coreMismatchNotified = true;
-        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${MIN_SUPPORTED_CORE_VERSION} 이상, 3.0.0 미만에서만 실행합니다. 현재 ${version}에는 패치 업데이트가 필요합니다.`, 'warn', 9000);
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${SUPPORTED_CORE_VERSION}에서만 실행합니다. 현재 Core ${version}에서는 패치를 중단했습니다.`, 'warn', 9000);
       }
       return;
     }
     injectPatchVersion(root);
     root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
     root.querySelectorAll('.m3-dialog').forEach(injectFinalGptButton);
+    root.querySelectorAll('.m3-dialog').forEach(decorateCoreBackupDialog);
     refreshButtonContrast(root);
   }
   function queueScan() {
@@ -2309,7 +2586,11 @@
   }
   function installObserver() {
     if (!document.documentElement) { document.addEventListener('DOMContentLoaded', installObserver, { once:true }); return; }
-    new MutationObserver(queueScan).observe(document.documentElement, { childList:true, subtree:true });
+    new MutationObserver(records => {
+      if (records.some(record => record.type === 'childList' ||
+        record.target.matches?.('.m3-dialog:not(.wish-fbp-core-selection)') &&
+        record.target.querySelector('[data-act="kvRoomAccept"],[data-act="bkApply"]'))) queueScan();
+    }).observe(document.documentElement, { childList:true, subtree:true, attributes:true, attributeFilter:['class'] });
     queueScan();
     const notice = sessionStorage.getItem(RESTORE_NOTICE_KEY);
     if (notice) { sessionStorage.removeItem(RESTORE_NOTICE_KEY); setTimeout(() => notify(notice, 'success', 6500), 1200); }
@@ -2318,6 +2599,22 @@
   const style = document.createElement('style');
   style.id = 'wish-fbp-style';
   style.textContent = `
+    #wish-rp-root .wish-fbp-core-selection{--m3-sheet:#111926;--m3-card:#18212e;--m3-card2:#202a3a;--m3-fg:#dbe3ef;--m3-fg2:#b7c5d9;--m3-muted:#93a0b3;--m3-line:#303b4d}
+    #wish-rp-root .wish-fbp-core-selection .m3-sheet{background:#111926;color:#dbe3ef;border:1px solid #3b485e;border-radius:16px;max-width:760px}
+    #wish-rp-root .wish-fbp-core-selection .m3-dialog-body{padding:14px 18px;min-height:0;overflow:auto}
+    #wish-rp-root .wish-fbp-core-selection .m3-sheet>header,#wish-rp-root .wish-fbp-core-selection .m3-sheet>footer{background:#101722;color:#dbe3ef;padding:12px 16px;border-color:#2b3547}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx{display:grid;grid-template-columns:24px minmax(0,1fr);gap:10px;align-items:start;margin:7px 0;padding:11px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx>input[type="checkbox"]{position:static;display:block;width:20px;height:20px;opacity:1;pointer-events:auto;appearance:auto;margin:3px 0 0;accent-color:#719be1}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx>.m3-box{display:none}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx .m3-t{min-width:0;overflow-wrap:anywhere}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx small{display:block;margin-top:3px}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx .wish-fbp-owner{color:#8fc5ff;font-weight:750}
+    #wish-rp-root .wish-fbp-core-selection .m3-cbx.is-dis{opacity:1}
+    #wish-rp-root .wish-fbp-core-selection .m3-btn{border:1px solid #3b485e;border-radius:8px;background:#202a3a;color:#dbe3ef;padding:8px 11px}
+    #wish-rp-root .wish-fbp-core-selection .m3-btn.primary{border-color:#557bc0;background:#294979;color:white}
+    #wish-rp-root .wish-fbp-core-selection .wish-fbp-local-actions button{border:1px solid #75434c;border-radius:8px;background:#3a2228;color:#ffc2cb;padding:8px 11px;cursor:pointer}
+    #wish-rp-root .wish-fbp-core-selection .wish-fbp-local-actions button:disabled{opacity:.45;cursor:default}
+    @media(max-width:600px){#wish-rp-root .wish-fbp-core-selection .m3-sheet{max-height:88dvh;border-radius:16px 16px 0 0}#wish-rp-root .wish-fbp-core-selection .m3-cbx{min-height:48px}#wish-rp-root .wish-fbp-core-selection .m3-cbx>input[type="checkbox"]{width:22px;height:22px}}
     #wish-fbp-toast-wrap{position:fixed;z-index:2147483647;right:14px;bottom:16px;display:flex;flex-direction:column;gap:8px;max-width:min(430px,calc(100vw - 28px));pointer-events:none}
     .wish-fbp-toast{opacity:0;transform:translateY(8px);padding:11px 14px;border:1px solid #46566f;border-radius:10px;background:#17202d;color:#e8eef8;box-shadow:0 14px 40px #0009;font:12px/1.55 system-ui,sans-serif;transition:.2s}.wish-fbp-toast.show{opacity:1;transform:none}.wish-fbp-toast.success{border-color:#3d7b65;color:#b9f0d7}.wish-fbp-toast.error{border-color:#8f4653;color:#ffc3cb}.wish-fbp-toast.warn{border-color:#8c6c35;color:#ffe0a8}
     .wish-fbp-settings>label,.wish-fbp-settings .wish-fbp-grid>label{display:grid;gap:5px;margin:9px 0;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-fbp-settings label>span{font-weight:650}.wish-fbp-settings input{box-sizing:border-box;width:100%;min-height:38px;border:1px solid var(--m3-line,#3a465a);border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg,#edf1f8);padding:8px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}.wish-fbp-settings input:focus{outline:2px solid color-mix(in srgb,var(--m3-accent,#83aaff) 28%,transparent);border-color:var(--m3-accent,#83aaff)}.wish-fbp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wish-fbp-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}.wish-fbp-status.ok{color:#93dfbd}.wish-fbp-status.error{color:#ff9eab}.wish-fbp-status.busy{color:#ffd58f}.wish-fbp-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-main-button{border-color:#173c4d!important;background:#285d73!important;color:#fff!important;font-weight:760!important;box-shadow:0 2px 7px rgba(20,63,82,.25)!important}.wish-fbp-main-button:hover{border-color:#102f3d!important;background:#1d4d62!important;color:#fff!important}.wish-gpt-prepare-button{border-color:color-mix(in srgb,var(--m3-accent,#3f52a0) 70%,#18213a)!important;background:var(--m3-accent,#3f52a0)!important;color:var(--m3-accent-ink,#fff)!important;font-weight:720!important}.wish-gpt-prepare-button:hover{filter:brightness(.92)}
@@ -2341,12 +2638,37 @@
     if (target) { target.appendChild(style); return; }
     document.addEventListener('DOMContentLoaded', () => (document.head || document.documentElement)?.appendChild(style), { once:true });
   }
-  installDownloadFilenameNormalizer();
-  mountStyle();
-  if (IS_CHATGPT) installChatGPTBridge();
-  else {
+  function claimPatchRuntime() {
+    const host = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    try {
+      if (host[PATCH_RUNTIME_KEY]) return false;
+      Object.defineProperty(host, PATCH_RUNTIME_KEY, { value:{ version:PATCH_VERSION, engine:BACKUP_ENGINE }, configurable:true });
+      return true;
+    } catch (_) { return true; }
+  }
+  function startExactCorePatch(attempt = 0) {
+    const version = coreVersion();
+    if (!version) {
+      if (attempt < 150) setTimeout(() => startExactCorePatch(attempt + 1), 200);
+      return;
+    }
+    if (!coreVersionSupported(version)) {
+      if (!coreMismatchNotified) {
+        coreMismatchNotified = true;
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${SUPPORTED_CORE_VERSION}에서만 실행합니다. 현재 Core ${version}에서는 패치를 중단했습니다.`, 'warn', 9000);
+      }
+      return;
+    }
+    installDownloadFilenameNormalizer();
     installSecondaryDownloadCapture();
+    installPatchRouteLifecycle();
     installObserver();
     scheduleCognitionRepair();
   }
+  if (!claimPatchRuntime()) return;
+  mountStyle();
+  if (IS_CHATGPT) {
+    installDownloadFilenameNormalizer();
+    installChatGPTBridge();
+  } else startExactCorePatch();
 })();
