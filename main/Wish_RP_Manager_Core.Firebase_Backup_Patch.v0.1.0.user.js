@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         🪽🐡 Wish RP Manager Core · Cloud Patch
+// @name         🪽🐡 Wish RP Core · Cloud Patch
 // @namespace    local.rp.context.manager.cloud.patch
-// @version      1.3.7
+// @version      1.3.6
 // @description  Wish RP Manager Core 1.6–2.x cloud backup and ChatGPT transfer patch
 // @author       User
 // @license      All Rights Reserved
@@ -40,7 +40,7 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.3.7';
+  const PATCH_VERSION = '1.3.6';
   const MIN_SUPPORTED_CORE_VERSION = '1.6.0';
   const MAX_SUPPORTED_CORE_MAJOR = 3;
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -1891,175 +1891,7 @@
       return existingIds.size;
     } finally { db.close(); }
   }
-  let coreImportPending = false;
-  const coreImportBackups = new WeakMap();
-  const coreCleanupNodes = new WeakMap();
-  const nativeRestoreDialog = () => document.querySelector('#wish-rp-root [data-act="bkApply"]')?.closest('.m3-dialog');
-
-  // Core's closure is intentionally untouched. Hand a JSON File to its existing
-  // file-import action; Core owns validation, selection, locking and the commit.
-  async function openCoreRestoreSelection(backup) {
-    const root = document.getElementById('wish-rp-root');
-    if (!root || coreImportPending || nativeRestoreDialog()) throw new Error('열려 있는 복원 창을 먼저 닫고 다시 시도해 주세요.');
-    const text = JSON.stringify(backup);
-    const host = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    const file = new host.File([text], 'Wish_Cloud_Backup.json', { type:'application/json' });
-    if (file.size > 100 * 1024 * 1024) throw new Error('백업 JSON이 원본 복원 한도(100MB)를 넘습니다.');
-    coreImportPending = true;
-    let input = null, observer, timer, importStarted = false;
-    const capturePicker = event => {
-      const target = event.target;
-      if (!input && target?.matches?.('input[type="file"][data-v2-file]') && event.cancelable) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        input = target;
-      }
-    };
-    const trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.hidden = true;
-    trigger.dataset.act = 'fileRestore';
-    root.appendChild(trigger);
-    try {
-      // DOM events cross userscript worlds; changing another world's prototypes
-      // does not. Cancel only this Core input's default file-picker action.
-      document.addEventListener('click', capturePicker, true);
-      try { trigger.click(); }
-      finally {
-        document.removeEventListener('click', capturePicker, true);
-        trigger.remove();
-      }
-      if (!input) throw new Error('원본 파일 복원 경로에 연결하지 못했습니다. 원본의 백업 복원 버튼으로 JSON을 가져와 주세요.');
-      const transfer = new host.DataTransfer();
-      transfer.items.add(file);
-      input.files = transfer.files;
-      await new Promise((resolve, reject) => {
-        const check = () => {
-          const dialog = nativeRestoreDialog();
-          if (!dialog) return;
-          coreImportBackups.set(dialog, backup);
-          decorateCoreBackupDialog(dialog);
-          resolve();
-        };
-        observer = new MutationObserver(check);
-        observer.observe(root, {childList:true, subtree:true});
-        timer = setTimeout(() => reject(new Error('원본 복원 창이 열리지 않았습니다. 원본 오류 기록을 확인해 주세요. 자동으로 재복원하지 않습니다.')), 15000);
-        // Core removes this input when import/selection/restore finishes. Retain
-        // the lock after a timeout too, until that in-flight operation has ended.
-        const lifetime = new MutationObserver(() => {
-          if (!input.isConnected) { lifetime.disconnect(); coreImportPending = false; }
-        });
-        lifetime.observe(document.body, {childList:true});
-        importStarted = true;
-        input.dispatchEvent(new host.Event('change', {bubbles:true}));
-        check();
-      });
-    } finally {
-      observer?.disconnect();
-      clearTimeout(timer);
-      trigger.remove();
-      // Only clean up a picker whose change handler was never dispatched.
-      if (input && !importStarted) input.dispatchEvent(new host.Event('cancel'));
-      if (!importStarted) coreImportPending = false;
-    }
-  }
-
-  function decorateCoreBackupDialog(dialog) {
-    if (!dialog.querySelector('[data-act="kvRoomAccept"],[data-act="bkApply"]')) return;
-    if (!dialog.classList.contains('wish-fbp-core-selection')) dialog.classList.add('wish-fbp-core-selection');
-    if (dialog.querySelector('[data-act="bkApply"]')) attachCoreLibraryCleanup(dialog);
-    const backup = coreImportBackups.get(dialog);
-    const rows = [...dialog.querySelectorAll('label[data-key^="bi-"]')];
-    const labels = new Map(rows.map(row => {
-      const title = row.querySelector('.m3-t>b')?.cloneNode(true);
-      title?.querySelectorAll('.m3-tag,[data-wish-linked-room]').forEach(el => el.remove());
-      return [row.dataset.key.slice(3), title?.textContent.trim() || ''];
-    }));
-    for (const row of rows) {
-      const id = row.dataset.key.slice(3);
-      const library = backup?.characterLibraries?.find(item => String(item.scopeId) === id);
-      const names = library ? (backup.rooms || []).filter(room =>
-        String(room.chatId) === String(library.ownerChatId || '') ||
-        [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id)
-      ).map(roomDisplayName) : [];
-      // Koofr's room-owned libraries encode the exact room ID, including branches.
-      // Do not guess owners from the current route or substring matches.
-      const ownerId = id.startsWith('lore:auto:') ? id.slice('lore:auto:'.length) : '';
-      if (!names.length && ownerId && labels.has(ownerId)) names.push(labels.get(ownerId));
-      const label = names.length ? `연결 방: ${[...new Set(names)].join(', ')}` : '';
-      let marker = row.querySelector('[data-wish-linked-room]');
-      if (!label) continue;
-      if (!marker) {
-        marker = document.createElement('small');
-        marker.dataset.wishLinkedRoom = '';
-        marker.setAttribute('data-fx-node', '');
-        marker.className = 'wish-fbp-owner';
-        row.querySelector('.m3-t')?.appendChild(marker);
-      }
-      if (marker.textContent !== label) marker.textContent = label;
-    }
-  }
-
-  function attachCoreLibraryCleanup(dialog) {
-    const body = dialog.querySelector('.m3-dialog-body');
-    if (!body) return;
-    const prior = coreCleanupNodes.get(dialog);
-    if (prior) { if (!prior.isConnected) body.appendChild(prior); return; }
-    const details = document.createElement('details');
-    details.className = 'wish-fbp-local-cleanup';
-    details.setAttribute('data-fx-node', '');
-    details.innerHTML = '<summary>현재 기기에 있는 기존 자료 삭제</summary><p>복원할 백업과 별도로 로컬 자료집을 정리합니다. 삭제 후 새로고침되므로 복원할 백업은 다시 열어 주세요.</p><div data-local-library-list>펼치면 기존 자료를 확인합니다.</div><div class="wish-fbp-local-actions"><button type="button" data-delete-local-libraries disabled>선택한 기존 자료 삭제</button></div>';
-    coreCleanupNodes.set(dialog, details);
-    body.appendChild(details);
-    let loading = false, loaded = false, deleting = false, restoreRequested = false;
-    const button = details.querySelector('[data-delete-local-libraries]');
-    const list = details.querySelector('[data-local-library-list]');
-    const selected = () => [...list.querySelectorAll('input:checked:not(:disabled)')].map(input => input.value);
-    dialog.addEventListener('click', event => {
-      if (deleting && event.target.closest('[data-act]')) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-      if (event.target.closest('[data-act="bkApply"]:not(:disabled)')) { restoreRequested = true; button.disabled = true; }
-    }, true);
-    details.addEventListener('change', () => { button.disabled = deleting || restoreRequested || !selected().length; });
-    details.addEventListener('toggle', async () => {
-      if (!details.open || loading || loaded || restoreRequested) return;
-      loading = true;
-      let db;
-      try {
-        db = await openWishDatabase();
-        const existing = await readAllStores(db);
-        const pending = existing.rooms.filter(room => room.pending);
-        list.innerHTML = existing.characterLibraries.map(item => {
-          const id = String(item.scopeId || '');
-          const blocked = !!libraryOwnerRoom(item, pending) || pending.some(room =>
-            [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id));
-          return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" value="${esc(id)}" ${blocked?'disabled':''}><span><b>${esc(item.name || item.title || id)}</b><small>${esc(libraryOwnerLabel(item, existing.rooms))}${blocked?' · 활성 주입에 연결되어 삭제할 수 없음':''}</small></span></label>`;
-        }).join('') || '<p>삭제할 기존 자료가 없습니다.</p>';
-        loaded = true;
-      } catch (error) { list.textContent = `기존 자료 확인 실패: ${error.message}`; }
-      finally { db?.close(); loading = false; }
-    });
-    button.onclick = async event => {
-      event.preventDefault(); event.stopPropagation();
-      const ids = selected();
-      if (restoreRequested || deleting || !ids.length || !confirm(`선택한 기존 로컬 자료 ${ids.length}개를 삭제할까요?\n서버 백업은 유지됩니다. 삭제 후 새로고침되며 복원할 백업은 다시 열어야 합니다.`)) return;
-      deleting = true;
-      button.disabled = true;
-      try {
-        const count = await deleteLocalLibraries(new Set(ids));
-        sessionStorage.setItem(RESTORE_NOTICE_KEY, `기존 로컬 자료 ${count}개를 삭제했습니다.`);
-        location.reload();
-      } catch (error) {
-        notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000);
-        deleting = false;
-        button.disabled = !selected().length;
-      }
-    };
-  }
-
   async function openRestoreSelection(backup) {
-    // This adapter is verified against Core 2.0.5. Core 1.x versions retain
-    // their legacy patch flow; a failed native handoff never falls back to DB writes.
-    if (/^2\./.test(coreVersion())) return openCoreRestoreSelection(backup);
     const db = await openWishDatabase();
     let existing;
     try { existing = await readAllStores(db); }
@@ -2468,7 +2300,6 @@
     injectPatchVersion(root);
     root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
     root.querySelectorAll('.m3-dialog').forEach(injectFinalGptButton);
-    root.querySelectorAll('.m3-dialog').forEach(decorateCoreBackupDialog);
     refreshButtonContrast(root);
   }
   function queueScan() {
@@ -2478,11 +2309,7 @@
   }
   function installObserver() {
     if (!document.documentElement) { document.addEventListener('DOMContentLoaded', installObserver, { once:true }); return; }
-    new MutationObserver(records => {
-      if (records.some(record => record.type === 'childList' ||
-        record.target.matches?.('.m3-dialog:not(.wish-fbp-core-selection)') &&
-        record.target.querySelector('[data-act="kvRoomAccept"],[data-act="bkApply"]'))) queueScan();
-    }).observe(document.documentElement, { childList:true, subtree:true, attributes:true, attributeFilter:['class'] });
+    new MutationObserver(queueScan).observe(document.documentElement, { childList:true, subtree:true });
     queueScan();
     const notice = sessionStorage.getItem(RESTORE_NOTICE_KEY);
     if (notice) { sessionStorage.removeItem(RESTORE_NOTICE_KEY); setTimeout(() => notify(notice, 'success', 6500), 1200); }
@@ -2491,22 +2318,6 @@
   const style = document.createElement('style');
   style.id = 'wish-fbp-style';
   style.textContent = `
-    #wish-rp-root .wish-fbp-core-selection{--m3-sheet:#111926;--m3-card:#18212e;--m3-card2:#202a3a;--m3-fg:#dbe3ef;--m3-fg2:#b7c5d9;--m3-muted:#93a0b3;--m3-line:#303b4d}
-    #wish-rp-root .wish-fbp-core-selection .m3-sheet{background:#111926;color:#dbe3ef;border:1px solid #3b485e;border-radius:16px;max-width:760px}
-    #wish-rp-root .wish-fbp-core-selection .m3-dialog-body{padding:14px 18px;min-height:0;overflow:auto}
-    #wish-rp-root .wish-fbp-core-selection .m3-sheet>header,#wish-rp-root .wish-fbp-core-selection .m3-sheet>footer{background:#101722;color:#dbe3ef;padding:12px 16px;border-color:#2b3547}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx{display:grid;grid-template-columns:24px minmax(0,1fr);gap:10px;align-items:start;margin:7px 0;padding:11px 12px;border:1px solid #303b4d;border-radius:10px;background:#18212e}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx>input[type="checkbox"]{position:static;display:block;width:20px;height:20px;opacity:1;pointer-events:auto;appearance:auto;margin:3px 0 0;accent-color:#719be1}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx>.m3-box{display:none}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx .m3-t{min-width:0;overflow-wrap:anywhere}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx small{display:block;margin-top:3px}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx .wish-fbp-owner{color:#8fc5ff;font-weight:750}
-    #wish-rp-root .wish-fbp-core-selection .m3-cbx.is-dis{opacity:1}
-    #wish-rp-root .wish-fbp-core-selection .m3-btn{border:1px solid #3b485e;border-radius:8px;background:#202a3a;color:#dbe3ef;padding:8px 11px}
-    #wish-rp-root .wish-fbp-core-selection .m3-btn.primary{border-color:#557bc0;background:#294979;color:white}
-    #wish-rp-root .wish-fbp-core-selection .wish-fbp-local-actions button{border:1px solid #75434c;border-radius:8px;background:#3a2228;color:#ffc2cb;padding:8px 11px;cursor:pointer}
-    #wish-rp-root .wish-fbp-core-selection .wish-fbp-local-actions button:disabled{opacity:.45;cursor:default}
-    @media(max-width:600px){#wish-rp-root .wish-fbp-core-selection .m3-sheet{max-height:88dvh;border-radius:16px 16px 0 0}#wish-rp-root .wish-fbp-core-selection .m3-cbx{min-height:48px}#wish-rp-root .wish-fbp-core-selection .m3-cbx>input[type="checkbox"]{width:22px;height:22px}}
     #wish-fbp-toast-wrap{position:fixed;z-index:2147483647;right:14px;bottom:16px;display:flex;flex-direction:column;gap:8px;max-width:min(430px,calc(100vw - 28px));pointer-events:none}
     .wish-fbp-toast{opacity:0;transform:translateY(8px);padding:11px 14px;border:1px solid #46566f;border-radius:10px;background:#17202d;color:#e8eef8;box-shadow:0 14px 40px #0009;font:12px/1.55 system-ui,sans-serif;transition:.2s}.wish-fbp-toast.show{opacity:1;transform:none}.wish-fbp-toast.success{border-color:#3d7b65;color:#b9f0d7}.wish-fbp-toast.error{border-color:#8f4653;color:#ffc3cb}.wish-fbp-toast.warn{border-color:#8c6c35;color:#ffe0a8}
     .wish-fbp-settings>label,.wish-fbp-settings .wish-fbp-grid>label{display:grid;gap:5px;margin:9px 0;color:var(--m3-fg2,#c8d0df);font-size:11px}.wish-fbp-settings label>span{font-weight:650}.wish-fbp-settings input{box-sizing:border-box;width:100%;min-height:38px;border:1px solid var(--m3-line,#3a465a);border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg,#edf1f8);padding:8px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}.wish-fbp-settings input:focus{outline:2px solid color-mix(in srgb,var(--m3-accent,#83aaff) 28%,transparent);border-color:var(--m3-accent,#83aaff)}.wish-fbp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wish-fbp-status{margin-top:10px;padding:9px 11px;border-radius:8px;background:var(--m3-card2,#111824);color:var(--m3-fg2,#c8d0df);font-size:11px;line-height:1.55}.wish-fbp-status.ok{color:#93dfbd}.wish-fbp-status.error{color:#ff9eab}.wish-fbp-status.busy{color:#ffd58f}.wish-fbp-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.wish-fbp-main-button{border-color:#173c4d!important;background:#285d73!important;color:#fff!important;font-weight:760!important;box-shadow:0 2px 7px rgba(20,63,82,.25)!important}.wish-fbp-main-button:hover{border-color:#102f3d!important;background:#1d4d62!important;color:#fff!important}.wish-gpt-prepare-button{border-color:color-mix(in srgb,var(--m3-accent,#3f52a0) 70%,#18213a)!important;background:var(--m3-accent,#3f52a0)!important;color:var(--m3-accent-ink,#fff)!important;font-weight:720!important}.wish-gpt-prepare-button:hover{filter:brightness(.92)}
