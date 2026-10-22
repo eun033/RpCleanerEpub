@@ -1,8 +1,10 @@
 // ==UserScript==
-// @name         🪽🐡 Wish RP Manager Core 2.0.5 · Cloud Patch Native
+// @name         🪽🐡 Wish RP Manager Core 2.x · Cloud Patch Native
 // @namespace    local.rp.context.manager.cloud.patch
-// @version      1.4.0
-// @description  Wish RP Manager Core 2.0.5 전용 cloud backup and ChatGPT transfer patch (Native)
+// @version      1.6.0
+// @updateURL    https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
+// @downloadURL  https://github.com/eun033/RpCleanerEpub/raw/refs/heads/main/main/Wish_RP_Manager_Core.Firebase_Backup_Patch.v0.1.0.user.js
+// @description  Wish RP Manager Core 2.x용 cloud backup, local room cleanup and ChatGPT transfer patch (Native; verified on 2.0.5)
 // @author       User
 // @license      All Rights Reserved
 // @match        https://crack.wrtn.ai/*
@@ -38,8 +40,9 @@
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '1.4.0-native';
-  const SUPPORTED_CORE_VERSION = '2.0.5';
+  const PATCH_VERSION = '1.6.0-native';
+  const SUPPORTED_CORE_MAJOR = 2;
+  const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
   const PATCH_RUNTIME_KEY = '__WISH_RP_MANAGER_CLOUD_PATCH_205__';
   const CORE_RUNTIME_KEY = '__WISH_RP_MANAGER_V1__';
@@ -98,6 +101,7 @@
   let busy = false;
   let scanQueued = false;
   let coreMismatchNotified = false;
+  let coreUnverifiedNotified = false;
   let secondaryCaptureRequestedAt = 0;
   let chatTransferCache;
   let chatAttachBusy = false;
@@ -148,8 +152,10 @@
     return String(value?.version || document.querySelector('#wish-rp-root .m3-sub-line')?.textContent?.match(/Wish Core\s+(\d+(?:\.\d+)+)/)?.[1] || '');
   }
   function coreVersionSupported(value) {
-    return String(value || '').trim() === SUPPORTED_CORE_VERSION;
+    const match = String(value || '').trim().match(/^(\d+)(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?$/);
+    return match ? Number(match[1]) === SUPPORTED_CORE_MAJOR : false;
   }
+  const coreVersionVerified = value => String(value || '').trim() === VERIFIED_CORE_VERSION;
   const bridge = () => {
     try { return unsafeWindow?.__WishCognitionBridge || window.__WishCognitionBridge || null; }
     catch (_) { return window.__WishCognitionBridge || null; }
@@ -1367,7 +1373,7 @@
   }
   let coreBackupPending = null;
   async function createCoreBackupThroughNative() {
-    if (!coreVersionSupported(coreVersion())) throw new Error(`이 패치는 Wish Core ${SUPPORTED_CORE_VERSION}에서만 실행됩니다.`);
+    if (!coreVersionSupported(coreVersion())) throw new Error('이 패치는 Wish Core 2.x에서만 실행됩니다.');
     if (coreBackupPending) return coreBackupPending;
     coreBackupPending = new Promise((resolve, reject) => {
       const root = document.getElementById('wish-rp-root');
@@ -2549,6 +2555,19 @@
     badge.textContent = `( + patch ${PATCH_VERSION})`;
     version.insertAdjacentElement('afterend', badge);
   }
+  function injectLocalRoomCleanupShortcut(root) {
+    const anchor = root.querySelector('.m3-main [data-key="usage-settings"]');
+    const existing = root.querySelector('[data-wish-local-rooms-settings]');
+    if (!anchor) { existing?.remove(); return; }
+    if (existing) return;
+    const section = document.createElement('section');
+    section.className = 'm3-panel';
+    section.dataset.key = 'wish-local-rooms-settings';
+    section.setAttribute('data-fx-node', '');
+    section.setAttribute('data-wish-local-rooms-settings', '');
+    section.innerHTML = '<div class="m3-panel-head"><b class="m3-title-help">사용하지 않는 방 정리</b><button type="button" class="m3-btn mini" data-act="localRooms" data-wish-local-rooms-shortcut>방 선택</button></div><p class="m3-muted">현재 방을 제외한 이 기기의 Wish 로컬 방을 골라 기억·인지·전용 자료와 작업 이력을 정리합니다. Crack 대화는 유지됩니다.</p>';
+    anchor.insertAdjacentElement('afterend', section);
+  }
   function applyButtonContrast(button, background, border) {
     if (!button) return;
     button.style.setProperty('background', background, 'important');
@@ -2569,11 +2588,12 @@
     if (version && !coreVersionSupported(version)) {
       if (!coreMismatchNotified) {
         coreMismatchNotified = true;
-        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${SUPPORTED_CORE_VERSION}에서만 실행합니다. 현재 Core ${version}에서는 패치를 중단했습니다.`, 'warn', 9000);
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core 2.x에서만 실행합니다. 현재 Core ${version}에서는 패치를 중단했습니다.`, 'warn', 9000);
       }
       return;
     }
     injectPatchVersion(root);
+    injectLocalRoomCleanupShortcut(root);
     root.querySelectorAll('.m3-dialog').forEach(injectCloudProvider);
     root.querySelectorAll('.m3-dialog').forEach(injectFinalGptButton);
     root.querySelectorAll('.m3-dialog').forEach(decorateCoreBackupDialog);
@@ -2655,9 +2675,13 @@
     if (!coreVersionSupported(version)) {
       if (!coreMismatchNotified) {
         coreMismatchNotified = true;
-        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core ${SUPPORTED_CORE_VERSION}에서만 실행합니다. 현재 Core ${version}에서는 패치를 중단했습니다.`, 'warn', 9000);
+        notify(`Cloud Patch v${PATCH_VERSION}는 Wish Core 2.x에서만 실행합니다. 현재 Core ${version}에서는 패치를 중단했습니다.`, 'warn', 9000);
       }
       return;
+    }
+    if (!coreVersionVerified(version) && !coreUnverifiedNotified) {
+      coreUnverifiedNotified = true;
+      notify(`Core ${version}은 2.x 범위로 실행합니다. 자동 검증 기준은 ${VERIFIED_CORE_VERSION}이며, 백업·복원 전 파일 백업을 권장합니다.`, 'warn', 9000);
     }
     installDownloadFilenameNormalizer();
     installSecondaryDownloadCapture();
