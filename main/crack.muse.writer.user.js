@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🐡✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.4.5
+// @version      5.4.6
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억을 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -4327,7 +4327,11 @@
       const msgs = (json.data ?? json).messages ?? [];
       return msgs
         .reverse()
-        .map((m) => `[${m.role === "assistant" ? "상대" : "나"}]: ${m.content}`)
+        .map((m) => {
+          const content = String(m.content ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
+          return content ? `[${m.role === "assistant" ? "상대" : "나"}]: ${content}` : "";
+        })
+        .filter(Boolean)
         .join("\n\n");
     } catch (e) {
       return "(맥락 로드 실패)";
