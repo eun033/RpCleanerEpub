@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🐡✨ Crack Muse Writer (AI 답변 커스텀)
 // @namespace    muse writer
-// @version      5.4.6
+// @version      5.4.7
 // @description  Crack 캐릭터챗 입력을 맥락·프로필·참고자료·서사 나침반에 맞춰 다듬고, 단기·장기 기억을 읽기 전용으로 참고하며 유저 입력 번역까지 처리하는 AI 집필 보조 도구
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_addStyle
@@ -719,7 +719,7 @@
   // =============================================
   // 0-1. 유저 입력 번역 기능 (V4.1.1 번역 시스템 통합)
   //      - API 제공자/모델/키는 집필 기능과 공유한다.
-  //      - 번역 설정은 변경 즉시 저장되며 말투 메모는 방별 저장된다.
+  //      - 번역 모드를 제외한 언어·출력 형식·말투 메모는 방별 저장된다.
   // =============================================
   const TRANS_DEFAULT_FORMAT = "{번역문} ({원문})";
 
@@ -743,22 +743,30 @@
     ["__custom__", "직접 입력…"],
   ];
 
-  function getTargetLang() {
-    const lang = GM_getValue("cfgTransLang", "English");
+  function getTransKey(kind, room = getChatRoomId()) {
+    return `${kind}_${room}`;
+  }
+
+  function getTransValue(kind, fallback, room = getChatRoomId()) {
+    return GM_getValue(getTransKey(kind, room), GM_getValue(kind, fallback));
+  }
+
+  function getTargetLang(room = getChatRoomId()) {
+    const lang = getTransValue("cfgTransLang", "English", room);
     if (lang === "__custom__") {
-      return (GM_getValue("cfgTransCustomLang", "") || "").trim() || "English";
+      return (getTransValue("cfgTransCustomLang", "", room) || "").trim() || "English";
     }
     return lang || "English";
   }
 
-  function getTransFormatTemplate() {
-    let fmt = (GM_getValue("cfgTransFormat", TRANS_DEFAULT_FORMAT) || "").trim();
+  function getTransFormatTemplate(room = getChatRoomId()) {
+    let fmt = (getTransValue("cfgTransFormat", TRANS_DEFAULT_FORMAT, room) || "").trim();
     if (!fmt.includes("{번역문}")) fmt = TRANS_DEFAULT_FORMAT;
     return fmt;
   }
 
-  function buildTransFormatInstruction() {
-    const fmt = getTransFormatTemplate();
+  function buildTransFormatInstruction(room = getChatRoomId()) {
+    const fmt = getTransFormatTemplate(room);
     const pattern = fmt
       .split("{번역문}").join("<TRANSLATED_DIALOGUE>")
       .split("{원문}").join("<ORIGINAL_KOREAN_DIALOGUE>");
@@ -1894,7 +1902,7 @@
   panel.id = "crack-ai-panel";
   panel.innerHTML = `
         <div class="panel-header" id="panel-drag-handle">
-            <div class="panel-title">✳ MUSE WRITER <span class="cmw-ver">V5.2.11</span></div>
+            <div class="panel-title">✳ MUSE WRITER <span class="cmw-ver">V5.4.7</span></div>
             <div class="cmw-live"><i></i><span id="cmw-live-token">—</span></div>
             <button type="button" class="cmw-help-btn" id="cmw-help-btn" aria-label="Muse 사용 방법" aria-expanded="false">?</button>
             <div class="panel-close" id="close-panel">✕</div>
@@ -2040,13 +2048,13 @@
                 </div>
 
                 <div class="setting-group">
-                    <span class="setting-label">목표 언어</span>
+                    <span class="setting-label">목표 언어 <em>방별 저장</em></span>
                     <select id="cfg-trans-lang" class="expand-input">${transLangOptionsHTML}</select>
                     <input type="text" id="cfg-trans-custom-lang" class="expand-input" placeholder="예: Polish, Swahili, 고전 라틴어..." style="display:none;">
                 </div>
 
                 <div class="setting-group">
-                    <span class="setting-label">출력 형식</span>
+                    <span class="setting-label">출력 형식 <em>방별 저장</em></span>
                     <textarea id="cfg-trans-format" class="expand-input" rows="3" placeholder="{번역문} ({원문})"></textarea>
                     <div style="font-size:11px; color:var(--text_secondary); line-height:1.55;">
                         <b>{번역문}</b> 자리에 번역된 대사, <b>{원문}</b> 자리에 한국어 원문이 들어갑니다.<br>
@@ -3101,22 +3109,22 @@
 
     const langSel = document.getElementById("cfg-trans-lang");
     langSel?.addEventListener("change", () => {
-      GM_setValue("cfgTransLang", langSel.value);
+      GM_setValue(getTransKey("cfgTransLang"), langSel.value);
       toggleTransCustomLangUI();
       renderSumChips();
     });
 
     document.getElementById("cfg-trans-custom-lang")?.addEventListener("input", (event) => {
-      GM_setValue("cfgTransCustomLang", event.target.value.trim());
+      GM_setValue(getTransKey("cfgTransCustomLang"), event.target.value.trim());
       renderSumChips();
     });
 
     document.getElementById("cfg-trans-format")?.addEventListener("input", (event) => {
-      GM_setValue("cfgTransFormat", event.target.value);
+      GM_setValue(getTransKey("cfgTransFormat"), event.target.value);
     });
 
     document.getElementById("cfg-trans-note")?.addEventListener("input", (event) => {
-      GM_setValue("transNote_" + getChatRoomId(), event.target.value);
+      GM_setValue(getTransKey("transNote"), event.target.value);
     });
   }
 
@@ -3128,7 +3136,7 @@
     updateTransModeDesc();
 
     const langSel = document.getElementById("cfg-trans-lang");
-    const savedLang = GM_getValue("cfgTransLang", "English");
+    const savedLang = getTransValue("cfgTransLang", "English", room);
     if (langSel) {
       if (savedLang && ![...langSel.options].some((option) => option.value === savedLang)) {
         const option = document.createElement("option");
@@ -3140,13 +3148,13 @@
     }
 
     const customLang = document.getElementById("cfg-trans-custom-lang");
-    if (customLang) customLang.value = GM_getValue("cfgTransCustomLang", "");
+    if (customLang) customLang.value = getTransValue("cfgTransCustomLang", "", room);
     toggleTransCustomLangUI();
 
     const format = document.getElementById("cfg-trans-format");
-    if (format) format.value = GM_getValue("cfgTransFormat", TRANS_DEFAULT_FORMAT);
+    if (format) format.value = getTransValue("cfgTransFormat", TRANS_DEFAULT_FORMAT, room);
     const note = document.getElementById("cfg-trans-note");
-    if (note) note.value = GM_getValue("transNote_" + room, "");
+    if (note) note.value = getTransValue("transNote", "", room);
   }
 
   function renderLongMemoryList(memories) {
@@ -3867,10 +3875,10 @@
 
       const checkedTransMode = document.querySelector('input[name="cfg-trans-mode"]:checked');
       addEntry("cfgTransMode", checkedTransMode?.value || "only");
-      addEntry("cfgTransLang", requireElement("cfg-trans-lang").value);
-      addEntry("cfgTransCustomLang", requireElement("cfg-trans-custom-lang").value.trim());
-      addEntry("cfgTransFormat", requireElement("cfg-trans-format").value);
-      addEntry("transNote_" + room, requireElement("cfg-trans-note").value);
+      addEntry(getTransKey("cfgTransLang", room), requireElement("cfg-trans-lang").value);
+      addEntry(getTransKey("cfgTransCustomLang", room), requireElement("cfg-trans-custom-lang").value.trim());
+      addEntry(getTransKey("cfgTransFormat", room), requireElement("cfg-trans-format").value);
+      addEntry(getTransKey("transNote", room), requireElement("cfg-trans-note").value);
 
       // 현재 모델에 해당하는 추론 설정도 같은 저장 묶음에 포함한다.
       const thinkInput = document.getElementById("cfg-think-val");
@@ -4687,9 +4695,9 @@ ${conversation}`;
 
   function buildTranslateSysPrompt() {
     const room = getChatRoomId();
-    const lang = getTargetLang();
-    const { pattern, example, includesOriginal } = buildTransFormatInstruction();
-    const note = (GM_getValue("transNote_" + room, "") || "").trim();
+    const lang = getTargetLang(room);
+    const { pattern, example, includesOriginal } = buildTransFormatInstruction(room);
+    const note = (getTransValue("transNote", "", room) || "").trim();
 
     let sysPrompt = `You are a roleplay dialogue translator. Translate the user's roleplay text to ${lang}.
 Rules:
