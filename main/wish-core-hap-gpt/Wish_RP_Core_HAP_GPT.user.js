@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.1.0
+// @version      0.1.1
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -314,10 +314,19 @@
 
     pending() { return this.getValue(this.key, null); }
 
-    sameStableTask(previous, context) {
+    sameStableSource(previous, context) {
       const old = previous?.context || {}, current = context || {};
       if (!String(old.messageId || '') || !String(current.messageId || '')) return false;
-      return ['provider','model','roomId','messageId','taskKind','operation'].every(key => String(old[key] || '') === String(current[key] || ''));
+      return ['provider','model','roomId','messageId','taskKind'].every(key => String(old[key] || '') === String(current[key] || ''));
+    }
+
+    sameStableTask(previous, context) {
+      return this.sameStableSource(previous, context) && String(previous?.context?.operation || '') === String(context?.operation || '');
+    }
+
+    async pendingOperation(context, allowedOperations = []) {
+      const previous = await this.pending(), operation = String(previous?.context?.operation || '');
+      return this.sameStableSource(previous, context) && allowedOperations.map(String).includes(operation) ? operation : '';
     }
 
     async job(requestId) {
@@ -1883,6 +1892,7 @@ const WLOG=(()=>{
     // and not one callAiProvider marked noAutoRetry: Firebase, Claude, OpenAI, and DeepSeek reasoning (its limit is
     // AI_DEEPSEEK_THINKING_TIMEOUT_MS or more; a DeepSeek rescue without reasoning has that limit too and loses the words, which
     // still reads right). Every other task never resends.
+    if(c==='AI_TIMEOUT'&&r.provider==='chatgpt-subscription')return {...(sec?{cause:fill('정해진 시간(N초) 안에 브리지 작업 완료를 확인하지 못했습니다. 브리지 작업은 계속될 수 있습니다.',sec)}:{}),next:'브리지 열기 → 최근 작업에서 완료를 확인한 뒤 이 화면의 [다시 시도]를 누르세요. 같은 요청 번호의 결과만 다시 가져오며 새 AI 요청은 보내지 않습니다. 적용 전에는 방·대화·설정을 다시 확인합니다.',toast:fill('브리지 결과 대기 시간 초과(N초) · 완료 후 다시 시도',sec)};
     if(c==='AI_TIMEOUT')return {...(sec?{cause:fill('정해진 시간(N초) 안에 작업 완료를 확인하지 못했습니다.',sec)}:{}),next:(u3&&!['firebase','anthropic','openai'].includes(r.provider)&&!(r.provider==='deepseek'&&r.timeoutMs>=AI_DEEPSEEK_THINKING_TIMEOUT_MS)?'그래도 실패하면 ':'')+'보조 AI 연결의 추론 강도를 낮추거나 API 사용량 절약을 켜 주세요. 시간 초과만으로 서버 처리나 요금 청구가 취소됐다고 볼 수는 없습니다.',toast:fill('AI 응답 없음(N초)',sec)};
     if(c==='AI_JSON_PARSE')return {toast:'AI 답 JSON이 잘렸거나 깨짐 · 한 번 더 시도해 주세요'};
     if(c==='AI_NETWORK')return {toast:'AI 서버에 연결하지 못함 · 인터넷 확인'};
@@ -3371,6 +3381,11 @@ const WLOG=(()=>{
     }
   }
   async function acknowledgeAiProviderResult(result){try{await result?.diagnostic?.acknowledge?.();}catch(error){console.warn('[Wish] ChatGPT 구독 pending 정리 보류',error?.code||error?.name);}}
+  async function chatGptSubscriptionResumeOperation(cfg,{jobCode='',taskKind=''}={}){
+    if(cfg?.provider!=='chatgpt-subscription'||!jobCode)return '';
+    const client=new WishChatGptSubscriptionClient({connection:cfg.chatGptSubscriptionConnection,storageKey:'wish-chatgpt-subscription-pending-v1'});
+    return client.pendingOperation({provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel,roomId:String(state.currentRoom?.chatId||''),messageId:String(jobCode),taskKind:String(taskKind)},['절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중','통합 결과 형식 보정 · 1회 재요청 중']);
+  }
 
   async function withAiTimeout(promise, timeoutMs, label='AI 요청') {
     const ms=Math.max(0,Number(timeoutMs)||0);if(!ms)return await promise;
@@ -8256,12 +8271,19 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
         if(!isManualAiProvider())notify(p.memory&&p.observe?'기억·인물 정리 · 통합 1회 요청':'묶음 정리 · 1회 요청','success',3000);
         // JSON MIME + explicit contract avoids schema-rejection fallback making a second call.
         if(req.stateDelta)await WishEconomy.backup(room);
-        let result=manualResult||await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind:rescue?'rescue':'extract',responseMimeType:'application/json',operationLabel:unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+        const makeFullRequest=()=>{const full=request(room,cog,packs,p,{...requestOptions,forceStateSnapshot:true}),system=full.guide+'\n[응답 스키마]\n'+JSON.stringify(full.schema)+wishCheckBlock(full.check);try{WishMemorySafety.wire(system,full.prompt);}catch(e){if(e?.code==='WISH_REQUEST_SIZE')e.message+=' · '+wishRequestSizeMessage(full.requestSizes);throw e;}return {full,system};};
+        const taskKind=rescue?'rescue':'extract',resumeOperation=manualResult?'':await chatGptSubscriptionResumeOperation(providerSettings,{jobCode:subscriptionJobCode,taskKind});
+        let staged,extra=!!resumeOperation,first=null,firstStage='',restage=null,kept=null,result;
+        if(resumeOperation==='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중'){
+          const resumed=makeFullRequest();req=resumed.full;requestSystem=resumed.system;unifiedStage='이전 전체 상태 결과 다시 확인 중';renderModalIfIdle();
+          result=await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+        }else{
+          if(resumeOperation){unifiedStage='이전 형식 보정 결과 다시 확인 중';renderModalIfIdle();}
+          result=manualResult||await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:resumeOperation||unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+        }
         // An API answer refused for its own shape (unifiedAnswerFault) is asked for once more: the same request with the reason
         // attached. One extra call per run at most, this one or the full-state request below. A second refusal, a failed extra
         // call, a pasted answer and every other failure stop as before, with the first refusal at its own stage.
-        let staged,extra=false,first=null,firstStage='',restage=null;
-        let kept=null;
         for(;;)try{
         unifiedStage='통합 정리 응답 해석 중';renderModalIfIdle();const data=WLOG.parseJson(result.text,'기억·인물 통합 정리',result.diagnostic);
         req.holdContext={bundle:'unified',jobCreatedAt:nowIso(),segmentIndex:null,segmentCount:null};
@@ -8274,8 +8296,7 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
           // Exactly one full-state request after a rejected delta; any other failure, or a second failure, stops as before.
           if(extra||!req.stateDelta||manualResult||error?.code!=='WISH_DELTA_REJECTED')throw error;
           extra=true;WLOG.notice('절약 모드 변경분이 안전 검사를 통과하지 못해 이번 한 번은 현재상태 전체 방식으로 다시 요청했습니다. ('+error.message+')','warn',{operation:'기억·인물 통합 정리',stage:'절약 변경분 → 전체 상태 1회 재요청',kind:'MEM_DELTA_FALLBACK'});
-          const full=request(room,cog,packs,p,{...requestOptions,forceStateSnapshot:true}),fullSystem=full.guide+'\n[응답 스키마]\n'+JSON.stringify(full.schema)+wishCheckBlock(full.check);
-          try{WishMemorySafety.wire(fullSystem,full.prompt);}catch(e){if(e?.code==='WISH_REQUEST_SIZE')e.message+=' · '+wishRequestSizeMessage(full.requestSizes);throw e;}
+          const resumed=makeFullRequest(),full=resumed.full,fullSystem=resumed.system;
           unifiedStage='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중';renderModalIfIdle();
           await acknowledgeAiProviderResult(result);
           const retry=await callAiProvider(providerSettings,fullSystem,full.prompt,{taskKind:rescue?'rescue':'extract',responseMimeType:'application/json',operationLabel:unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
@@ -24340,7 +24361,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.1.0-hap-gpt';
+  const PATCH_VERSION = '0.1.1-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
