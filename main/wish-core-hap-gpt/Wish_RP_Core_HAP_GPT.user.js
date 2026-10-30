@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.1.1
+// @version      0.1.2
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -3366,7 +3366,7 @@ const WLOG=(()=>{
     try {
       client=new WishChatGptSubscriptionClient({connection:cfg.chatGptSubscriptionConnection,storageKey:'wish-chatgpt-subscription-pending-v1'});
       const bytes=new TextEncoder().encode(String(systemPrompt||'')+'\u0000'+String(userPrompt||'')),hash=await crypto.subtle.digest('SHA-256',bytes),sourceHash=Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('');
-      const context={provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel,roomId:String(state.currentRoom?.chatId||''),messageId:String(options.sourceMessageId||options.jobCode||''),sourceHash,taskKind:String(options.taskKind||''),operation:String(options.operationLabel||'')};
+      const context={provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel,roomId:String(state.currentRoom?.chatId||''),messageId:String(options.sourceMessageId||options.jobCode||''),sourceHash,taskKind:String(options.taskKind||''),operation:String(options.subscriptionResumeOperation||options.operationLabel||'')};
       const efforts=chatGptSubscriptionEfforts(cfg,cfg.chatGptSubscriptionModel),effort=normalizeChatGptSubscriptionEffort(cfg.chatGptSubscriptionEffort,cfg,cfg.chatGptSubscriptionModel);
       const payload={model:cfg.chatGptSubscriptionModel,...(!efforts.length||efforts.includes(effort)?{effort}:{}),instructions:String(systemPrompt||''),input:String(userPrompt||'')};
       const job=await WishUsage.track(cfg,options,async()=>({...await client.run(context,payload,{maxWaitMs:Number(options.timeoutMs)||900000}),object:'response'}),{provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel});
@@ -3381,10 +3381,10 @@ const WLOG=(()=>{
     }
   }
   async function acknowledgeAiProviderResult(result){try{await result?.diagnostic?.acknowledge?.();}catch(error){console.warn('[Wish] ChatGPT 구독 pending 정리 보류',error?.code||error?.name);}}
-  async function chatGptSubscriptionResumeOperation(cfg,{jobCode='',taskKind=''}={}){
+  async function chatGptSubscriptionResumeOperation(cfg,{jobCode='',taskKind='',initialOperation=''}={}){
     if(cfg?.provider!=='chatgpt-subscription'||!jobCode)return '';
     const client=new WishChatGptSubscriptionClient({connection:cfg.chatGptSubscriptionConnection,storageKey:'wish-chatgpt-subscription-pending-v1'});
-    return client.pendingOperation({provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel,roomId:String(state.currentRoom?.chatId||''),messageId:String(jobCode),taskKind:String(taskKind)},['절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중','통합 결과 형식 보정 · 1회 재요청 중']);
+    return client.pendingOperation({provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel,roomId:String(state.currentRoom?.chatId||''),messageId:String(jobCode),taskKind:String(taskKind)},[initialOperation,'절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중','통합 결과 형식 보정 · 1회 재요청 중'].filter(Boolean));
   }
 
   async function withAiTimeout(promise, timeoutMs, label='AI 요청') {
@@ -8272,14 +8272,14 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
         // JSON MIME + explicit contract avoids schema-rejection fallback making a second call.
         if(req.stateDelta)await WishEconomy.backup(room);
         const makeFullRequest=()=>{const full=request(room,cog,packs,p,{...requestOptions,forceStateSnapshot:true}),system=full.guide+'\n[응답 스키마]\n'+JSON.stringify(full.schema)+wishCheckBlock(full.check);try{WishMemorySafety.wire(system,full.prompt);}catch(e){if(e?.code==='WISH_REQUEST_SIZE')e.message+=' · '+wishRequestSizeMessage(full.requestSizes);throw e;}return {full,system};};
-        const taskKind=rescue?'rescue':'extract',resumeOperation=manualResult?'':await chatGptSubscriptionResumeOperation(providerSettings,{jobCode:subscriptionJobCode,taskKind});
-        let staged,extra=!!resumeOperation,first=null,firstStage='',restage=null,kept=null,result;
+        const taskKind=rescue?'rescue':'extract',initialOperation=unifiedStage,resumeOperation=manualResult?'':await chatGptSubscriptionResumeOperation(providerSettings,{jobCode:subscriptionJobCode,taskKind,initialOperation});
+        let staged,extra=['절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중','통합 결과 형식 보정 · 1회 재요청 중'].includes(resumeOperation),first=null,firstStage='',restage=null,kept=null,result;
         if(resumeOperation==='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중'){
           const resumed=makeFullRequest();req=resumed.full;requestSystem=resumed.system;unifiedStage='이전 전체 상태 결과 다시 확인 중';renderModalIfIdle();
-          result=await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+          result=await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:unifiedStage,subscriptionResumeOperation:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
         }else{
-          if(resumeOperation){unifiedStage='이전 형식 보정 결과 다시 확인 중';renderModalIfIdle();}
-          result=manualResult||await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:resumeOperation||unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+          if(resumeOperation){unifiedStage=resumeOperation===initialOperation?'이전 완료 결과 다시 확인 중':'이전 형식 보정 결과 다시 확인 중';renderModalIfIdle();}
+          result=manualResult||await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:unifiedStage,subscriptionResumeOperation:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
         }
         // An API answer refused for its own shape (unifiedAnswerFault) is asked for once more: the same request with the reason
         // attached. One extra call per run at most, this one or the full-state request below. A second refusal, a failed extra
@@ -8295,7 +8295,7 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
         try{staged=stage(room,cog,packs,p,req,data);if(chunked&&!rescue&&!manualResult&&req.blankCheck!==false)refuseBlankCut(req.schema,data);const answer=result;restage=c=>stage(room,c,packs,p,req,WLOG.parseJson(answer.text,'기억·인물 통합 정리',answer.diagnostic));}catch(error){
           // Exactly one full-state request after a rejected delta; any other failure, or a second failure, stops as before.
           if(extra||!req.stateDelta||manualResult||error?.code!=='WISH_DELTA_REJECTED')throw error;
-          extra=true;WLOG.notice('절약 모드 변경분이 안전 검사를 통과하지 못해 이번 한 번은 현재상태 전체 방식으로 다시 요청했습니다. ('+error.message+')','warn',{operation:'기억·인물 통합 정리',stage:'절약 변경분 → 전체 상태 1회 재요청',kind:'MEM_DELTA_FALLBACK'});
+          extra=true;WLOG.notice((resumeOperation===initialOperation?'이전 완료 결과를 가져왔지만 ':'')+'절약 모드 변경분이 안전 검사를 통과하지 못해 이번 한 번은 현재상태 전체 방식으로 다시 요청했습니다. ('+error.message+')','warn',{operation:'기억·인물 통합 정리',stage:'절약 변경분 → 전체 상태 1회 재요청',kind:'MEM_DELTA_FALLBACK'});
           const resumed=makeFullRequest(),full=resumed.full,fullSystem=resumed.system;
           unifiedStage='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중';renderModalIfIdle();
           await acknowledgeAiProviderResult(result);
@@ -24361,7 +24361,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.1.1-hap-gpt';
+  const PATCH_VERSION = '0.1.2-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';

@@ -1,4 +1,4 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.1.1
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.1.2
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 Android 기기에서 실행하는 GPT 브리지가 담당한다.
 
@@ -6,7 +6,7 @@ Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.1.1 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.1.2 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
@@ -22,7 +22,7 @@ Git을 쓰지 않는 사용자를 위한 방식이다. Termux에서 다음을 �
 pkg update
 pkg install nodejs-lts unzip curl
 cd ~
-curl -L -o hap-gpt.zip https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.1.1.zip
+curl -L -o hap-gpt.zip https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.1.2.zip
 unzip -o hap-gpt.zip
 cd wish-core-hap-gpt/termux-bridge
 bash install-termux.sh
@@ -67,7 +67,9 @@ bash ~/local-gpt-subscription-bridge/start.sh
 
 브리지의 **최근 작업**에서 해당 요청이 `완료`로 바뀐 뒤, 오류가 난 원래 방의 **다시 시도**를 누른다. HAP-gpt는 새 AI 요청을 보내지 않고 보존된 요청 번호의 결과를 다시 조회한다.
 
-0.1.1부터 절약 모드 검사 뒤의 전체 상태 재요청과 형식 보정 재요청도 해당 단계로 돌아간다. 결과는 기존 JSON 검사와 방·대화·모델·설정 재검증을 모두 통과해야 저장되며, 기준이 달라졌으면 적용하지 않는다.
+절약 모드 검사 뒤의 전체 상태 재요청과 형식 보정 재요청도 해당 단계로 돌아간다. 결과는 기존 JSON 검사와 방·대화·모델·설정 재검증을 모두 통과해야 저장되며, 기준이 달라졌으면 적용하지 않는다.
+
+0.1.2에서는 기존 결과를 조회할 때 `이전 완료 결과 다시 확인 중` 또는 `이전 전체 상태 결과 다시 확인 중`으로 표시한다. 회수한 절약 모드 답이 안전검사를 통과하지 못하면 그 결과를 강제로 적용하지 않고, 이유를 표시한 뒤에만 실제 전체 상태 신규 요청을 보낸다.
 
 ## 보안
 
@@ -79,7 +81,7 @@ bash ~/local-gpt-subscription-bridge/start.sh
 ## 배포 파일
 
 - `Wish_RP_Core_HAP_GPT.user.js`: Tampermonkey 설치·자동 업데이트 파일
-- `Wish_RP_Core_HAP_GPT_0.1.1.zip`: Git 없이 설치하는 묶음
+- `Wish_RP_Core_HAP_GPT_0.1.2.zip`: Git 없이 설치하는 묶음
 - `termux-bridge/`: Git clone·pull 설치에 사용하는 실행 파일
 - `SHA256SUMS`: userscript와 ZIP 무결성 값
 
