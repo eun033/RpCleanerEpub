@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.1.2
+// @version      0.1.4
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -260,6 +260,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
+  const HAP_GPT_CLIENT_VERSION = '0.1.4';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -3368,7 +3369,8 @@ const WLOG=(()=>{
       const bytes=new TextEncoder().encode(String(systemPrompt||'')+'\u0000'+String(userPrompt||'')),hash=await crypto.subtle.digest('SHA-256',bytes),sourceHash=Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('');
       const context={provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel,roomId:String(state.currentRoom?.chatId||''),messageId:String(options.sourceMessageId||options.jobCode||''),sourceHash,taskKind:String(options.taskKind||''),operation:String(options.subscriptionResumeOperation||options.operationLabel||'')};
       const efforts=chatGptSubscriptionEfforts(cfg,cfg.chatGptSubscriptionModel),effort=normalizeChatGptSubscriptionEffort(cfg.chatGptSubscriptionEffort,cfg,cfg.chatGptSubscriptionModel);
-      const payload={model:cfg.chatGptSubscriptionModel,...(!efforts.length||efforts.includes(effort)?{effort}:{}),instructions:String(systemPrompt||''),input:String(userPrompt||'')};
+      const clientText=(value,limit)=>String(value||'').replace(/\s+/g,' ').trim().slice(0,limit);
+      const payload={model:cfg.chatGptSubscriptionModel,...(!efforts.length||efforts.includes(effort)?{effort}:{}),instructions:String(systemPrompt||''),input:String(userPrompt||''),client:{id:'wish-hap-gpt',name:'Wish HAP-gpt',version:HAP_GPT_CLIENT_VERSION,room_id:clientText(context.roomId,200),room_name:clientText(WishRoomNames.display(state.currentRoom),160),task_kind:clientText(context.taskKind,40),task_name:clientText(context.operation||context.taskKind||'AI 요청',200)}};
       const job=await WishUsage.track(cfg,options,async()=>({...await client.run(context,payload,{maxWaitMs:Number(options.timeoutMs)||900000}),object:'response'}),{provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel});
       if(job?.status !== 'completed')throw Object.assign(new Error('ChatGPT 구독 응답이 완료되지 않아 기존 자료를 유지했습니다.'),{code:'AI_INCOMPLETE'});
       const live=loadAiSettings();
@@ -24361,7 +24363,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.1.2-hap-gpt';
+  const PATCH_VERSION = '0.1.4-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';

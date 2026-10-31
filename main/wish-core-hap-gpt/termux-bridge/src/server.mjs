@@ -15,9 +15,9 @@ function send(res,status,value){res.writeHead(status,{'Content-Type':'applicatio
 async function readBody(req){let bytes=0;const chunks=[];for await(const chunk of req){bytes+=chunk.length;check(bytes<=5000000,'BODY_SIZE','요청이 너무 큽니다.',413);chunks.push(chunk);}try{return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');}catch{throw new BridgeError('JSON','요청 JSON을 확인하세요.');}}
 function command(file,args,cwd){return new Promise((resolve,reject)=>{const child=spawn(file,args,{cwd,stdio:['ignore','pipe','pipe']}),chunks=[];for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{if(chunks.reduce((n,x)=>n+x.length,0)<100000)chunks.push(chunk);});child.on('error',reject);child.on('close',code=>code===0?resolve(Buffer.concat(chunks).toString('utf8').trim()):reject(new BridgeError('UPDATE_FAILED','업데이트 명령을 실행하지 못했습니다. 인터넷 연결과 설치 상태를 확인하세요. ('+Buffer.concat(chunks).toString('utf8').trim().split('\n').slice(-1)[0]+')',500)));});}
 function commandExists(name){return new Promise(resolve=>{const child=spawn('sh',['-c','command -v "$1" >/dev/null 2>&1','sh',name],{stdio:'ignore'});child.on('error',()=>resolve(false));child.on('close',code=>resolve(code===0));});}
-export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion}){
+export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion,localTree='',remoteTree=''}){
   if(dirty)return 'local_changes';
-  if(local===remote&&currentVersion===latestVersion)return 'current';
+  if(currentVersion===latestVersion&&(local===remote||localTree&&localTree===remoteTree))return 'current';
   if(base===local||local===remote)return 'available';
   if(base===remote)return 'local_ahead';
   return 'diverged';
@@ -117,18 +117,18 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const marker=await fs.readFile(path.join(runtimeSource,'.git-source'),'utf8').then(value=>value.trim(),()=>''),candidates=[process.env.GPT_BRIDGE_SOURCE,marker,path.join(os.homedir(),'gpt-codex-work','work-hap-gpt','termux-bridge'),path.join(os.homedir(),'RpCleanerEpub','main','wish-core-hap-gpt','termux-bridge')].filter(Boolean);
   let gitInfo=null;
   if(supervised&&await commandExists('git'))for(const candidate of [...new Set(candidates.map(value=>path.resolve(value)))])try{
-    const source=candidate,repo=await command('git',['-C',source,'rev-parse','--show-toplevel'],source),branch=await command('git',['-C',repo,'branch','--show-current'],repo),packageFile=path.relative(repo,path.join(source,'package.json')).split(path.sep).join('/');
-    check(branch&&await fs.stat(path.join(source,'update-termux.sh')).then(stat=>stat.isFile(),()=>false),'UPDATE_SOURCE','업데이트 원본을 확인하지 못했습니다.',409);gitInfo={source,repo,branch,packageFile};break;
+    const source=candidate,repo=await command('git',['-C',source,'rev-parse','--show-toplevel'],source),branch=await command('git',['-C',repo,'branch','--show-current'],repo),sourcePath=path.relative(repo,source).split(path.sep).join('/')||'.',packageFile=path.posix.join(sourcePath,'package.json');
+    check(branch&&await fs.stat(path.join(source,'update-termux.sh')).then(stat=>stat.isFile(),()=>false),'UPDATE_SOURCE','업데이트 원본을 확인하지 못했습니다.',409);gitInfo={source,repo,branch,sourcePath,packageFile};break;
   }catch{}
   const updateMethods=supervised?[gitInfo?'git':'zip']:[];
   const checkGitUpdate=gitInfo?async()=>{
-    const {source,repo,branch,packageFile}=gitInfo;await command('git',['fetch','--quiet','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch],repo);
-    const [local,remote,base,dirty,currentPackage,latestPackage]=await Promise.all([
+    const {source,repo,branch,sourcePath,packageFile}=gitInfo;await command('git',['fetch','--quiet','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch],repo);
+    const [local,remote,base,dirty,currentPackage,latestPackage,localTree,remoteTree]=await Promise.all([
       command('git',['rev-parse','HEAD'],repo),command('git',['rev-parse','origin/'+branch],repo),command('git',['merge-base','HEAD','origin/'+branch],repo),command('git',['status','--porcelain','--untracked-files=no'],repo),
-      fs.readFile(manifestPath,'utf8'),command('git',['show','origin/'+branch+':'+packageFile],repo)
+      fs.readFile(manifestPath,'utf8'),command('git',['show','origin/'+branch+':'+packageFile],repo),command('git',['rev-parse','HEAD:'+sourcePath],repo),command('git',['rev-parse','origin/'+branch+':'+sourcePath],repo)
     ]);
     const currentVersion=JSON.parse(currentPackage).version,latestVersion=JSON.parse(latestPackage).version;
-    const status=classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion});
+    const status=classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion,localTree,remoteTree});
     return {method:'git',status,current_version:currentVersion,latest_version:latestVersion,current_commit:local.slice(0,7),latest_commit:remote.slice(0,7),checked_at:Date.now()};
   }:null;
   const currentVersion=async()=>JSON.parse(await fs.readFile(manifestPath,'utf8')).version;
