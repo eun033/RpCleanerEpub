@@ -9,7 +9,7 @@ import {JobBridge} from './jobs.mjs';
 export const DEFAULT_PORT=17446;
 const ROOT=fileURLToPath(new URL('./',import.meta.url));
 const PUBLIC_RELEASE_API='https://api.github.com/repos/eun033/RpCleanerEpub/contents/main/wish-core-hap-gpt?ref=main';
-const PUBLIC_PACKAGE='https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/termux-bridge/package.json';
+const PUBLIC_PACKAGE_API='https://api.github.com/repos/eun033/RpCleanerEpub/contents/main/wish-core-hap-gpt/termux-bridge/package.json?ref=main';
 function send(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
 async function readBody(req){let bytes=0;const chunks=[];for await(const chunk of req){bytes+=chunk.length;check(bytes<=5000000,'BODY_SIZE','요청이 너무 큽니다.',413);chunks.push(chunk);}try{return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');}catch{throw new BridgeError('JSON','요청 JSON을 확인하세요.');}}
 function command(file,args,cwd){return new Promise((resolve,reject)=>{const child=spawn(file,args,{cwd,stdio:['ignore','pipe','pipe']}),chunks=[];for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{if(chunks.reduce((n,x)=>n+x.length,0)<100000)chunks.push(chunk);});child.on('error',reject);child.on('close',code=>code===0?resolve(Buffer.concat(chunks).toString('utf8').trim()):reject(new BridgeError('UPDATE_FAILED','업데이트 명령을 실행하지 못했습니다. 인터넷 연결과 설치 상태를 확인하세요. ('+Buffer.concat(chunks).toString('utf8').trim().split('\n').slice(-1)[0]+')',500)));});}
@@ -25,12 +25,15 @@ export function compareVersions(a,b){const left=String(a).split('.').map(Number)
 export function selectZipRelease(entries){return entries.filter(entry=>/^Wish_RP_Core_HAP_GPT_\d+\.\d+\.\d+\.zip$/.test(entry?.name||'')&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')).sort((a,b)=>compareVersions(a.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1],b.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1])).at(-1)||null;}
 export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/server.mjs'].every(file=>entries.includes(prefix+file));}
 export async function checkPublicZipUpdate(fetchImpl,currentVersion){
-  const [listingResponse,packageResponse]=await Promise.all([fetchImpl(PUBLIC_RELEASE_API,{headers:{Accept:'application/vnd.github+json'}}),fetchImpl(PUBLIC_PACKAGE)]);
+  const options={headers:{Accept:'application/vnd.github+json'},cache:'no-store'};
+  const [listingResponse,packageResponse]=await Promise.all([fetchImpl(PUBLIC_RELEASE_API,options),fetchImpl(PUBLIC_PACKAGE_API,options)]);
   check(listingResponse.ok&&packageResponse.ok,'UPDATE_CHECK','공개 ZIP 버전을 확인하지 못했습니다.',502);
-  const release=selectZipRelease(await listingResponse.json()),latest=await packageResponse.json();
-  check(release&&latest?.name==='local-gpt-subscription-bridge'&&/^\d+\.\d+\.\d+$/.test(latest.version||''),'UPDATE_CHECK','공개 ZIP 배포 정보를 확인하지 못했습니다.',502);
+  const release=selectZipRelease(await listingResponse.json()),packageFile=await packageResponse.json();
+  let latest=null;try{latest=JSON.parse(Buffer.from(packageFile?.content||'',packageFile?.encoding||'base64').toString('utf8'));}catch{}
+  check(release&&/^[0-9a-f]{40}$/.test(release.sha||'')&&latest?.name==='local-gpt-subscription-bridge'&&/^\d+\.\d+\.\d+$/.test(latest.version||''),'UPDATE_CHECK','공개 ZIP 배포 정보를 확인하지 못했습니다.',502);
   const comparison=compareVersions(currentVersion,latest.version),status=comparison<0?'available':comparison>0?'local_ahead':'current';
-  return {method:'zip',status,current_version:currentVersion,latest_version:latest.version,archive:release.name,download_url:release.download_url,checked_at:Date.now()};
+  const download=new URL(release.download_url);download.searchParams.set('sha',release.sha);
+  return {method:'zip',status,current_version:currentVersion,latest_version:latest.version,archive:release.name,download_url:download.href,checked_at:Date.now()};
 }
 async function applyPublicZipUpdate(fetchImpl,state){
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'gpt-bridge-update-')),archive=path.join(temporary,'release.zip');
