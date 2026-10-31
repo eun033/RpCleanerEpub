@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {BridgeError,check,equal} from './auth.mjs';
 import {JobBridge} from './jobs.mjs';
@@ -22,7 +23,7 @@ export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVer
   return 'diverged';
 }
 export function compareVersions(a,b){const left=String(a).split('.').map(Number),right=String(b).split('.').map(Number);for(let i=0;i<Math.max(left.length,right.length);i++){const difference=(left[i]||0)-(right[i]||0);if(difference)return Math.sign(difference);}return 0;}
-export function selectZipRelease(entries){return entries.filter(entry=>/^Wish_RP_Core_HAP_GPT_\d+\.\d+\.\d+\.zip$/.test(entry?.name||'')&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')).sort((a,b)=>compareVersions(a.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1],b.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1])).at(-1)||null;}
+export function selectZipRelease(entries){return entries.filter(entry=>/^Wish_RP_Core_HAP_GPT_\d+\.\d+\.\d+\.zip$/.test(entry?.name||'')&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')&&String(entry.git_url||'').startsWith('https://api.github.com/repos/eun033/RpCleanerEpub/git/blobs/')).sort((a,b)=>compareVersions(a.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1],b.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1])).at(-1)||null;}
 export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/server.mjs'].every(file=>entries.includes(prefix+file));}
 export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   const options={headers:{Accept:'application/vnd.github+json'},cache:'no-store'};
@@ -30,18 +31,21 @@ export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   check(listingResponse.ok&&packageResponse.ok,'UPDATE_CHECK','공개 ZIP 버전을 확인하지 못했습니다.',502);
   const release=selectZipRelease(await listingResponse.json()),packageFile=await packageResponse.json();
   let latest=null;try{latest=JSON.parse(Buffer.from(packageFile?.content||'',packageFile?.encoding||'base64').toString('utf8'));}catch{}
-  check(release&&/^[0-9a-f]{40}$/.test(release.sha||'')&&latest?.name==='local-gpt-subscription-bridge'&&/^\d+\.\d+\.\d+$/.test(latest.version||''),'UPDATE_CHECK','공개 ZIP 배포 정보를 확인하지 못했습니다.',502);
+  check(release&&/^[0-9a-f]{40}$/.test(release.sha||'')&&release.git_url.endsWith('/'+release.sha)&&latest?.name==='local-gpt-subscription-bridge'&&/^\d+\.\d+\.\d+$/.test(latest.version||''),'UPDATE_CHECK','공개 ZIP 배포 정보를 확인하지 못했습니다.',502);
   const comparison=compareVersions(currentVersion,latest.version),status=comparison<0?'available':comparison>0?'local_ahead':'current';
-  const download=new URL(release.download_url);download.searchParams.set('sha',release.sha);
-  return {method:'zip',status,current_version:currentVersion,latest_version:latest.version,archive:release.name,download_url:download.href,checked_at:Date.now()};
+  return {method:'zip',status,current_version:currentVersion,latest_version:latest.version,archive:release.name,archive_sha:release.sha,download_url:release.git_url,checked_at:Date.now()};
 }
 async function applyPublicZipUpdate(fetchImpl,state){
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'gpt-bridge-update-')),archive=path.join(temporary,'release.zip');
   try{
     if(!await commandExists('unzip')){check(await commandExists('pkg'),'UPDATE_TOOL','ZIP 압축 해제 도구를 설치할 수 없는 환경입니다.',500);await command('pkg',['install','-y','unzip'],temporary);}
-    const response=await fetchImpl(state.download_url),declared=Number(response.headers.get('content-length')||0);
-    check(response.ok&&(!declared||declared<=32*1024*1024),'UPDATE_DOWNLOAD','공개 ZIP 파일을 내려받지 못했습니다.',502);
-    const bytes=Buffer.from(await response.arrayBuffer());check(bytes.length>0&&bytes.length<=32*1024*1024,'UPDATE_DOWNLOAD','공개 ZIP 파일 크기를 확인할 수 없습니다.',502);await fs.writeFile(archive,bytes,{mode:0o600});
+    const response=await fetchImpl(state.download_url,{headers:{Accept:'application/vnd.github+json'},cache:'no-store'}),declared=Number(response.headers.get('content-length')||0);
+    check(response.ok&&(!declared||declared<=45*1024*1024),'UPDATE_DOWNLOAD','공개 ZIP 파일을 내려받지 못했습니다.',502);
+    const envelope=Buffer.from(await response.arrayBuffer());check(envelope.length>0&&envelope.length<=45*1024*1024,'UPDATE_DOWNLOAD','공개 ZIP 응답 크기를 확인할 수 없습니다.',502);
+    let payload=null;try{payload=JSON.parse(envelope.toString('utf8'));}catch{}
+    check(payload?.sha===state.archive_sha&&payload?.encoding==='base64'&&typeof payload.content==='string'&&/^[A-Za-z0-9+/=\s]+$/.test(payload.content),'UPDATE_DOWNLOAD','공개 ZIP 응답을 확인하지 못했습니다.',502);
+    const bytes=Buffer.from(payload.content.replace(/\s/g,''),'base64'),blobSha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
+    check(bytes.length>0&&bytes.length<=32*1024*1024&&blobSha===state.archive_sha,'UPDATE_DOWNLOAD','공개 ZIP 파일 무결성을 확인하지 못했습니다.',502);await fs.writeFile(archive,bytes,{mode:0o600});
     const entries=(await command('unzip',['-Z1',archive],temporary)).split('\n').filter(Boolean);
     check(validZipEntries(entries),'UPDATE_ARCHIVE','ZIP 내부 경로를 확인하지 못했습니다.',422);
     await command('unzip',['-q',archive,'-d',temporary],temporary);
