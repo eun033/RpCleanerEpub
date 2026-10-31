@@ -14,4 +14,7 @@ if [[ -e "$task_target" ]]; then
 fi
 mkdir -m 700 -- "$task_target"
 cp -R -- "$task_source/." "$task_target/"
+if command -v git >/dev/null 2>&1 && git -C "$task_source" rev-parse --show-toplevel >/dev/null 2>&1; then
+  printf '%s\n' "$task_source" > "$task_target/.git-source"
+fi
 exec bash "$task_target/start.sh"

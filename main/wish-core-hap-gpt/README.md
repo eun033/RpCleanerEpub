@@ -28,11 +28,11 @@ cd wish-core-hap-gpt/termux-bridge
 bash install-termux.sh
 ```
 
-ZIP 설치는 관리 화면의 Git 업데이트 버튼을 사용할 수 없다. 새 ZIP을 다시 받은 뒤 `update-termux.sh`를 실행해 갱신한다.
+처음 0.2.6으로 올릴 때만 새 ZIP을 다시 받아 `update-termux.sh`를 실행한다. 이후에는 관리 화면의 서버 탭에서 **ZIP 업데이트**를 누르면 공개 ZIP을 내려받아 갱신한다. `unzip`이 없으면 Termux가 자동으로 설치하고, 계정·pair·작업 기록은 유지한다.
 
 ### B. Git clone·pull 설치
 
-관리 화면에서 새 버전을 비교하고 `git pull --ff-only`로 갱신할 수 있는 방식이다.
+관리 화면의 서버 탭에서 새 버전을 비교하고 **Git 업데이트**로 `git pull --ff-only` 갱신할 수 있는 방식이다.
 
 ```bash
 pkg update
@@ -54,6 +54,10 @@ bash ~/local-gpt-subscription-bridge/start.sh
 ```
 
 ## 3. 연결
+
+관리 화면은 `서버`·`최근 작업`·`설정` 3탭이다. 로컬 연결 전이나 연결 확인 실패 시 설정 탭이 먼저 열리고, 정상 연결되면 서버 탭이 열린다. 서버 탭에는 서버 관리와 브리지 호출량, 설정 탭에는 로컬 연결·ChatGPT 구독·호출량 설정이 있다. **↻ 서버**는 파일을 받지 않고 서버만 재시작한다.
+
+브리지 호출량은 로컬 기록과 보호 한도다. ChatGPT 구독의 남은 공식 한도는 반드시 서버 탭의 **공식 한도 확인**에서 확인한다.
 
 1. Termux에 표시되는 `http://127.0.0.1:17446/#pair=…` 주소 전체를 같은 휴대폰 브라우저에서 연다.
 2. **Continue with ChatGPT**로 본인 ChatGPT 계정에 로그인한다.

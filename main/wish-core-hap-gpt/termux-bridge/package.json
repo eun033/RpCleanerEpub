@@ -1,9 +1,9 @@
 {
   "name": "local-gpt-subscription-bridge",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "type": "module",
   "engines": {"node": ">=22"},
-  "scripts": {"start": "node src/server.mjs"},
+  "scripts": {"start": "node src/server.mjs", "test": "node --test tests/*.test.mjs"},
   "license": "MIT"
 }

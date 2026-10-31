@@ -7,5 +7,8 @@ for item in package.json src start.sh LICENSE README.md; do
   rm -rf -- "$task_target/$item"
   cp -R -- "$task_source/$item" "$task_target/$item"
 done
+if command -v git >/dev/null 2>&1 && git -C "$task_source" rev-parse --show-toplevel >/dev/null 2>&1; then
+  printf '%s\n' "$task_source" > "$task_target/.git-source"
+fi
 chmod 700 -- "$task_target" "$task_target/start.sh"
 echo '프로그램 파일을 갱신했습니다. 계정·pair·작업 기록은 유지했습니다.'
