@@ -1,4 +1,4 @@
-# GPT 브리지 0.2.10
+# GPT 브리지 0.2.11
 
 상위 설치 안내: [Wish RP Core HAP-gpt](https://github.com/eun033/RpCleanerEpub/tree/main/main/wish-core-hap-gpt)
 
@@ -95,7 +95,7 @@ Android 배터리 최적화가 Termux를 종료하면 자동 정리가 중단될
 
 ## 업데이트
 
-0.2.10은 WSL 환경변수를 Windows로 판정한다. Android·macOS·Windows·미확정 값은 HAP-gpt의 작은 기기 SVG를 고르는 데만 사용한다. PowerShell에서도 실행 원본 Git을 찾도록 `where.exe`와 현재 브리지 경로를 사용하며, Node 감독기와 `start-windows.ps1`을 추가했다. 요청이 멈춘 상태는 상단에 `서버 정상 · 요청 일시정지`로 표시한다.
+0.2.11은 Windows ZIP 업데이트가 Termux 명령을 호출하던 문제를 고쳤다. Windows 기본 PowerShell의 .NET ZIP 기능으로 내부 경로와 버전을 검사하고 현재 실행 폴더에 적용한 뒤 Node 감독기가 서버를 다시 시작한다. Git 설치판은 `where.exe`로 Git과 실행 원본을 찾고 `git pull --ff-only` 뒤 같은 감독 재시작 경로를 사용한다. Android·macOS·Windows·WSL·미확정 값은 HAP-gpt의 작은 기기 SVG를 고르는 데도 사용한다. 요청이 멈춘 상태는 상단에 `서버 정상 · 요청 일시정지`로 표시한다.
 
 0.2.9는 `/api/status`에 `android`·`mac`·`windows`·`unknown` 실행 환경을 추가해 HAP-gpt 기기 칩 표시에 사용한다. OAuth 토큰과 pair는 이 응답에 포함하지 않는다.
 

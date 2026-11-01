@@ -2,7 +2,7 @@
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 배포 버전은 HAP-gpt 0.1.9, GPT 브리지 0.2.10이다.
+현재 배포 버전은 HAP-gpt 0.1.9, GPT 브리지 0.2.11이다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
@@ -66,6 +66,17 @@ powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
 
 `start-windows.ps1`로 실행해야 관리 화면의 **↻ 서버**와 Git 업데이트 후 자동 재시작이 동작한다. `node src/server.mjs`로 직접 실행하면 AI 요청은 가능하지만 관리 화면에 **재시작 지원 실행 필요**가 표시된다. WSL은 기기 칩에서 Windows로 인식한다.
 
+### D. Windows ZIP 설치
+
+Git을 설치하지 않을 경우 [HAP-gpt 0.1.9 ZIP](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.1.9.zip)을 내려받아 압축을 푼다. PowerShell에서 압축을 푼 브리지 폴더로 이동해 실행한다.
+
+```powershell
+cd "$HOME\Downloads\wish-core-hap-gpt\termux-bridge"
+powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
+```
+
+이 방식은 서버 탭에서 **ZIP 업데이트**를 사용한다. Windows 기본 PowerShell의 ZIP 기능으로 새 파일을 확인·적용한 뒤 같은 브리지를 다시 시작하며 계정·pair·작업 기록은 유지한다.
+
 ## 3. 연결
 
 관리 화면은 `서버`·`최근 작업`·`설정` 3탭이다. 로컬 연결 전에는 설정 탭, 정상 연결되면 서버 탭이 열린다. 상단이 `서버 정상 · 요청 일시정지`라면 서버는 실행 중이며 새 요청만 멈춘 상태이므로 **요청 재개**를 누른다.
@@ -108,7 +119,7 @@ ChatGPT 구독 요청에만 `Wish HAP-gpt`·방 이름·작업명을 로컬 표�
 ## 배포 파일
 
 - `Wish_RP_Core_HAP_GPT.user.js`: Tampermonkey 설치·자동 업데이트 파일
-- `Wish_RP_Core_HAP_GPT_0.1.9.zip`: Git 없이 Android에 설치하는 묶음
+- `Wish_RP_Core_HAP_GPT_0.1.9.zip`: Git 없이 Android·Windows에 설치하는 묶음
 - `termux-bridge/`: Git clone·pull 설치와 Windows 실행에 사용하는 파일
 - `SHA256SUMS`: userscript와 ZIP 무결성 값
 

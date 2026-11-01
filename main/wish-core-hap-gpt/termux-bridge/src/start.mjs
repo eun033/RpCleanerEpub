@@ -5,10 +5,12 @@ import {fileURLToPath} from 'node:url';
 const bridgeDir=path.resolve(fileURLToPath(new URL('../',import.meta.url)));
 const server=path.join(bridgeDir,'src','server.mjs');
 
-for(;;){
+export async function supervise({spawnImpl=spawn,node=process.execPath,env=process.env,stdio='inherit'}={}){for(;;){
   const code=await new Promise((resolve,reject)=>{
-    const child=spawn(process.execPath,[server],{cwd:bridgeDir,env:{...process.env,GPT_BRIDGE_SUPERVISED:'1'},stdio:'inherit'});
+    const child=spawnImpl(node,[server],{cwd:bridgeDir,env:{...env,GPT_BRIDGE_SUPERVISED:'1'},stdio});
     child.once('error',reject);child.once('exit',value=>resolve(value??1));
   }).catch(error=>{console.error('GPT 브리지를 시작하지 못했습니다.',error.message);return 1;});
-  if(code!==75)process.exit(code);
-}
+  if(code!==75)return code;
+}}
+
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exit(await supervise());

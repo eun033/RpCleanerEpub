@@ -14,7 +14,8 @@ const PUBLIC_PACKAGE_API='https://api.github.com/repos/eun033/RpCleanerEpub/cont
 function send(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
 async function readBody(req){let bytes=0;const chunks=[];for await(const chunk of req){bytes+=chunk.length;check(bytes<=5000000,'BODY_SIZE','요청이 너무 큽니다.',413);chunks.push(chunk);}try{return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');}catch{throw new BridgeError('JSON','요청 JSON을 확인하세요.');}}
 function command(file,args,cwd){return new Promise((resolve,reject)=>{const child=spawn(file,args,{cwd,stdio:['ignore','pipe','pipe']}),chunks=[];for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{if(chunks.reduce((n,x)=>n+x.length,0)<100000)chunks.push(chunk);});child.on('error',reject);child.on('close',code=>code===0?resolve(Buffer.concat(chunks).toString('utf8').trim()):reject(new BridgeError('UPDATE_FAILED','업데이트 명령을 실행하지 못했습니다. 인터넷 연결과 설치 상태를 확인하세요. ('+Buffer.concat(chunks).toString('utf8').trim().split('\n').slice(-1)[0]+')',500)));});}
-function commandExists(name){return new Promise(resolve=>{const windows=process.platform==='win32',child=spawn(windows?'where.exe':'sh',windows?[name]:['-c','command -v "$1" >/dev/null 2>&1','sh',name],{stdio:'ignore'});child.on('error',()=>resolve(false));child.on('close',code=>resolve(code===0));});}
+export function commandLookup(name,platform=process.platform){return platform==='win32'?{file:'where.exe',args:[name]}:{file:'sh',args:['-c','command -v "$1" >/dev/null 2>&1','sh',name]};}
+function commandExists(name,platform=process.platform){return new Promise(resolve=>{const lookup=commandLookup(name,platform),child=spawn(lookup.file,lookup.args,{stdio:'ignore'});child.on('error',()=>resolve(false));child.on('close',code=>resolve(code===0));});}
 export function gitSourceCandidates({runtimeSource,explicit='',marker='',home=os.homedir()}={}){return [...new Set([explicit,marker,runtimeSource,path.join(home,'gpt-codex-work','work-hap-gpt','termux-bridge'),path.join(home,'RpCleanerEpub','main','wish-core-hap-gpt','termux-bridge')].filter(Boolean).map(value=>path.resolve(value)))];}
 export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion,localTree='',remoteTree=''}){
   if(dirty)return 'local_changes';
@@ -25,7 +26,7 @@ export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVer
 }
 export function compareVersions(a,b){const left=String(a).split('.').map(Number),right=String(b).split('.').map(Number);for(let i=0;i<Math.max(left.length,right.length);i++){const difference=(left[i]||0)-(right[i]||0);if(difference)return Math.sign(difference);}return 0;}
 export function selectZipRelease(entries){return entries.filter(entry=>/^Wish_RP_Core_HAP_GPT_\d+\.\d+\.\d+\.zip$/.test(entry?.name||'')&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')&&String(entry.git_url||'').startsWith('https://api.github.com/repos/eun033/RpCleanerEpub/git/blobs/')).sort((a,b)=>compareVersions(a.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1],b.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1])).at(-1)||null;}
-export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/start.mjs','src/server.mjs'].every(file=>entries.includes(prefix+file));}
+export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.includes('\\')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/start.mjs','src/server.mjs'].every(file=>entries.includes(prefix+file));}
 export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   const options={headers:{Accept:'application/vnd.github+json'},cache:'no-store'};
   const [listingResponse,packageResponse]=await Promise.all([fetchImpl(PUBLIC_RELEASE_API,options),fetchImpl(PUBLIC_PACKAGE_API,options)]);
@@ -36,10 +37,15 @@ export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   const comparison=compareVersions(currentVersion,latest.version),status=comparison<0?'available':comparison>0?'local_ahead':'current';
   return {method:'zip',status,current_version:currentVersion,latest_version:latest.version,archive:release.name,archive_sha:release.sha,download_url:release.git_url,checked_at:Date.now()};
 }
-async function applyPublicZipUpdate(fetchImpl,state){
-  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'gpt-bridge-update-')),archive=path.join(temporary,'release.zip');
+const BRIDGE_FILES=['package.json','src','start-windows.ps1','start.sh','update-termux.sh','install-termux.sh','LICENSE','README.md','VALIDATION.md','examples'];
+async function copyBridgeFiles(source,target){await fs.mkdir(target,{recursive:true});for(const file of BRIDGE_FILES){const from=path.join(source,file);if(await fs.stat(from).then(()=>true,()=>false))await fs.cp(from,path.join(target,file),{recursive:true,force:true});}}
+async function powershellCommand(exists,platform){if(platform!=='win32')return '';for(const name of ['powershell.exe','pwsh.exe','pwsh'])if(await exists(name,platform))return name;return '';}
+export async function applyPublicZipUpdate(fetchImpl,state,{platform=process.platform,runtimeSource='',commandImpl=command,commandExistsImpl=commandExists}={}){
+  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'gpt-bridge-update-')),archive=path.join(temporary,'release.zip'),extractDir=path.join(temporary,'extracted');
   try{
-    if(!await commandExists('unzip')){check(await commandExists('pkg'),'UPDATE_TOOL','ZIP 압축 해제 도구를 설치할 수 없는 환경입니다.',500);await command('pkg',['install','-y','unzip'],temporary);}
+    const powershell=await powershellCommand(commandExistsImpl,platform);
+    if(platform==='win32')check(powershell,'UPDATE_TOOL','Windows PowerShell 또는 PowerShell 7을 찾지 못했습니다.',500);
+    else if(!await commandExistsImpl('unzip',platform)){check(await commandExistsImpl('pkg',platform),'UPDATE_TOOL','ZIP 압축 해제 도구를 설치할 수 없는 환경입니다.',500);await commandImpl('pkg',['install','-y','unzip'],temporary);}
     const response=await fetchImpl(state.download_url,{headers:{Accept:'application/vnd.github+json'},cache:'no-store'}),declared=Number(response.headers.get('content-length')||0);
     check(response.ok&&(!declared||declared<=45*1024*1024),'UPDATE_DOWNLOAD','공개 ZIP 파일을 내려받지 못했습니다.',502);
     const envelope=Buffer.from(await response.arrayBuffer());check(envelope.length>0&&envelope.length<=45*1024*1024,'UPDATE_DOWNLOAD','공개 ZIP 응답 크기를 확인할 수 없습니다.',502);
@@ -47,14 +53,29 @@ async function applyPublicZipUpdate(fetchImpl,state){
     check(payload?.sha===state.archive_sha&&payload?.encoding==='base64'&&typeof payload.content==='string'&&/^[A-Za-z0-9+/=\s]+$/.test(payload.content),'UPDATE_DOWNLOAD','공개 ZIP 응답을 확인하지 못했습니다.',502);
     const bytes=Buffer.from(payload.content.replace(/\s/g,''),'base64'),blobSha=createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
     check(bytes.length>0&&bytes.length<=32*1024*1024&&blobSha===state.archive_sha,'UPDATE_DOWNLOAD','공개 ZIP 파일 무결성을 확인하지 못했습니다.',502);await fs.writeFile(archive,bytes,{mode:0o600});
-    const entries=(await command('unzip',['-Z1',archive],temporary)).split('\n').filter(Boolean);
-    check(validZipEntries(entries),'UPDATE_ARCHIVE','ZIP 내부 경로를 확인하지 못했습니다.',422);
-    await command('unzip',['-q',archive,'-d',temporary],temporary);
-    const source=path.join(temporary,'wish-core-hap-gpt','termux-bridge'),manifest=JSON.parse(await fs.readFile(path.join(source,'package.json'),'utf8'));
+    let entries;
+    if(platform==='win32'){
+      const script=path.join(temporary,'archive.ps1');
+      await fs.writeFile(script,"param([ValidateSet('List','Extract')][string]$Mode,[string]$Archive,[string]$Destination)\nAdd-Type -AssemblyName System.IO.Compression.FileSystem\nif($Mode -eq 'List'){$zip=[IO.Compression.ZipFile]::OpenRead($Archive);try{foreach($entry in $zip.Entries){[Console]::Out.WriteLine($entry.FullName)}}finally{$zip.Dispose()}}else{[IO.Compression.ZipFile]::ExtractToDirectory($Archive,$Destination)}\n",'utf8');
+      entries=(await commandImpl(powershell,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-Mode','List','-Archive',archive,'-Destination',extractDir],temporary)).split(/\r?\n/).filter(Boolean);
+      check(validZipEntries(entries),'UPDATE_ARCHIVE','ZIP 내부 경로를 확인하지 못했습니다.',422);
+      await commandImpl(powershell,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-Mode','Extract','-Archive',archive,'-Destination',extractDir],temporary);
+    }else{
+      entries=(await commandImpl('unzip',['-Z1',archive],temporary)).split(/\r?\n/).filter(Boolean);
+      check(validZipEntries(entries),'UPDATE_ARCHIVE','ZIP 내부 경로를 확인하지 못했습니다.',422);
+      await commandImpl('unzip',['-q',archive,'-d',extractDir],temporary);
+    }
+    const source=path.join(extractDir,'wish-core-hap-gpt','termux-bridge'),manifest=JSON.parse(await fs.readFile(path.join(source,'package.json'),'utf8'));
     check(manifest.name==='local-gpt-subscription-bridge'&&manifest.version===state.latest_version,'UPDATE_ARCHIVE','ZIP의 브리지 버전이 확인 결과와 다릅니다.',422);
-    await command('bash',[path.join(source,'update-termux.sh')],source);
+    if(platform==='win32'){check(runtimeSource,'UPDATE_SOURCE','현재 브리지 설치 경로를 확인하지 못했습니다.',500);await copyBridgeFiles(source,runtimeSource);}
+    else await commandImpl('bash',[path.join(source,'update-termux.sh')],source);
     return {updated:true,method:'zip',message:'공개 ZIP 버전을 적용했습니다. 서버를 다시 시작합니다.'};
   }finally{await fs.rm(temporary,{recursive:true,force:true});}
+}
+export async function applyGitUpdate(gitInfo,runtimeSource,{platform=process.platform,commandImpl=command}={}){
+  const {source,repo,branch}=gitInfo;await commandImpl('git',['pull','--ff-only','origin',branch],repo);
+  if(path.resolve(source)!==path.resolve(runtimeSource)){if(platform==='win32')await copyBridgeFiles(source,runtimeSource);else await commandImpl('bash',[path.join(source,'update-termux.sh')],source);}
+  return {updated:true,method:'git',message:'Git 버전을 적용했습니다. 서버를 다시 시작합니다.'};
 }
 export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subscription-bridge'),fetchImpl=globalThis.fetch,clock=Date.now,appName='Local GPT Subscription Bridge',onRestart=null,onUpdateCheck=null,onUpdate=null,updateMethods=[],installMethod=''}={}){
   const bridge=await new JobBridge(dir,{fetchImpl,clock,appName}).init();
@@ -137,8 +158,8 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const stateError=state=>({current:'이미 최신 버전입니다.',local_changes:'저장소에 직접 수정한 파일이 있어 자동 업데이트하지 않았습니다.',local_ahead:'현재 설치본이 공개 버전보다 새롭거나 로컬 커밋이 앞서 있습니다.',diverged:'로컬과 원격 기록이 갈라져 자동 업데이트하지 않았습니다.'})[state.status]||'업데이트 상태를 다시 확인하세요.';
   const update=updateMethods.length?async method=>{
     const state=await checkUpdate(method);check(state.status==='available','UPDATE_STATE',stateError(state),409);
-    if(method==='zip')return applyPublicZipUpdate(globalThis.fetch,state);
-    const {source,repo,branch}=gitInfo;await command('git',['pull','--ff-only','origin',branch],repo);if(path.resolve(source)!==runtimeSource)await command('bash',[path.join(source,'update-termux.sh')],source);return {updated:true,method:'git',message:'Git 버전을 적용했습니다. 서버를 다시 시작합니다.'};
+    if(method==='zip')return applyPublicZipUpdate(globalThis.fetch,state,{runtimeSource});
+    return applyGitUpdate(gitInfo,runtimeSource);
   }:null;
   const {server,bridge}=await createServer({onRestart:restart,onUpdateCheck:checkUpdate,onUpdate:update,updateMethods,installMethod:gitInfo?'git':supervised?'zip':'unknown'});
   const version=await currentVersion();server.listen(port,'127.0.0.1',()=>console.log('\nGPT 브리지 '+version+'\n관리 화면: http://127.0.0.1:'+port+'/#pair='+bridge.auth.identity.pair+'\n각자 본인 계정으로 로그인하세요. 종료: Ctrl+C\n'));
