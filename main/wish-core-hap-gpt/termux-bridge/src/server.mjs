@@ -14,7 +14,8 @@ const PUBLIC_PACKAGE_API='https://api.github.com/repos/eun033/RpCleanerEpub/cont
 function send(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
 async function readBody(req){let bytes=0;const chunks=[];for await(const chunk of req){bytes+=chunk.length;check(bytes<=5000000,'BODY_SIZE','요청이 너무 큽니다.',413);chunks.push(chunk);}try{return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');}catch{throw new BridgeError('JSON','요청 JSON을 확인하세요.');}}
 function command(file,args,cwd){return new Promise((resolve,reject)=>{const child=spawn(file,args,{cwd,stdio:['ignore','pipe','pipe']}),chunks=[];for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{if(chunks.reduce((n,x)=>n+x.length,0)<100000)chunks.push(chunk);});child.on('error',reject);child.on('close',code=>code===0?resolve(Buffer.concat(chunks).toString('utf8').trim()):reject(new BridgeError('UPDATE_FAILED','업데이트 명령을 실행하지 못했습니다. 인터넷 연결과 설치 상태를 확인하세요. ('+Buffer.concat(chunks).toString('utf8').trim().split('\n').slice(-1)[0]+')',500)));});}
-function commandExists(name){return new Promise(resolve=>{const child=spawn('sh',['-c','command -v "$1" >/dev/null 2>&1','sh',name],{stdio:'ignore'});child.on('error',()=>resolve(false));child.on('close',code=>resolve(code===0));});}
+function commandExists(name){return new Promise(resolve=>{const windows=process.platform==='win32',child=spawn(windows?'where.exe':'sh',windows?[name]:['-c','command -v "$1" >/dev/null 2>&1','sh',name],{stdio:'ignore'});child.on('error',()=>resolve(false));child.on('close',code=>resolve(code===0));});}
+export function gitSourceCandidates({runtimeSource,explicit='',marker='',home=os.homedir()}={}){return [...new Set([explicit,marker,runtimeSource,path.join(home,'gpt-codex-work','work-hap-gpt','termux-bridge'),path.join(home,'RpCleanerEpub','main','wish-core-hap-gpt','termux-bridge')].filter(Boolean).map(value=>path.resolve(value)))];}
 export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion,localTree='',remoteTree=''}){
   if(dirty)return 'local_changes';
   if(currentVersion===latestVersion&&(local===remote||localTree&&localTree===remoteTree))return 'current';
@@ -24,7 +25,7 @@ export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVer
 }
 export function compareVersions(a,b){const left=String(a).split('.').map(Number),right=String(b).split('.').map(Number);for(let i=0;i<Math.max(left.length,right.length);i++){const difference=(left[i]||0)-(right[i]||0);if(difference)return Math.sign(difference);}return 0;}
 export function selectZipRelease(entries){return entries.filter(entry=>/^Wish_RP_Core_HAP_GPT_\d+\.\d+\.\d+\.zip$/.test(entry?.name||'')&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')&&String(entry.git_url||'').startsWith('https://api.github.com/repos/eun033/RpCleanerEpub/git/blobs/')).sort((a,b)=>compareVersions(a.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1],b.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1])).at(-1)||null;}
-export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/server.mjs'].every(file=>entries.includes(prefix+file));}
+export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/start.mjs','src/server.mjs'].every(file=>entries.includes(prefix+file));}
 export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   const options={headers:{Accept:'application/vnd.github+json'},cache:'no-store'};
   const [listingResponse,packageResponse]=await Promise.all([fetchImpl(PUBLIC_RELEASE_API,options),fetchImpl(PUBLIC_PACKAGE_API,options)]);
@@ -55,7 +56,7 @@ async function applyPublicZipUpdate(fetchImpl,state){
     return {updated:true,method:'zip',message:'공개 ZIP 버전을 적용했습니다. 서버를 다시 시작합니다.'};
   }finally{await fs.rm(temporary,{recursive:true,force:true});}
 }
-export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subscription-bridge'),fetchImpl=globalThis.fetch,clock=Date.now,appName='Local GPT Subscription Bridge',onRestart=null,onUpdateCheck=null,onUpdate=null,updateMethods=[]}={}){
+export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subscription-bridge'),fetchImpl=globalThis.fetch,clock=Date.now,appName='Local GPT Subscription Bridge',onRestart=null,onUpdateCheck=null,onUpdate=null,updateMethods=[],installMethod=''}={}){
   const bridge=await new JobBridge(dir,{fetchImpl,clock,appName}).init();
   let updateBusy=false;const restartBusy=()=>updateBusy||bridge.running||[...bridge.jobs.values()].some(job=>['queued','running'].includes(job.status));
   const server=http.createServer(async(req,res)=>{
@@ -78,7 +79,7 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
       }
       check(equal(req.headers.authorization||'','Bearer '+bridge.auth.identity.pair),'PAIR','관리 화면에서 복사한 로컬 연결 코드가 필요합니다.',401);
       const methods=updateMethods.length?updateMethods:typeof onUpdate==='function'?['git']:[];
-      if(req.method==='GET'&&url.pathname==='/api/status')return send(res,200,{...bridge.status(),can_restart:typeof onRestart==='function',restart_busy:restartBusy(),can_update:typeof onUpdate==='function',update_methods:methods,update_busy:updateBusy});
+      if(req.method==='GET'&&url.pathname==='/api/status')return send(res,200,{...bridge.status(),can_restart:typeof onRestart==='function',restart_busy:restartBusy(),can_update:typeof onUpdate==='function',install_method:installMethod||methods[0]||'unknown',update_methods:methods,update_busy:updateBusy});
       if(req.method==='GET'&&url.pathname==='/api/update/check'){
         const method=url.searchParams.get('method')||methods[0];
         check(typeof onUpdateCheck==='function'&&methods.includes(method),'UPDATE_UNAVAILABLE','현재 설치 방식에서 사용할 수 없는 업데이트입니다.',409);
@@ -90,7 +91,7 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
       if(req.method==='POST'&&url.pathname==='/api/logout'){check(!bridge.running,'BUSY','진행 중인 작업이 끝난 뒤 연결을 해제하세요.',409);await bridge.auth.logout();await bridge.settingsChange({paused:true});return send(res,200,{ok:true});}
       if(req.method==='POST'&&url.pathname==='/api/settings')return send(res,200,await bridge.settingsChange(await readBody(req)));
       if(req.method==='POST'&&url.pathname==='/api/restart'){
-        check(typeof onRestart==='function','RESTART_UNAVAILABLE','start.sh로 서버를 실행한 경우에만 관리 화면에서 재시작할 수 있습니다.',409);
+        check(typeof onRestart==='function','RESTART_UNAVAILABLE','start.sh 또는 start-windows.ps1로 서버를 실행한 경우에만 관리 화면에서 재시작할 수 있습니다.',409);
         check(!restartBusy(),'BUSY','대기·진행 중인 작업이 끝난 뒤 재시작하세요.',409);
         send(res,202,{ok:true});setImmediate(()=>onRestart({server,bridge}));return;
       }
@@ -114,9 +115,9 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   check(Number.isInteger(port)&&port>=1024&&port<=65535,'PORT','사용할 포트를 확인하세요.');
   const supervised=process.env.GPT_BRIDGE_SUPERVISED==='1',runtimeSource=path.resolve(ROOT,'..'),manifestPath=path.join(runtimeSource,'package.json');
   const restart=supervised?({server,bridge})=>{bridge.close();server.close(()=>process.exit(75));}:null;
-  const marker=await fs.readFile(path.join(runtimeSource,'.git-source'),'utf8').then(value=>value.trim(),()=>''),candidates=[process.env.GPT_BRIDGE_SOURCE,marker,path.join(os.homedir(),'gpt-codex-work','work-hap-gpt','termux-bridge'),path.join(os.homedir(),'RpCleanerEpub','main','wish-core-hap-gpt','termux-bridge')].filter(Boolean);
+  const marker=await fs.readFile(path.join(runtimeSource,'.git-source'),'utf8').then(value=>value.trim(),()=>''),candidates=gitSourceCandidates({runtimeSource,explicit:process.env.GPT_BRIDGE_SOURCE,marker});
   let gitInfo=null;
-  if(supervised&&await commandExists('git'))for(const candidate of [...new Set(candidates.map(value=>path.resolve(value)))])try{
+  if(await commandExists('git'))for(const candidate of candidates)try{
     const source=candidate,repo=await command('git',['-C',source,'rev-parse','--show-toplevel'],source),branch=await command('git',['-C',repo,'branch','--show-current'],repo),sourcePath=path.relative(repo,source).split(path.sep).join('/')||'.',packageFile=path.posix.join(sourcePath,'package.json');
     check(branch&&await fs.stat(path.join(source,'update-termux.sh')).then(stat=>stat.isFile(),()=>false),'UPDATE_SOURCE','업데이트 원본을 확인하지 못했습니다.',409);gitInfo={source,repo,branch,sourcePath,packageFile};break;
   }catch{}
@@ -137,9 +138,9 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const update=updateMethods.length?async method=>{
     const state=await checkUpdate(method);check(state.status==='available','UPDATE_STATE',stateError(state),409);
     if(method==='zip')return applyPublicZipUpdate(globalThis.fetch,state);
-    const {source,repo,branch}=gitInfo;await command('git',['pull','--ff-only','origin',branch],repo);await command('bash',[path.join(source,'update-termux.sh')],source);return {updated:true,method:'git',message:'Git 버전을 적용했습니다. 서버를 다시 시작합니다.'};
+    const {source,repo,branch}=gitInfo;await command('git',['pull','--ff-only','origin',branch],repo);if(path.resolve(source)!==runtimeSource)await command('bash',[path.join(source,'update-termux.sh')],source);return {updated:true,method:'git',message:'Git 버전을 적용했습니다. 서버를 다시 시작합니다.'};
   }:null;
-  const {server,bridge}=await createServer({onRestart:restart,onUpdateCheck:checkUpdate,onUpdate:update,updateMethods});
+  const {server,bridge}=await createServer({onRestart:restart,onUpdateCheck:checkUpdate,onUpdate:update,updateMethods,installMethod:gitInfo?'git':supervised?'zip':'unknown'});
   const version=await currentVersion();server.listen(port,'127.0.0.1',()=>console.log('\nGPT 브리지 '+version+'\n관리 화면: http://127.0.0.1:'+port+'/#pair='+bridge.auth.identity.pair+'\n각자 본인 계정으로 로그인하세요. 종료: Ctrl+C\n'));
   server.on('error',error=>{bridge.close();console.error(error.code==='EADDRINUSE'?'해당 포트가 이미 사용 중입니다. 기존 서버를 확인하거나 GPT_BRIDGE_PORT를 바꾸세요.':'서버를 시작하지 못했습니다.');process.exitCode=1;});
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{bridge.close();server.close(()=>process.exit(0));});

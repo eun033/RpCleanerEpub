@@ -40,8 +40,8 @@ function renderAccount(){
   el('modelRefresh').textContent='마지막 모델 확인 '+formatDateTime(modelCache.at);
 }
 function renderUpdate(){
-  const labels={current:'최신',available:'업데이트 있음',local_changes:'로컬 수정 있음',local_ahead:'설치본이 더 새로움',diverged:'기록 갈림'},methods=new Set(state?.update_methods||[]),parts=[];
-  for(const method of ['git','zip']){const item=updateStates[method];parts.push((method==='git'?'Git':'ZIP')+': '+(methods.has(method)?item?(labels[item.status]||'확인 실패')+' · '+item.current_version+' → '+item.latest_version:'확인 전':'현재 설치 방식 아님'));el('update'+(method==='git'?'Git':'Zip')).disabled=!methods.has(method)||state?.restart_busy||state?.update_busy||item?.status!=='available';}
+  const labels={current:'최신',available:'업데이트 있음',local_changes:'로컬 수정 있음',local_ahead:'설치본이 더 새로움',diverged:'기록 갈림'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',parts=[];
+  for(const method of ['git','zip']){const item=updateStates[method],name=method==='git'?'Git':'ZIP',detected=installed===method;parts.push(name+': '+(methods.has(method)?item?(labels[item.status]||'확인 실패')+' · '+item.current_version+' → '+item.latest_version:'확인 전':detected?'설치됨 · 재시작 지원 실행 필요':'현재 설치 방식 아님'));el('update'+(method==='git'?'Git':'Zip')).disabled=!methods.has(method)||state?.restart_busy||state?.update_busy||item?.status!=='available';}
   el('updateResult').textContent=parts.join(' / ');el('checkUpdate').disabled=!methods.size||state?.update_busy;el('checkUpdate').textContent=state?.update_busy?'확인 중':'확인';
 }
 function saveModels(models){modelCache={models:models.map(model=>({name:String(model.name||model.display_name||model.slug||''),slug:String(model.slug||'')})).filter(model=>model.slug),at:Date.now()};storage.set(localStorage,MODEL_CACHE,JSON.stringify(modelCache));renderAccount();}
@@ -64,7 +64,7 @@ function renderJobs(){
 function render(){
   for(const key of ['max_chars','max_calls_5h','max_calls_7d'])el(key).value=state.settings[key];
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy;
-  renderAccount();renderUpdate();serverState(state.settings.paused?'일시정지':'서버 정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);renderJobs();
+  renderAccount();renderUpdate();serverState(state.settings.paused?'서버 정상 · 요청 일시정지':'서버 정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);renderJobs();
 }
 function saveRefreshTime(){const now=Date.now();storage.set(localStorage,LAST_REFRESH,String(now));el('lastRefresh').textContent='마지막 갱신 '+formatTime(now);}
 async function refresh(announce=true){state=await api('/api/status');render();saveRefreshTime();if(announce)message('서버 상태와 브리지 호출량을 갱신했습니다.');return state;}

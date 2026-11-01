@@ -3,6 +3,12 @@ import path from 'node:path';
 import {API,SubscriptionAuth,BridgeError,check,sha,readJSON,writeJSON} from './auth.mjs';
 
 export const DEFAULT_SETTINGS={paused:false,max_chars:240000,max_calls_5h:20,max_calls_7d:200};
+export function bridgePlatform(platform=process.platform,env=process.env){
+  if(platform==='android'||env?.TERMUX_VERSION)return 'android';
+  if(platform==='darwin')return 'mac';
+  if(platform==='win32'||env?.WSL_DISTRO_NAME||env?.WSL_INTEROP)return 'windows';
+  return 'unknown';
+}
 const CLIENT_FIELDS={id:64,name:100,version:40,room_id:200,room_name:160,task_kind:40,task_name:200};
 function normalizeClient(value){
   if(value===undefined)return null;
@@ -83,7 +89,7 @@ export class JobBridge {
   save(job){return writeJSON(path.join(this.dir,'jobs',sha(job.request_id)+'.json'),job);}
   publicJob(job){const {body,fingerprint,...publicFields}=job;return publicFields;}
   counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
-  status(){return {version:'0.2.8',connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  status(){return {version:'0.2.10',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};

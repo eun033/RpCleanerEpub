@@ -1,8 +1,8 @@
-# GPT 브리지 0.2.8
+# GPT 브리지 0.2.10
 
 상위 설치 안내: [Wish RP Core HAP-gpt](https://github.com/eun033/RpCleanerEpub/tree/main/main/wish-core-hap-gpt)
 
-같은 Android 기기의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
+기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. 기본 설치 경로는 Android Termux이며 Windows Git 실행용 PowerShell 감독기도 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
 
 ## 처음 설치
 
@@ -18,9 +18,22 @@ bash install-termux.sh
 
 Node.js 22 이상이 필요하고 별도 npm 패키지는 설치하지 않는다. 설치본은 `~/local-gpt-subscription-bridge`, OAuth 인증과 작업 기록은 권한이 제한된 `~/.local-gpt-subscription-bridge`에 저장된다.
 
+## Windows Git 실행
+
+Git과 Node.js 22 이상을 설치하고 PowerShell에서 저장소의 브리지 폴더로 이동한 뒤 실행한다.
+
+```powershell
+cd "$HOME\RpCleanerEpub\main\wish-core-hap-gpt\termux-bridge"
+powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
+```
+
+`start-windows.ps1`은 `src/start.mjs` 감독기를 실행한다. 관리 화면의 **↻ 서버**나 Git 업데이트로 서버가 종료 코드 75를 내면 같은 주소·pair·작업 기록으로 다시 실행한다. 실행 중인 `termux-bridge` 폴더 자체가 Git 저장소 안에 있으면 설치 방식을 Git으로 자동 인식하며, Windows에서는 `where.exe`로 Git을 찾는다.
+
+`node src/server.mjs`를 직접 실행해도 서버와 AI 요청은 동작하지만 자동 재시작을 맡을 감독기가 없다. 이 경우 관리 화면은 Git 설치를 감지해도 **재시작 지원 실행 필요**로 표시한다. 서버를 끈 뒤 위 PowerShell 명령으로 다시 실행한다.
+
 ## 최초 로그인과 pair 연결
 
-1. 실행 시 표시되는 `http://127.0.0.1:17446/#pair=…` 주소 전체를 같은 폰의 브라우저에서 연다.
+1. 실행 시 표시되는 `http://127.0.0.1:17446/#pair=…` 주소 전체를 같은 기기의 브라우저에서 연다.
 2. **Continue with ChatGPT**를 눌러 본인 계정과 워크스페이스로 승인한다.
 3. **사용 가능한 모델 확인**을 눌러 계정별 목록을 확인한다.
 4. **확장 프로그램용 연결 주소 복사**를 눌러 HAP-gpt 설정에 붙여 넣는다.
@@ -82,9 +95,13 @@ Android 배터리 최적화가 Termux를 종료하면 자동 정리가 중단될
 
 ## 업데이트
 
+0.2.10은 WSL 환경변수를 Windows로 판정한다. Android·macOS·Windows·미확정 값은 HAP-gpt의 작은 기기 SVG를 고르는 데만 사용한다. PowerShell에서도 실행 원본 Git을 찾도록 `where.exe`와 현재 브리지 경로를 사용하며, Node 감독기와 `start-windows.ps1`을 추가했다. 요청이 멈춘 상태는 상단에 `서버 정상 · 요청 일시정지`로 표시한다.
+
+0.2.9는 `/api/status`에 `android`·`mac`·`windows`·`unknown` 실행 환경을 추가해 HAP-gpt 기기 칩 표시에 사용한다. OAuth 토큰과 pair는 이 응답에 포함하지 않는다.
+
 0.2.8부터 Git 설치판은 저장소 전체 커밋과 함께 `termux-bridge` 폴더의 Git tree를 비교한다. 원격에 HAP userscript·문서 등 다른 변경만 있고 브리지 버전과 파일이 같으면 **최신**으로 표시한다. 브리지 폴더가 실제로 달라졌거나 설치본 버전이 뒤처졌을 때만 **업데이트 있음**으로 표시한다.
 
-0.2.7은 최근 작업의 로컬 출처 표시를 추가했다. Git·ZIP 설치판 모두 서버 탭에서 현재 공개 배포본으로 갱신할 수 있다.
+0.2.7은 최근 작업의 로컬 출처 표시를 추가한다. Git 설치판은 서버 탭의 **Git 업데이트**로 받을 수 있다. ZIP 공개 배포본에는 공개 저장소가 별도로 갱신된 뒤 포함된다.
 
 0.2.6으로 올리는 첫 업데이트는 기존 서버에 ZIP 업데이트와 설치 방식 감지 기능이 없으므로 한 번만 수동으로 실행한다. Git 설치판은 아래 명령을 쓴다.
 
@@ -122,7 +139,7 @@ bash ~/local-gpt-subscription-bridge/start.sh
 - `INTERRUPTED`: 서버가 종료될 때 queued/running이었던 작업이다. 사용량 소모 여부가 불확실하므로 자동 재전송하지 않는다.
 - `MODEL_UNAVAILABLE`: 현재 계정의 `/api/models` 목록에서 다시 선택한다.
 - `MODEL_EFFORT`: 선택한 모델이 허용하는 추론 강도로 바꾼다.
-- 연결 실패: Termux 실행 여부, `127.0.0.1` 주소, 포트, pair를 확인한다.
+- 연결 실패: Termux 또는 PowerShell의 브리지 실행 여부, `127.0.0.1` 주소, 포트, pair를 확인한다.
 
 오류나 부분 텍스트는 HAP-gpt 자료에 반영되지 않는다. GET 상태 조회는 새 AI 호출을 만들지 않는다.
 
