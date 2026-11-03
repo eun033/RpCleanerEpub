@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.1.10
+// @version      0.1.9
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -260,7 +260,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.1.10';
+  const HAP_GPT_CLIENT_VERSION = '0.1.9';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -24457,7 +24457,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.1.10-hap-gpt';
+  const PATCH_VERSION = '0.1.9-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
@@ -25670,29 +25670,6 @@ WUIAutoSave.install();
       throw error;
     }
   }
-  const FIREBASE_BACKUP_CHUNK_CHARS = 512 * 1024;
-  const FIREBASE_BACKUP_MAX_BYTES = 100 * 1024 * 1024;
-  async function firebaseBackupDigest(text) {
-    const bytes = new TextEncoder().encode(String(text || ''));
-    if (!bytes.length || bytes.length > FIREBASE_BACKUP_MAX_BYTES) throw new Error('Firebase 백업 크기가 100MB 한도를 넘습니다. 방을 나눠 백업해 주세요.');
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    return { bytes:bytes.length, sha256:Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('') };
-  }
-  async function encodeFirebaseBackupPayload(payload) {
-    const text = JSON.stringify(payload), digest = await firebaseBackupDigest(text), chunks = [];
-    for (let offset = 0; offset < text.length; offset += FIREBASE_BACKUP_CHUNK_CHARS) chunks.push(text.slice(offset, offset + FIREBASE_BACKUP_CHUNK_CHARS));
-    return { format:'wish-rp-firebase-backup-chunks', version:1, chars:text.length, bytes:digest.bytes, sha256:digest.sha256, chunks };
-  }
-  async function decodeFirebaseBackupPayload(raw) {
-    if (raw?.format !== 'wish-rp-firebase-backup-chunks') return raw;
-    if (raw.version !== 1 || !Array.isArray(raw.chunks) || !raw.chunks.length || raw.chunks.length > 512 || raw.chunks.some(chunk => typeof chunk !== 'string' || chunk.length > FIREBASE_BACKUP_CHUNK_CHARS)) throw new Error('Firebase 백업 조각 구성이 올바르지 않습니다.');
-    const text = raw.chunks.join('');
-    if (text.length !== Number(raw.chars)) throw new Error('Firebase 백업 조각 길이가 맞지 않습니다.');
-    const digest = await firebaseBackupDigest(text);
-    if (digest.bytes !== Number(raw.bytes) || digest.sha256 !== String(raw.sha256 || '')) throw new Error('Firebase 백업 무결성 확인에 실패했습니다.');
-    try { return JSON.parse(text); }
-    catch (_) { throw new Error('Firebase 백업 JSON을 읽지 못했습니다.'); }
-  }
   async function ensureReady() {
     const settings = loadSettings();
     validateSettings(settings);
@@ -26039,7 +26016,7 @@ WUIAutoSave.install();
       assertPatchRoute(route);
       if(provider==='drive'){await uploadDriveBackup({payload,label});await refreshDriveCloud();}
       else{await uploadBackup({payload,label});await refreshFirebaseCloud();}
-    } catch (error) { notify(`${provider==='drive'?'Google Drive':'Firebase'} 백업 실패: ${error.message}`, 'error', 7600); }
+    } catch (error) { notify(`백업할 방 준비 실패: ${error.message}`, 'error', 7600); }
     finally {
       cloudBackupPreparing = false;
       const dialog=currentCloudDialog();
@@ -26054,11 +26031,9 @@ WUIAutoSave.install();
       notify('선택한 방의 백업을 Firebase에 올리는 중…', 'info', 2600);
       payload ||= await createCoreBackupThroughNative();
       const id = `W${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-      const stored = await encodeFirebaseBackupPayload(payload);
       const meta = {
         id,
         manager:MANAGER_ID,
-        storage:'json-chunks-v1',
         source:'cloud-patch-1.2.0',
         label:String(label || '').trim().slice(0, 80) || `Wish 백업 ${new Date().toLocaleString('ko-KR')}`,
         createdAt:payload.exportedAt,
@@ -26069,10 +26044,10 @@ WUIAutoSave.install();
       };
       await databaseRequest(ready.settings, 'PATCH', '', {
         [`${META_ROOT}/${ready.session.localId}/${id}`]:meta,
-        [`${DATA_ROOT}/${ready.session.localId}/${id}`]:stored,
+        [`${DATA_ROOT}/${ready.session.localId}/${id}`]:payload,
       });
       notify(`서버 백업 완료 · ${meta.label} · 방 ${meta.roomCount}개`, 'success', 5600);
-    } catch (error) { throw error; }
+    } catch (error) { notify(`서버 백업 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; }
   }
   async function fetchBackups() {
@@ -26307,7 +26282,7 @@ WUIAutoSave.install();
         try {
           notify('서버 백업을 내려받아 검사하는 중…', 'info', 1800);
           const raw = await databaseRequest(listed.settings, 'GET', `${DATA_ROOT}/${listed.session.localId}/${id}`);
-          const backup = validateCoreBackup(await decodeFirebaseBackupPayload(raw));
+          const backup = validateCoreBackup(raw);
           const route = modal.overlay.dataset.wishRoute;
           modal.close();
           assertPatchRoute(route);
@@ -26654,7 +26629,7 @@ WUIAutoSave.install();
       if (!listed.items.some(item => item.id === id)) throw new Error('백업 목록을 다시 확인해 주세요.');
       const raw = await databaseRequest(listed.settings, 'GET', `${DATA_ROOT}/${listed.session.localId}/${id}`);
       assertPatchRoute(route);
-      await openRestoreSelection(validateCoreBackup(await decodeFirebaseBackupPayload(raw)), route);
+      await openRestoreSelection(validateCoreBackup(raw), route);
     } catch (error) { notify(`Firebase 복원 준비 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; const current = currentCloudDialog(); if (current) renderFirebaseCloudPanel(current); }
   }
