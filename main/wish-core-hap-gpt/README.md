@@ -1,14 +1,16 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.1.9
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.0
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 배포 버전은 HAP-gpt 0.1.9, GPT 브리지 0.2.11이다.
+현재 배포 버전은 HAP-gpt 0.2.0, GPT 브리지 0.2.11이다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
+0.2.0부터 다른 방 자료 복사에서 연표 카드를 선택해 새 방의 수동 보호 사본으로 가져올 수 있다. 같은 내용의 기존 카드는 중복 복사하지 않는다.
+
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.1.9 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.0 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
@@ -24,7 +26,7 @@ Git을 쓰지 않는 사용자를 위한 방식이다. Termux에서 다음을 �
 pkg update
 pkg install nodejs-lts unzip curl
 cd ~
-curl -L -o hap-gpt.zip https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.1.9.zip
+curl -L -o hap-gpt.zip https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.2.0.zip
 unzip -o hap-gpt.zip
 cd wish-core-hap-gpt/termux-bridge
 bash install-termux.sh
@@ -68,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
 
 ### D. Windows ZIP 설치
 
-Git을 설치하지 않을 경우 [HAP-gpt 0.1.9 ZIP](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.1.9.zip)을 내려받아 압축을 푼다. PowerShell에서 압축을 푼 브리지 폴더로 이동해 실행한다.
+Git을 설치하지 않을 경우 [HAP-gpt 0.2.0 ZIP](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT_0.2.0.zip)을 내려받아 압축을 푼다. PowerShell에서 압축을 푼 브리지 폴더로 이동해 실행한다.
 
 ```powershell
 cd "$HOME\Downloads\wish-core-hap-gpt\termux-bridge"
@@ -119,7 +121,7 @@ ChatGPT 구독 요청에만 `Wish HAP-gpt`·방 이름·작업명을 로컬 표�
 ## 배포 파일
 
 - `Wish_RP_Core_HAP_GPT.user.js`: Tampermonkey 설치·자동 업데이트 파일
-- `Wish_RP_Core_HAP_GPT_0.1.9.zip`: Git 없이 Android·Windows에 설치하는 묶음
+- `Wish_RP_Core_HAP_GPT_0.2.0.zip`: Git 없이 Android·Windows에 설치하는 묶음
 - `termux-bridge/`: Git clone·pull 설치와 Windows 실행에 사용하는 파일
 - `SHA256SUMS`: userscript와 ZIP 무결성 값
 
