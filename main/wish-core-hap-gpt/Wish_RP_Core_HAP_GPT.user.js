@@ -363,16 +363,26 @@
       return Promise.resolve(this.pending()).then(record => record ? this.job(record.request_id) : null);
     }
 
-    async wait(requestId, { pollMs = 1500, maxWaitMs = 900000 } = {}) {
+    async wait(requestId, { pollMs = 1500, maxWaitMs = 900000, finalChecks = 0, finalCheckDelayMs = 30000 } = {}) {
       const deadline = Date.now() + maxWaitMs;
-      while (Date.now() < deadline) {
+      const check = async () => {
         const job = await this.job(requestId);
         if (job.status === 'completed') {
           if (typeof job.text !== 'string' || !job.text.trim()) throw Object.assign(new Error('완료 응답에 본문이 없습니다.'), { code:'CHATGPT_EMPTY', job });
           return job;
         }
         if (['error', 'incomplete', 'refusal', 'blocked_budget', 'partial_text'].includes(job.status)) throw Object.assign(new Error(job.message || job.error_code || job.status), { code:job.error_code || `CHATGPT_${job.status.toUpperCase()}`, job });
+        return null;
+      };
+      while (Date.now() < deadline) {
+        const job = await check();
+        if (job) return job;
         await new Promise(resolve => setTimeout(resolve, pollMs));
+      }
+      for (let i=0; i<Math.max(0, Number(finalChecks) || 0); i++) {
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, Number(finalCheckDelayMs) || 0)));
+        const job = await check();
+        if (job) return job;
       }
       throw Object.assign(new Error('대기 시간이 지났습니다. 요청 번호를 보존했으며 새 요청을 보내지 않았습니다.'), { code:'AI_TIMEOUT', uncertain:true });
     }
@@ -3453,7 +3463,7 @@ const WLOG=(()=>{
       const efforts=chatGptSubscriptionEfforts(cfg,cfg.chatGptSubscriptionModel),effort=normalizeChatGptSubscriptionEffort(cfg.chatGptSubscriptionEffort,cfg,cfg.chatGptSubscriptionModel);
       const clientText=(value,limit)=>String(value||'').replace(/\s+/g,' ').trim().slice(0,limit);
       const payload={model:cfg.chatGptSubscriptionModel,...(!efforts.length||efforts.includes(effort)?{effort}:{}),instructions:String(systemPrompt||''),input:String(userPrompt||''),client:{id:'wish-hap-gpt',name:'Wish HAP-gpt',version:HAP_GPT_CLIENT_VERSION,room_id:clientText(context.roomId,200),room_name:clientText(WishRoomNames.display(state.currentRoom),160),task_kind:clientText(context.taskKind,40),task_name:clientText(context.operation||context.taskKind||'AI 요청',200)}};
-      const job=await WishUsage.track(cfg,options,async()=>({...await client.run(context,payload,{maxWaitMs:Number(options.timeoutMs)||900000}),object:'response'}),{provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel});
+      const job=await WishUsage.track(cfg,options,async()=>({...await client.run(context,payload,{maxWaitMs:Number(options.subscriptionPrimaryWaitMs||options.timeoutMs)||900000,finalChecks:2,finalCheckDelayMs:30000}),object:'response'}),{provider:'chatgpt-subscription',model:cfg.chatGptSubscriptionModel});
       if(job?.status !== 'completed')throw Object.assign(new Error('ChatGPT 구독 응답이 완료되지 않아 기존 자료를 유지했습니다.'),{code:'AI_INCOMPLETE'});
       const live=loadAiSettings();
       if(String(state.currentRoom?.chatId||'')!==context.roomId||live.provider!=='chatgpt-subscription'||live.chatGptSubscriptionConnection!==cfg.chatGptSubscriptionConnection||live.chatGptSubscriptionModel!==cfg.chatGptSubscriptionModel)throw Object.assign(new Error('요청 중 방·원문·ChatGPT 구독 설정이 바뀌어 결과를 적용하지 않았습니다.'),{code:'CHATGPT_SOURCE_CHANGED'});
@@ -3775,7 +3785,7 @@ const WLOG=(()=>{
     if (cfg.provider === 'manual') return await callManualAiRelay(systemPrompt, userPrompt, options);
     // G-53: whether the caller set a wait of its own (read before the default below fills options.timeoutMs in).
     const ownWait=Number(options.timeoutMs)>0;
-    options={...options,timeoutMs:Number(options.timeoutMs)>0?Number(options.timeoutMs):(cfg.provider==='chatgpt-subscription'?900000:cfg.provider==='firebase'||cfg.provider==='vertex'?180000:120000)};
+    const requestedWaitMs=Number(options.timeoutMs)>0?Number(options.timeoutMs):(cfg.provider==='chatgpt-subscription'?900000:cfg.provider==='firebase'||cfg.provider==='vertex'?180000:120000),subscriptionPrimaryWaitMs=cfg.provider==='chatgpt-subscription'?requestedWaitMs:0;options={...options,...(subscriptionPrimaryWaitMs?{subscriptionPrimaryWaitMs}:{}),timeoutMs:subscriptionPrimaryWaitMs?subscriptionPrimaryWaitMs+70000:requestedWaitMs};
     // DeepSeek with reasoning on and not 'low' (every extract job) waits up to AI_DEEPSEEK_THINKING_TIMEOUT_MS, and so does Claude at
     // 'medium'/'high' (it always thinks; R31 segments and lore conversion have no limit of their own) and every streamed Firebase call
     // (its 180 s was the SDK default that met the server's 3-minute wall on a one-piece answer; study answers took up to ~350 s on
