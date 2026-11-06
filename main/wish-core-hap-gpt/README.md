@@ -2,7 +2,7 @@
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 배포 버전은 HAP-gpt 0.2.0, GPT 브리지 0.2.12다.
+현재 배포 버전은 HAP-gpt 0.2.0, GPT 브리지 0.2.13이다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
@@ -106,6 +106,7 @@ ChatGPT 구독 요청에만 `Wish HAP-gpt`·방 이름·작업명을 로컬 표�
 
 ## 5. 업데이트
 
+- 브리지 페이지를 열면 현재 설치 방식의 업데이트를 자동 확인하며, 새 버전이 있으면 제목 옆에 `업데이트 가능` 칩을 표시한다.
 - Git 설치판은 서버 탭에서 원격 브리지 파일을 비교한 뒤 **Git 업데이트**를 사용할 수 있다.
 - ZIP 설치판은 고정 이름 `Wish_RP_Core_HAP_GPT.zip`과 공개 브리지의 `package.json` 버전을 비교한 뒤 **ZIP 업데이트**를 사용할 수 있다. 적용 전에는 ZIP 내부 브리지 버전도 다시 확인한다.
 - 공개 저장소의 다른 파일만 바뀌고 브리지 폴더와 버전이 같으면 다시 업데이트가 있다고 표시하지 않는다.

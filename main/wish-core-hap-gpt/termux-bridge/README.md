@@ -1,4 +1,4 @@
-# GPT 브리지 0.2.12
+# GPT 브리지 0.2.13
 
 상위 설치 안내: [Wish RP Core HAP-gpt](https://github.com/eun033/RpCleanerEpub/tree/main/main/wish-core-hap-gpt)
 
@@ -94,6 +94,8 @@ chmod 700 ~/.termux/boot/hap-gpt-bridge
 Android 배터리 최적화가 Termux를 종료하면 자동 정리가 중단될 수 있으므로 Termux의 백그라운드 실행을 허용한다.
 
 ## 업데이트
+
+0.2.13은 관리 페이지를 열 때 현재 설치 방식의 업데이트를 자동 확인한다. 새 버전이 있으면 `GPT 브리지` 제목 옆에 `업데이트 가능` 칩을 표시하며, 최신 상태이거나 확인에 실패하면 칩을 숨긴다.
 
 0.2.12는 `PAYLOAD_FIELDS` 오류를 호출 프로그램과 브리지의 버전 불일치 또는 지원하지 않는 요청 필드 문제로 안내한다. 최근 작업 출처용 `client` 정보는 계속 선택 항목이며, 이를 보내지 않는 다른 확장 프로그램도 기존 요청 형식으로 사용할 수 있다. ZIP 업데이트는 고정 파일명 `Wish_RP_Core_HAP_GPT.zip`을 사용하고 공개 브리지의 `package.json` 버전을 비교하며, 적용 전에 ZIP 내부의 같은 버전도 다시 검증한다.
 
