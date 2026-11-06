@@ -21,7 +21,7 @@ function normalizeClient(value){
 export function normalizePayload(value){
   check(value&&typeof value==='object'&&!Array.isArray(value),'PAYLOAD','요청은 JSON 객체여야 합니다.');
   const allowed=new Set(['request_id','model','effort','instructions','input','client']);
-  check(Object.keys(value).every(k=>allowed.has(k)),'PAYLOAD_FIELDS','참고 서버가 지원하지 않는 필드가 있습니다.');
+  check(Object.keys(value).every(k=>allowed.has(k)),'PAYLOAD_FIELDS','호출 프로그램과 GPT 브리지 버전이 맞지 않거나 지원하지 않는 요청 필드가 있습니다. 브리지를 업데이트하거나 요청 필드를 확인하세요.');
   check(typeof value.request_id==='string'&&/^[A-Za-z0-9_-]{16,100}$/.test(value.request_id),'REQUEST_ID','요청마다 저장 가능한 고유 request_id가 필요합니다.');
   check(typeof value.model==='string'&&/^[A-Za-z0-9_.-]{1,100}$/.test(value.model),'MODEL','구독 목록에서 모델을 선택하세요.');
   const instructions=value.instructions??'';
@@ -89,7 +89,7 @@ export class JobBridge {
   save(job){return writeJSON(path.join(this.dir,'jobs',sha(job.request_id)+'.json'),job);}
   publicJob(job){const {body,fingerprint,...publicFields}=job;return publicFields;}
   counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
-  status(){return {version:'0.2.11',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  status(){return {version:'0.2.12',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};

@@ -25,7 +25,7 @@ export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVer
   return 'diverged';
 }
 export function compareVersions(a,b){const left=String(a).split('.').map(Number),right=String(b).split('.').map(Number);for(let i=0;i<Math.max(left.length,right.length);i++){const difference=(left[i]||0)-(right[i]||0);if(difference)return Math.sign(difference);}return 0;}
-export function selectZipRelease(entries){return entries.filter(entry=>/^Wish_RP_Core_HAP_GPT_\d+\.\d+\.\d+\.zip$/.test(entry?.name||'')&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')&&String(entry.git_url||'').startsWith('https://api.github.com/repos/eun033/RpCleanerEpub/git/blobs/')).sort((a,b)=>compareVersions(a.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1],b.name.match(/_(\d+\.\d+\.\d+)\.zip$/)[1])).at(-1)||null;}
+export function selectZipRelease(entries){return entries.find(entry=>entry?.name==='Wish_RP_Core_HAP_GPT.zip'&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')&&String(entry.git_url||'').startsWith('https://api.github.com/repos/eun033/RpCleanerEpub/git/blobs/'))||null;}
 export function validZipEntries(entries){const prefix='wish-core-hap-gpt/termux-bridge/';return entries.length>0&&entries.every(entry=>entry.startsWith('wish-core-hap-gpt/')&&!entry.includes('\\')&&!entry.split('/').includes('..'))&&['package.json','update-termux.sh','src/start.mjs','src/server.mjs'].every(file=>entries.includes(prefix+file));}
 export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   const options={headers:{Accept:'application/vnd.github+json'},cache:'no-store'};
