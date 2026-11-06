@@ -1,16 +1,18 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.0
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.1
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 배포 버전은 HAP-gpt 0.2.0, GPT 브리지 0.2.13이다.
+현재 배포 버전은 HAP-gpt 0.2.1, GPT 브리지 0.2.13이다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
 0.2.0부터 다른 방 자료 복사에서 연표 카드를 선택해 새 방의 수동 보호 사본으로 가져올 수 있다. 같은 내용의 기존 카드는 중복 복사하지 않는다. ChatGPT 구독 통합 정리는 240초 뒤에도 같은 요청 번호를 30초 간격으로 두 번 더 확인해 약 5분까지 기다리며, 확인 중에는 새 요청을 보내지 않는다.
 
+0.2.1은 자료 관리의 기존 2차 재구축 바로 아래에 **2차 재구축 (40% 이상 축소 목표)**를 추가한다. 목표 축소율은 40%와 50% 중 하나를 고른다. TXT를 외부 AI에 전달하고 결과 JSON을 가져오면 원문과 압축 결과를 비교해 선택 적용할 수 있다. 연표는 유지하며, 교체 직전 원본은 최근 5회 자동 보관한다.
+
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.0 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.1 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
@@ -70,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
 
 ### D. Windows ZIP 설치
 
-Git을 설치하지 않을 경우 [HAP-gpt ZIP](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.zip)을 내려받아 압축을 푼다. PowerShell에서 압축을 푼 브리지 폴더로 이동해 실행한다. 버전이 붙은 `Wish_RP_Core_HAP_GPT_0.2.0.zip`도 같은 내용으로 제공한다.
+Git을 설치하지 않을 경우 [HAP-gpt ZIP](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.zip)을 내려받아 압축을 푼다. PowerShell에서 압축을 푼 브리지 폴더로 이동해 실행한다. 버전이 붙은 `Wish_RP_Core_HAP_GPT_0.2.1.zip`도 같은 내용으로 제공한다.
 
 ```powershell
 cd "$HOME\Downloads\wish-core-hap-gpt\termux-bridge"
@@ -104,7 +106,13 @@ powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
 
 ChatGPT 구독 요청에만 `Wish HAP-gpt`·방 이름·작업명을 로컬 표시용 정보로 붙여 브리지 최근 작업에서 확인할 수 있다. 이 정보는 OpenAI 요청 본문이나 다른 AI 공급자 호출에 넣지 않는다.
 
-## 5. 업데이트
+## 5. 2차 재구축 40% 이상 축소
+
+`자료 관리 → 2차 재구축 (40% 이상 축소 목표)`에서 **① 지침 + TXT 받기**를 누른다. 목표 축소율은 40% 또는 50%를 선택한다. 받은 TXT를 새 AI 대화에 첨부하거나 HAP-gpt의 GPT 전송 버튼으로 보낸 뒤, 결과 JSON을 **② 결과 JSON 가져오기**로 연다.
+
+적용 화면에서 원문과 결과를 비교하고 실제로 바꿀 항목만 선택한다. 이 작업은 저장 원문을 교체하므로 적용 직전 원본을 자동 보관한다. **교체 전 원본 보관함**에서 최근 5회 원본을 내려받거나 복원할 수 있다. 연표는 AI가 참고만 하며 수정하지 않는다. 기타/OOC는 내보내기 창에서 포함 여부를 선택한다.
+
+## 6. 업데이트
 
 - 브리지 페이지를 열면 현재 설치 방식의 업데이트를 자동 확인하며, 새 버전이 있으면 제목 옆에 `업데이트 가능` 칩을 표시한다.
 - Git 설치판은 서버 탭에서 원격 브리지 파일을 비교한 뒤 **Git 업데이트**를 사용할 수 있다.
@@ -122,7 +130,7 @@ ChatGPT 구독 요청에만 `Wish HAP-gpt`·방 이름·작업명을 로컬 표�
 ## 배포 파일
 
 - `Wish_RP_Core_HAP_GPT.user.js`: Tampermonkey 설치·자동 업데이트 파일
-- `Wish_RP_Core_HAP_GPT_0.2.0.zip`: Git 없이 Android·Windows에 설치하는 묶음
+- `Wish_RP_Core_HAP_GPT_0.2.1.zip`: Git 없이 Android·Windows에 설치하는 묶음
 - `Wish_RP_Core_HAP_GPT.zip`: 위 파일과 내용이 같은 고정 이름 묶음
 - `termux-bridge/`: Git clone·pull 설치와 Windows 실행에 사용하는 파일
 - `SHA256SUMS`: userscript와 두 ZIP의 무결성 값
