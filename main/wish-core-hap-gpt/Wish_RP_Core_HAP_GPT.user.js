@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.1
+// @version      0.2.2
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -260,7 +260,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.1';
+  const HAP_GPT_CLIENT_VERSION = '0.2.2';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -22247,12 +22247,11 @@ function mRelationships() {
 
   function vFreeCompression(dis=false) {
     const info=state.currentRoom?.freeCompression;
-    return '<div data-key="free-compression"><b>2차 재구축 (40% 이상 축소 목표)</b>'+
+    return '<div data-key="free-compression"><b>외부 AI로 2차 재구축 (40% 이상)</b>'+
       '<p class="m3-muted">먼저 원문을 최대한 살려 줄이고, 부족하면 중복·서사 중요도가 낮은 내용을 덜어 냅니다. 결과를 확인한 뒤 저장 본문을 실제로 교체합니다.</p>'+
-      '<div class="m3-row m3-card-actions">'+btn('① 지침 + TXT 받기','freeCompressionExport',{cls:'mini',icon:'down',dis})+btn('② 결과 JSON 가져오기','freeCompressionImport',{cls:'mini',icon:'up',dis})+btn('지침','promptGuides',{arg:'externalFreeCompression',cls:'mini',icon:'doc',dis})+'</div>'+
+      '<div class="m3-row m3-card-actions">'+btn('지침 + TXT 받기','freeCompressionExport',{cls:'mini',icon:'down',dis})+btn('결과 JSON 가져오기','freeCompressionImport',{cls:'mini',icon:'up',dis})+btn('지침','promptGuides',{arg:'externalFreeCompression',cls:'mini',icon:'doc',dis})+'</div>'+
       '<div class="m3-row m3-card-actions">'+btn('현재 원문 JSON 저장','freeCompressionOriginal',{cls:'mini',icon:'down',dis})+btn('교체 전 원본 보관함','freeCompressionBackups',{cls:'mini',icon:'history',dis})+'</div>'+
-      (info?'<p class="m3-muted">최근 교체: 본문 '+fmt(info.before)+' → '+fmt(info.after)+'자 · '+esc(info.percent)+'% 축소 · 삭제 '+fmt(info.deleted||0)+'항목</p>':'')+
-      '<p class="m3-muted">목표 축소율은 40% 또는 50%를 선택합니다. 연표는 유지하며 기타/OOC는 포함 여부를 선택합니다. 원본은 교체 직전 자동 보관(최근 5회)하며 JSON으로 받아 별도 보관·복원할 수 있습니다. API 호출 없음.</p></div>';
+      (info?'<p class="m3-muted">최근 교체: 본문 '+fmt(info.before)+' → '+fmt(info.after)+'자 · '+esc(info.percent)+'% 축소 · 삭제 '+fmt(info.deleted||0)+'항목</p>':'')+'</div>';
   }
 
   const EXTERNAL_MODE_HELP=helpSections([
@@ -23188,7 +23187,7 @@ diff:`<div class="m3-shell">
         body:'<div class="m3-status m3-bottomgap">'+ic('doc')+'<span><b>TXT를 그대로 첨부하면 압축 지침도 함께 전달됩니다.</b><br>① TXT 받기 → ② 새 채팅 AI에 파일 첨부 → ③ 받은 결과 JSON 가져오기 → ④ 비교 후 원문 교체</span></div>'+
           '<section class="m3-panel"><div class="m3-setting-row"><label>목표 축소율</label>'+selc(D(d,'target'),d.draft.target,[['40','40% 이상 줄이기'],['50','50% 이상 줄이기']],'m3-select')+'</div>'+
           tog('기타·OOC도 압축',D(d,'includeOOC'),!!d.draft.includeOOC,'기본은 원문 유지. 켜면 진행 지침도 중복 표현을 합쳐 줄입니다.')+
-          '<p class="m3-muted">현재상태·날짜로그·캐릭터·자료집·인지 설명·호칭 설명·관계·서사 고리 설명을 대상으로 합니다. 연표·인물 연결·앎/모름·호칭 방향·기한은 유지합니다.</p></section>'+
+          '<p class="m3-muted">현재상태·날짜로그·캐릭터·자료집·인지 설명·호칭 설명·관계·서사 고리 설명을 대상으로 합니다. 연표·인물 연결·앎/모름·호칭 방향·기한은 유지합니다.</p><p class="m3-muted">목표 축소율은 40% 또는 50%를 선택합니다. 연표는 유지하며 기타/OOC는 포함 여부를 선택합니다. 원본은 교체 직전 자동 보관(최근 5회)하며 JSON으로 받아 별도 보관·복원할 수 있습니다. API 호출 없음.</p></section>'+
           '<section class="m3-panel"><b>원문 보존에서 자유 압축으로</b><p class="m3-muted">먼저 표현과 중복을 줄이고, 목표에 못 미치면 AI 판단으로 낮은 중요도 내용을 삭제합니다. 기존 삭제 금지·보호 표현·숫자 표기 보존은 적용 조건이 아닙니다. 핵심 사실과 현재의 미해결 문제는 우선 남기도록 지시합니다.</p><p class="m3-muted">목표는 대상 기억 본문 기준입니다. 원문 유지 항목·연표·서식·현재 AI 답변까지 포함하는 메인 글자수와는 다를 수 있습니다.</p></section>'+
           '<div class="m3-status m3-warning">'+ic('alert')+'<span>TXT를 받은 뒤 결과를 적용할 때까지 RP와 기억 편집을 멈춰 주세요. 그사이 원문이 바뀌면 최신 TXT가 필요합니다. 압축 결과에 빠진 내용은 원본 복원 전까지 기억에 사용되지 않습니다.</span></div>'+
           (d.error?'<p class="m3-error" role="alert">'+esc(d.error)+'</p>':''),
@@ -24915,7 +24914,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.1-hap-gpt';
+  const PATCH_VERSION = '0.2.2-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
