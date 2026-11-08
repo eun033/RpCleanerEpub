@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.3
+// @version      0.2.4
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -260,7 +260,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.3';
+  const HAP_GPT_CLIENT_VERSION = '0.2.4';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -6511,6 +6511,7 @@ const WishKnow=(()=>{
 
 const U3 = (() => {
   const VERSION = 1;
+  const LAST_AI_RESPONSE_KEY='wish-unified-last-ai-response-v1';
   const timers = new Map(), running = new Map(), counts = new WeakMap();
   const active = new Set(), observed = new WeakMap(), checked = new WeakMap();
   const historyDeferrals = new WeakMap();
@@ -6529,6 +6530,16 @@ const U3 = (() => {
   const bridge = cogBridge;
   const wishUnique = (a, limit=10000) => [...new Set((a||[]).map(String).filter(Boolean))].slice(0,limit);
   const wishId = kind => kind + '_' + crypto.randomUUID().replace(/-/g,'');
+  function lastAiResponse(){try{const v=GM_getValue(LAST_AI_RESPONSE_KEY,null);return v&&typeof v==='object'?v:null;}catch{return null;}}
+  function rememberAiResponse(room,jobCode,stamp,mode,result){
+    const text=String(result?.text||'');if(!text)return result;
+    const d=result?.diagnostic||{},diagnostic={};for(const k of ['provider','model','finishReason','responseChars','outputTokens'])if(d[k]!==undefined)diagnostic[k]=d[k];
+    try{GM_setValue(LAST_AI_RESPONSE_KEY,{room:String(apiChatIdOf(room)||''),jobCode:String(jobCode||''),stamp:String(stamp||''),mode:mode==='full'?'full':'base',text,diagnostic,at:Date.now()});}catch(e){console.warn('[Wish] 마지막 AI 응답 보관 실패',e);}
+    return result;
+  }
+  function forgetAiResponse(room){const v=lastAiResponse();if(v&&v.room===String(apiChatIdOf(room)||''))try{GM_setValue(LAST_AI_RESPONSE_KEY,null);}catch{}}
+  function canReapply(room){const v=lastAiResponse();return !!(v?.text&&v.room===String(apiChatIdOf(room)||'')&&/AI 응답 JSON 파싱 실패/.test(String(room?.unified?.lastError||'')));}
+  function lastAiResponseText(room){const v=lastAiResponse();return v?.room===String(apiChatIdOf(room)||'')?String(v.text||''):'';}
   const WISH_REFERENCE_TYPES = {world:1,item:1,outfit:1,key_quote:1,place:1,organization:1,other:1};
     const WISH_COMMON_GUIDE=`# Wish RP Manager Core — 기억 정리 공통 판정 규칙
 
@@ -8259,7 +8270,7 @@ function applyObserveRows(cog,speech,data,rp,cutoff,relationshipRows=[],relation
   }
   async function run(room,force='',scheduled=false,carry=null,manual=null) {
     if(!room||state.currentRoom!==room)return false;
-    const scope=force?(force==='retry'?(room.unified?.failedKind||'all'):force):(scheduled&&carry?.scope||''),origin=force?'manual-start':(scope?carry.origin:''),keep={origin,scope};
+    const reapplying=force==='reapply',scope=force?((force==='retry'||reapplying)?(room.unified?.failedKind||'all'):force):(scheduled&&carry?.scope||''),origin=force?'manual-start':(scope?carry.origin:''),keep={origin,scope};
     if(!scope&&!settings(room).enabled)return false;
     if(unstartedRooms.has(room)){if(!force)return false;await saveRoom(room);if(state.currentRoom!==room)return false;}
     // A pasted answer never schedules a re-run: that run would export a new request over the clipboard.
@@ -8312,7 +8323,7 @@ function applyObserveRows(cog,speech,data,rp,cutoff,relationshipRows=[],relation
         if(!force&&!retrying&&u.lastError&&!historyDeferred)return false;
         if(room.relationshipBaseline?.manifest?.length&&!sourceStillPresent(room.relationshipBaseline.manifest,frame.messages))throw sourceError('관계 재구축의 기준 메시지가 현재 방에 없거나 순서가 바뀌었습니다.','관계 재구축',room.relationshipBaseline.manifest,frame,frame.messages,history.wishRead);
         const pausedScope=scope&&!settings(room).enabled?scope:'';
-const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.failedKind||pausedScope):(force||pausedScope),turns({stable:frame.messages.slice(0,frame.messages.length-frame.stable.length)}));
+const p=plan(list,{...u,settings:settings(room)},force==='retry'||reapplying||retrying?(u.failedKind||pausedScope):(force||pausedScope),turns({stable:frame.messages.slice(0,frame.messages.length-frame.stable.length)}));
         // Copy-paste mode: the entry keeps the characters of the pending turns (the longer lane, the rows the plan just took, as
         // pendingCounts counts them), so the home card keeps its figure after this check; the API entry stays {memory,observe}.
         counts.set(room,{memory:p.mem.length,observe:p.obs.length,...(isManualAiProvider()?{chars:(p.mem.length>=p.obs.length?p.mem:p.obs).reduce((c,t)=>c+t.userText.length+t.assistantText.length,0)}:{})});
@@ -8387,20 +8398,27 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
           req.referenceUnsent=Array.isArray(manual.job.unsent)?manual.job.unsent.map(String):[];
           manualResult={text:manual.answer,diagnostic:{provider:'manual',model:'외부 AI 복붙',finishReason:''}};
         }
-        const providerSettings=loadAiSettings();if(!isAiProviderReady(providerSettings))throw WLOG.tag(Error('보조 AI 연결 설정이 필요합니다.'),'AI_NO_CONFIG');
+        const providerSettings=loadAiSettings();if(!reapplying&&!isAiProviderReady(providerSettings))throw WLOG.tag(Error('보조 AI 연결 설정이 필요합니다.'),'AI_NO_CONFIG');
         shown?.done();quietCheck=false;unifiedStage=p.memory&&p.observe?'기억·인물 통합 정리 요청 중':p.memory?'현재상태·사건·자료·서사 고리 정리 요청 중':'인지·호칭·말투 정리 요청 중';active.add(room.chatId);renderModalIfIdle();
-        if(!isManualAiProvider())notify(p.memory&&p.observe?'기억·인물 정리 · 통합 1회 요청':'묶음 정리 · 1회 요청','success',3000);
+        if(!isManualAiProvider()&&!reapplying)notify(p.memory&&p.observe?'기억·인물 정리 · 통합 1회 요청':'묶음 정리 · 1회 요청','success',3000);
         // JSON MIME + explicit contract avoids schema-rejection fallback making a second call.
         if(req.stateDelta)await WishEconomy.backup(room);
         const makeFullRequest=()=>{const full=request(room,cog,packs,p,{...requestOptions,forceStateSnapshot:true}),system=full.guide+'\n[응답 스키마]\n'+JSON.stringify(full.schema)+wishCheckBlock(full.check);try{WishMemorySafety.wire(system,full.prompt);}catch(e){if(e?.code==='WISH_REQUEST_SIZE')e.message+=' · '+wishRequestSizeMessage(full.requestSizes);throw e;}return {full,system};};
-        const taskKind=rescue?'rescue':'extract',initialOperation=unifiedStage,resumeOperation=manualResult?'':await chatGptSubscriptionResumeOperation(providerSettings,{jobCode:subscriptionJobCode,taskKind,initialOperation});
-        let staged,extra=['절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중','통합 결과 형식 보정 · 1회 재요청 중'].includes(resumeOperation),first=null,firstStage='',restage=null,kept=null,result;
-        if(resumeOperation==='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중'){
-          const resumed=makeFullRequest();req=resumed.full;requestSystem=resumed.system;unifiedStage='이전 전체 상태 결과 다시 확인 중';renderModalIfIdle();
-          result=await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:unifiedStage,subscriptionResumeOperation:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+        let requestStamp=await sha256Hex(new TextEncoder().encode(requestSystem+'\u0000'+req.prompt));
+        const taskKind=rescue?'rescue':'extract',initialOperation=unifiedStage,resumeOperation=manualResult||reapplying?'':await chatGptSubscriptionResumeOperation(providerSettings,{jobCode:subscriptionJobCode,taskKind,initialOperation});
+        const remembered=(value,stamp=requestStamp,mode='base')=>rememberAiResponse(room,subscriptionJobCode,stamp,mode,value);
+        let staged,extra=reapplying||['절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중','통합 결과 형식 보정 · 1회 재요청 중'].includes(resumeOperation),first=null,firstStage='',restage=null,kept=null,result;
+        if(reapplying){
+          const saved=lastAiResponse();
+          if(saved?.mode==='full'){const resumed=makeFullRequest();req=resumed.full;requestSystem=resumed.system;requestStamp=await sha256Hex(new TextEncoder().encode(requestSystem+'\u0000'+req.prompt));}
+          if(!saved?.text||saved.room!==String(apiChatIdOf(room)||'')||saved.jobCode!==subscriptionJobCode||saved.stamp!==requestStamp){forgetAiResponse(room);throw WLOG.tag(Error('저장된 AI 응답은 현재 방·대화·설정과 달라 다시 적용할 수 없습니다. [다시 시도]로 새 요청을 보내 주세요.'),'AI_REPLAY_STALE');}
+          unifiedStage='저장된 AI 응답 다시 적용 중';renderModalIfIdle();result={text:saved.text,diagnostic:{...(saved.diagnostic||{}),replayed:true}};
+        }else if(resumeOperation==='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중'){
+          const resumed=makeFullRequest();req=resumed.full;requestSystem=resumed.system;requestStamp=await sha256Hex(new TextEncoder().encode(requestSystem+'\u0000'+req.prompt));unifiedStage='이전 전체 상태 결과 다시 확인 중';renderModalIfIdle();
+          result=remembered(await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:unifiedStage,subscriptionResumeOperation:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})}),requestStamp,'full');
         }else{
           if(resumeOperation){unifiedStage=resumeOperation===initialOperation?'이전 완료 결과 다시 확인 중':'이전 형식 보정 결과 다시 확인 중';renderModalIfIdle();}
-          result=manualResult||await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:unifiedStage,subscriptionResumeOperation:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+          result=manualResult||remembered(await callAiProvider(providerSettings,requestSystem,req.prompt,{taskKind,responseMimeType:'application/json',operationLabel:unifiedStage,subscriptionResumeOperation:resumeOperation,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})}));
         }
         // An API answer refused for its own shape (unifiedAnswerFault) is asked for once more: the same request with the reason
         // attached. One extra call per run at most, this one or the full-state request below. A second refusal, a failed extra
@@ -8420,10 +8438,10 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
           const resumed=makeFullRequest(),full=resumed.full,fullSystem=resumed.system;
           unifiedStage='절약 변경분 검사 실패 · 전체 상태 방식으로 1회 재요청 중';renderModalIfIdle();
           await acknowledgeAiProviderResult(result);
-          const retry=await callAiProvider(providerSettings,fullSystem,full.prompt,{taskKind:rescue?'rescue':'extract',responseMimeType:'application/json',operationLabel:unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+          const fullStamp=await sha256Hex(new TextEncoder().encode(fullSystem+'\u0000'+full.prompt)),retry=remembered(await callAiProvider(providerSettings,fullSystem,full.prompt,{taskKind:rescue?'rescue':'extract',responseMimeType:'application/json',operationLabel:unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})}),fullStamp,'full');
           unifiedStage='통합 정리 응답 해석 중';renderModalIfIdle();const retryData=WLOG.parseJson(retry.text,'기억·인물 통합 정리',retry.diagnostic);
           full.holdContext={bundle:'unified',jobCreatedAt:nowIso(),segmentIndex:null,segmentCount:null};full.threadTurn=req.threadTurn;
-          unifiedStage='통합 결과 형식·참조 확인 중';renderModalIfIdle();staged=stage(room,cog,packs,p,full,retryData);if(chunked&&!rescue&&full.blankCheck!==false)refuseBlankCut(full.schema,retryData);restage=c=>stage(room,c,packs,p,full,WLOG.parseJson(retry.text,'기억·인물 통합 정리',retry.diagnostic));result=retry;
+          unifiedStage='통합 결과 형식·참조 확인 중';renderModalIfIdle();staged=stage(room,cog,packs,p,full,retryData);if(chunked&&!rescue&&full.blankCheck!==false)refuseBlankCut(full.schema,retryData);restage=c=>stage(room,c,packs,p,full,WLOG.parseJson(retry.text,'기억·인물 통합 정리',retry.diagnostic));req=full;requestSystem=fullSystem;requestStamp=fullStamp;result=retry;
         }
         // A pasted answer that would lose text (a key or row with content, text at an "이어서" seam) asks first (below); format fixes do
         // not. An API answer whose rows were left out above for a reason a refused answer is asked again for, or that carried keys the
@@ -8448,7 +8466,7 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
             console.info('[Wish] 통합 정리 응답 형식 오류 · 이유를 붙여 1회 재요청',String(error?.code||''),String(error?.message||error).slice(0,300));
             unifiedStage='통합 결과 형식 보정 · 1회 재요청 중';renderModalIfIdle();
             await acknowledgeAiProviderResult(result);
-            result=await callAiProvider(providerSettings,system,req.prompt,{taskKind:rescue?'rescue':'extract',responseMimeType:'application/json',operationLabel:unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})});
+            result=remembered(await callAiProvider(providerSettings,system,req.prompt,{taskKind:rescue?'rescue':'extract',responseMimeType:'application/json',operationLabel:unifiedStage,jobCode:subscriptionJobCode,timeoutMs:rescue?UNIFIED_RESCUE_TIMEOUT_MS:UNIFIED_TIMEOUT_MS,...(rescue?{maxOutputTokens:UNIFIED_RESCUE_OUTPUT_TOKENS}:{})}));
           }catch(e){if(kept&&e!==error&&e?.code!=='WISH_USER_ABORT'&&e?.name!=='AbortError'){console.warn('[Wish] 통합 정리 형식 보정 재요청 보류 · 첫 답을 그 줄만 빼고 적용합니다',e);({staged,restage}=kept);unifiedStage=kept.stage;break;}unifiedStage=firstStage;console.warn('[Wish] 통합 정리 형식 보정 재요청 보류 · 첫 오류로 멈춥니다',e===error?'요청 뒤 방·설정·복원 상태가 바뀜':e);throw error;}
         }
         if(manual?.mode==='import'&&staged.drops?.length){const sig=aiHashTiny(JSON.stringify(staged.drops));if(manual.confirmed!==sig){manual.confirm={drops:staged.drops,sig};return false;}}
@@ -8501,7 +8519,7 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
         unifiedStage='기억·인지·자료 저장 중';renderModalIfIdle();await saveMemoryCheckpoint(room,'unified-before-commit',null,areaLeftOut(requestOptions));
         const waitingJobs=await rebuildJobsWaiting(room,cog,packs),commitCog=await bridge().snapshotRaw(apiChatIdOf(room));
         if(epoch!==localRestoreEpoch||state.currentRoom!==room||settingsAtStart!==requestSettingsStamp()||rawSignature(room,commitCog,packs)!==signature)throw Error('저장 직전 설정·기억·인지가 바뀌어 결과를 적용하지 않았습니다.');
-        if(ExternalReplay.changed(apiChatIdOf(room),replayEpoch))return false;await atomicCommit(room,cog,packs,staged);await acknowledgeAiProviderResult(result);committed=true;if(asked&&reask.has(room.chatId)){const left=reask.get(room.chatId).filter(k=>!asked(k));if(left.length)reask.set(room.chatId,left);else reask.delete(room.chatId);}if(manual?.mode==='import')clearManualJob(room);
+        if(ExternalReplay.changed(apiChatIdOf(room),replayEpoch))return false;await atomicCommit(room,cog,packs,staged);await acknowledgeAiProviderResult(result);forgetAiResponse(room);committed=true;if(asked&&reask.has(room.chatId)){const left=reask.get(room.chatId).filter(k=>!asked(k));if(left.length)reask.set(room.chatId,left);else reask.delete(room.chatId);}if(manual?.mode==='import')clearManualJob(room);
         // The room and lore packs as committed are copied before anything else can run; the cognition record read next is used only when
         // no other write came in between (it still has the rev just committed). Otherwise the job keeps its basis (refused at apply as before).
         if(waitingJobs.length)try{const r2=copy(room),ps2=copy(writableLorePacksForRoom(room)),rev=Number((staged.cog||cog).rev)||0,c2=await bridge().snapshotRaw(apiChatIdOf(room));if((Number(c2.rev)||0)!==rev)throw Error('cognition record written again after the commit');for(const follow of waitingJobs)await follow(c2,ps2,r2);}catch(e){console.warn('[Wish] 재구축 작업 기준 갱신 보류',e);}
@@ -8600,7 +8618,7 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
   function view(room) {
     const cfg=settings(room),n=counts.get(room)||{};
     return {...cfg,memoryPending:n.memory??autoMemoryState(room).committedTurns??0,observePending:n.observe??0,
-      error:room.unified?.lastError||'',status:room.unified?.status||'',jobLabel:unifiedStage,running:active.has(room.chatId)};
+      error:room.unified?.lastError||'',reapply:canReapply(room),status:room.unified?.status||'',jobLabel:unifiedStage,running:active.has(room.chatId)};
   }
   // The pending counts of the two lanes (the turns after each cursor). 외부 AI 복붙 (owner 2026-10-16 "걍 지금 쌓인 로그랑 턴수? (AI+USER 각
   // 1개씩 = 1턴)"): in that mode the home card also shows the characters of the turns piled up since the last [함께 정리], counted over the
@@ -8637,7 +8655,7 @@ const p=plan(list,{...u,settings:settings(room)},force==='retry'||retrying?(u.fa
     return {error:cfg.enabled!==false&&room.unified?.lastError&&!Number(room.unified?.retry?.at)?String(room.unified.lastError):'',enabled:cfg.enabled!==false&&cfg.memoryEnabled!==false,committed:Number(n.memory??room.autoMemory?.committedTurns??0),
       target:Number(cfg.memoryEvery||target),running:active.has(room.chatId),jobLabel:unifiedStage};
   }
-  return {invalidate:room=>{counts.delete(room);checked.delete(room);observed.delete(room);},run,schedule,observeFrame,checking,baseline,view,monitor,pendingChars,saveSettings,turns,continuityOptions,request,stage,atomicCommit,rebuildJobsWaiting,initialize,validateShape,isolateThreads,isolateRows,normalizeAiJson,echoCheck:aiEchoCheck,resultCounts:wishResultCounts,updateCounts,rebaseAfterImport,personContract:wishApiPersonContract,areasOf,AREAS,areaRestore,areaRestored,defaultGuides:{common:WISH_COMMON_GUIDE,memory:WISH_MEMORY_GUIDE.slice(WISH_COMMON_GUIDE.length),observe:WISH_INDEX_GUIDE.slice(WISH_COMMON_GUIDE.length),speech:SPEECH_GUIDE,delta:WISH_STATE_DELTA_GUIDE},get commonGuide(){return getGuideText('apiCommon');}};
+  return {invalidate:room=>{counts.delete(room);checked.delete(room);observed.delete(room);},run,schedule,observeFrame,checking,baseline,view,monitor,pendingChars,lastAiResponseText,saveSettings,turns,continuityOptions,request,stage,atomicCommit,rebuildJobsWaiting,initialize,validateShape,isolateThreads,isolateRows,normalizeAiJson,echoCheck:aiEchoCheck,resultCounts:wishResultCounts,updateCounts,rebaseAfterImport,personContract:wishApiPersonContract,areasOf,AREAS,areaRestore,areaRestored,defaultGuides:{common:WISH_COMMON_GUIDE,memory:WISH_MEMORY_GUIDE.slice(WISH_COMMON_GUIDE.length),observe:WISH_INDEX_GUIDE.slice(WISH_COMMON_GUIDE.length),speech:SPEECH_GUIDE,delta:WISH_STATE_DELTA_GUIDE},get commonGuide(){return getGuideText('apiCommon');}};
 })();
 
 // 3.3.47 history workflow, adapted to 2.3 unified storage and speech relations.
@@ -21825,7 +21843,7 @@ function createWishUI(AD) {
  (I.error?'<section class="m3-panel m3-alert" data-key="injection-error"><b>'+(I.authWaiting?'로그인 확인 대기':'주입 확인 필요')+'</b><p style="white-space:pre-wrap;overflow-wrap:anywhere">'+esc(I.error)+'</p>'+(I.lastCheckedAt?'<p class="m3-muted">마지막 서버 저장 확인 · '+esc(new Date(I.lastCheckedAt).toLocaleString('ko-KR'))+'</p>':'')+'<div class="m3-actions m3-topgap">'+btn('저장본으로 재검증','reverify',{cls:'mini',icon:'refresh',dis:jobLock})+btn('주입 해제','release',{cls:'danger mini',icon:'close',dis:jobLock})+btn('오류 상세','errorLogs',{cls:'mini',icon:'doc'})+'</div></section>':'')+
  '<div class="m3-tiles" data-key="home-tiles">'+(V.ai.manual?manualTile():tile('log','기억 통합',m.committed,m.target,m.enabled,'unifiedMemory')+tile('cog','인물 통합',u.observePending||0,c.every,c.auto,'cogRe'))+'</div>'+
  '<p class="m3-muted" data-key="auto-pause-scope">자동 정리 시작·일시정지는 이 방의 기억·인물에 적용됩니다. 기억 주입은 주입 설정을 따릅니다.</p>'+
- (u.error?'<section class="m3-panel m3-alert" data-key="home-error"><b>작업 확인</b><p>'+esc(u.error)+'</p>'+(V.ai.manual?'<p class="m3-muted">외부 AI 복붙 모드에서는 [함께 정리]로 새 요청문을 받아 다시 진행해 주세요.</p>':'')+btn('다시 시도','unifiedRetry',{cls:'mini',dis:!!V.ai.manual})+(/연결/.test(u.error)?btn('연결 설정','api',{cls:'quiet mini',icon:'key'}):'')+btn('오류 상세','errorLogs',{cls:'mini',icon:'doc'})+'</section>':'')+
+ (u.error?'<section class="m3-panel m3-alert" data-key="home-error"><b>작업 확인</b><p>'+esc(u.error)+'</p>'+(V.ai.manual?'<p class="m3-muted">외부 AI 복붙 모드에서는 [함께 정리]로 새 요청문을 받아 다시 진행해 주세요.</p>':'')+(u.reapply?btn('다시 적용','unifiedReapply',{cls:'primary mini'})+'<button type="button" class="m3-btn quiet mini" data-act="unifiedCopyLast" aria-label="마지막 AI 응답 복사" title="마지막 AI 응답 복사">'+ic('copy')+'</button>':'')+btn('다시 시도','unifiedRetry',{cls:'mini',dis:!!V.ai.manual})+(/연결/.test(u.error)?btn('연결 설정','api',{cls:'quiet mini',icon:'key'}):'')+btn('오류 상세','errorLogs',{cls:'mini',icon:'doc'})+'</section>':'')+
  (V.reviews.length?'<section class="m3-panel" data-key="home-reviews"><b>이전 검토 '+V.reviews.length+'건</b>'+V.reviews.map(reviewPanel).join('')+'</section>':'')+
  '<section class="m3-panel" data-key="home-injection"><div class="m3-row m3-sp"><b>'+(I.verified?'확인된 주입 항목':'주입 후보 · 확인 대기')+'</b><span class="m3-muted">'+fmt(I.total)+' / '+fmt(I.max)+'자</span></div>'+injRows()+'</section>';
 }
@@ -24811,7 +24829,7 @@ Object.assign(WUI_ADAPTER.act,{
  loreApiBundle:()=>NativeBundles.open('lore'),
  nativeBundleRead:id=>NativeBundles.action(id,'read'),nativeBundleSplit:id=>NativeBundles.action(id,'split'),nativeBundleRun:id=>NativeBundles.action(id,'run'),nativeBundleApply:id=>NativeBundles.action(id,'apply'),nativeBundleStop:()=>NativeBundles.stop(),nativeBundleExport:id=>{const d=WUI.ui.dlg(id),j=d&&NativeBundles.get(d.wishRoom,d.bundle);if(j?.draft)downloadText(JSON.stringify(j.bundle==='memory'?{slots:j.draft.room.slots.filter(s=>['currentState','logSummary'].includes(s.id)),threads:j.draft.room.threads||[],...(j.timelineSeeded?{timeline:j.draft.room.timeline||[]}:{})}:j.bundle==='people'?{cognition:j.draft.cog,speech:j.draft.room.speechRelations,relationships:j.draft.room.relationships}:j.draft.packs.find(p=>p.scopeId===autoLorePackId(d.wishRoom)),null,2),'Wish-'+j.bundle+'-정리결과.json','application/json');},
  unifiedMemory:()=>U3.run(state.currentRoom,'memory'),cogRe:()=>U3.run(state.currentRoom,'observe'),
- memoryBase:()=>U3.baseline(state.currentRoom),unifiedRetry:()=>U3.run(state.currentRoom,'retry'),
+ memoryBase:()=>U3.baseline(state.currentRoom),unifiedReapply:()=>U3.run(state.currentRoom,'reapply'),unifiedCopyLast:async()=>{const text=U3.lastAiResponseText(state.currentRoom),ok=await copyPlainText(text);notify(ok?'마지막 AI 응답을 복사했습니다.':'복사할 AI 응답이 없습니다.',ok?'success':'warn',3000);},unifiedRetry:()=>U3.run(state.currentRoom,'retry'),
  // 정리 중 수정 팝업(G2)의 [수락]. 다른 모든 닫힘은 false로 끝난다.
  editRerun:id=>WUIResolve(id,true),
  // 칸별 자동 정리: why an area switch is locked, in one line (an info toast; no 실패·주의 row).
@@ -24936,7 +24954,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.3-hap-gpt';
+  const PATCH_VERSION = '0.2.4-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';

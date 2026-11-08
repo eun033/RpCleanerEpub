@@ -1,8 +1,8 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.1
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.4
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 배포 버전은 HAP-gpt 0.2.1, GPT 브리지 0.2.13이다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.4, GPT 브리지는 0.2.13이다. ZIP 설치판은 기존 요청에 따라 HAP-gpt 0.2.1을 유지한다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
@@ -10,9 +10,11 @@ Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 
 
 0.2.1은 자료 관리의 기존 2차 재구축 바로 아래에 **2차 재구축 (40% 이상 축소 목표)**를 추가한다. 목표 축소율은 40%와 50% 중 하나를 고른다. TXT를 외부 AI에 전달하고 결과 JSON을 가져오면 원문과 압축 결과를 비교해 선택 적용할 수 있다. 연표는 유지하며, 교체 직전 원본은 최근 5회 자동 보관한다.
 
+0.2.4는 통합 정리의 마지막 AI 응답 원문을 로컬에 하나 보관한다. JSON 파싱 오류가 나면 **다시 적용**으로 AI를 다시 호출하지 않고 저장된 응답만 다시 해석·검증할 수 있다. 같은 방·대화·설정에서 만든 응답일 때만 적용하며, 옆의 복사 아이콘으로 원문 전체를 복사할 수 있다. 정상 적용 후에는 보관 응답을 지운다.
+
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.1 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.4 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
