@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.2
+// @version      0.2.3
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -260,7 +260,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.2';
+  const HAP_GPT_CLIENT_VERSION = '0.2.3';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -2367,9 +2367,31 @@ const WLOG=(()=>{
   function jsonLocation(error){const m=String(error?.message||''),position=m.match(/position\s+(\d+)/i),line=m.match(/line\s+(\d+)/i),column=m.match(/column\s+(\d+)/i);return [position?'문자 위치 '+position[1]+' (0부터)':'',line?'줄 '+line[1]:'',column?'열 '+column[1]:''].filter(Boolean).join(' · ');}
   // x_retry R1 (2.0.4): one complete JSON object followed by one extra '}' (Sonnet's usual slip, also seen in Flash) is read
   // without that last '}': the parse already ended at the object's own close, so nothing is guessed. Anything else fails as before.
+  function parseJsonDropSingleMismatchedCloser(text){
+    const stack=[];let quoted=false,escaped=false;
+    for(let i=0;i<text.length;i++){
+      const c=text[i];
+      if(quoted){if(escaped)escaped=false;else if(c==='\\')escaped=true;else if(c==='"')quoted=false;continue;}
+      if(c==='"'){quoted=true;continue;}
+      if(c==='{'||c==='['){stack.push(c);continue;}
+      if(c!=='}'&&c!==']')continue;
+      const expected=c==='}'?'{':'[';
+      if(stack.at(-1)===expected){stack.pop();continue;}
+      const candidate=text.slice(0,i)+text.slice(i+1);
+      try{const value=JSON.parse(candidate);if(value&&typeof value==='object'&&!Array.isArray(value))return {value,index:i,char:c};}catch(_){}
+      return null;
+    }
+    return null;
+  }
   function parseJson(value,operation='AI 응답 해석',details={}){
     const raw=String(value??'').replace(/^\uFEFF/,'').trim(),fenced=raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i),text=fenced?fenced[1].trim():raw;
-    try{return JSON.parse(text);}catch(cause){if(text.endsWith('}'))try{const v=JSON.parse(text.slice(0,-1));if(v&&typeof v==='object'&&!Array.isArray(v)){console.info('[Wish] AI 답 끝의 남는 } 하나를 빼고 읽었습니다 · '+operation);return v;}}catch(_){}const e=new Error('AI 응답 JSON 파싱 실패 · '+(text?'JSON 형식이 잘못되었거나 응답이 잘렸습니다.':'응답 본문이 비어 있습니다.'));e.code='AI_JSON_PARSE';e.diagnostic={responseChars:raw.length,stage:'AI 응답 JSON 해석',path:jsonLocation(cause)};fail(operation,e,details);throw e;}
+    try{return JSON.parse(text);}catch(cause){
+      if(text.endsWith('}'))try{const v=JSON.parse(text.slice(0,-1));if(v&&typeof v==='object'&&!Array.isArray(v)){console.info('[Wish] AI 답 끝의 남는 } 하나를 빼고 읽었습니다 · '+operation);return v;}}catch(_){}
+      const repaired=parseJsonDropSingleMismatchedCloser(text);
+      if(repaired){console.info('[Wish] AI 답의 맞지 않는 닫힘 문자 하나를 빼고 읽었습니다 · '+operation+' · 위치 '+repaired.index);return repaired.value;}
+      const finished=/^(?:stop|end_turn|stop_sequence|completed)$/i.test(String(details?.finishReason||''));
+      const e=new Error('AI 응답 JSON 파싱 실패 · '+(text?(finished?'응답은 정상 종료됐지만 JSON 형식이 잘못되었습니다.':'JSON 형식이 잘못되었거나 응답이 잘렸습니다.'):'응답 본문이 비어 있습니다.'));e.code='AI_JSON_PARSE';e.diagnostic={...details,responseChars:raw.length,stage:'AI 응답 JSON 해석',path:jsonLocation(cause)};fail(operation,e,details);throw e;
+    }
   }
   return {tag,kindOf,once,ringOn,viewed,settle,ringMark,ringOk,crackOk,tails:WTAIL,entry:entryOf,run,show,fail,notice,inline,dialogLabel,short,describe,parseJson,jsonLocation,clean,current,view:()=>{const e=[...active.values()].at(-1);return e?{label:e.label}:null;},list:()=>rows.slice().reverse(),find:id=>rows.find(r=>r.id===id)||null,clear(){rows=[];seen=new WeakMap();GM_setValue(KEY,[]);paint();},exportText:()=>JSON.stringify({version:SCRIPT_VERSION,errors:rows.map(r=>({...r,...describe(r)}))},null,2)};
 })();
@@ -3053,7 +3075,7 @@ const WLOG=(()=>{
       if (!text) throw Object.assign(new Error('빈 응답'), { code:AI_SAFETY_RE.test(finishReason)?'AI_SAFETY':'AI_EMPTY', diagnostic:{ finishReason } });
       // 끝맺음(finishReason) 없이 끝난 스트림은 답을 끝까지 담지 못한 것입니다: 연결 실패와 같은 실패(AI_NETWORK, 재시도 대상)로 두고 아무것도 적용하지 않습니다.
       if(!finishReason)throw Object.assign(new Error('Gemini 응답이 완료되지 않아 기존 기록을 보존했습니다.'),{code:'AI_NETWORK',diagnostic:{service:'AI',method:'POST',timeoutMs:tmo}});
-      return { text, raw:result };
+      return { text, raw:result, diagnostic:{finishReason,responseChars:text.length,outputTokens:Number(WishUsage.tokens(result).output)||0} };
     } catch (e) {
       if(ctl.signal.aborted||e?.code==='WISH_USER_ABORT')throw e;
       const msg=e?.message||e,httpStatus=Number(e?.diagnostic?.httpStatus)||Number(e?.customData?.status)||Number(e?.customErrorData?.status)||0;
@@ -24914,7 +24936,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.2-hap-gpt';
+  const PATCH_VERSION = '0.2.3-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
