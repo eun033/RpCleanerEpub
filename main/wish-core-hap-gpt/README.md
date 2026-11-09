@@ -1,8 +1,10 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.5
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.4
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.5, GPT 브리지는 0.2.13이다. ZIP 설치판은 기존 요청에 따라 HAP-gpt 0.2.1을 유지한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.4, GPT 브리지는 0.2.13이다. ZIP 설치판은 기존 요청에 따라 HAP-gpt 0.2.1을 유지한다.
+
+중요 내용은 남기고 오래되어 해결된 반복 과정부터 줄이는 보강 지침은 실행판과 분리해 [복사용 Markdown](API_MEMORY_GUIDE_IMPORTANCE_COMPRESSION.md)에 보관한다. 파일 본문 전체를 그대로 복사해 사용할 수 있다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
@@ -12,11 +14,9 @@ Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 
 
 0.2.4는 통합 정리의 마지막 AI 응답 원문을 로컬에 하나 보관한다. JSON 파싱 오류가 나면 **다시 적용**으로 AI를 다시 호출하지 않고 저장된 응답만 다시 해석·검증할 수 있다. 같은 방·대화·설정에서 만든 응답일 때만 적용하며, 옆의 복사 아이콘으로 원문 전체를 복사할 수 있다. 정상 적용 후에는 보관 응답을 지운다.
 
-0.2.5는 날짜별 사건을 장면 수가 아닌 중심 사안과 확정 결과로 묶는다. 같은 갈등·목적·조사·관계 변화의 원인부터 결과까지는 날짜·장소·상대가 달라도 한 사건으로 통합하고, 독립적인 새 원인·선택·결과만 분리한다. 오래된 내용은 반복 대화·이동·해결된 중간 과정부터 줄이며, 현재 행동의 원인·관계 정의·되돌릴 수 없는 선택·지속 조건·정보격차·상징·미해결 책임은 시점과 관계없이 보존한다. 현재상태의 확인 시점을 만료일로 취급하지 않고 자료 카드도 오래됐다는 이유만으로 삭제하거나 축약하지 않는다.
-
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.5 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.4 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
