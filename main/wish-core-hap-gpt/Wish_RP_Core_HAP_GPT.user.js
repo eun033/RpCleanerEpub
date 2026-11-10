@@ -26796,60 +26796,8 @@ WUIAutoSave.install();
     } catch (error) { notify(`서버 백업 목록 실패: ${error.message}`, 'error', 7600); }
     finally { busy = false; }
   }
-  async function deleteLocalLibraries(libraryIds) {
-    const selected = new Set([...libraryIds].map(String).filter(Boolean));
-    if (!selected.size) throw new Error('삭제할 기존 자료를 선택해 주세요.');
-    const db = await openWishDatabase();
-    try {
-      const existing = await readAllStores(db);
-      const references = room => [...(Array.isArray(room?.activeLorePackIds) ? room.activeLorePackIds : []), room?.autoCharacterLibraryId, room?.lastExtraLibraryId].filter(Boolean).map(String);
-      const pendingRooms = existing.rooms.filter(room => room?.pending);
-      const blocked = existing.characterLibraries.filter(library => {
-        const id = String(library?.scopeId || '');
-        if (!selected.has(id)) return false;
-        const owner = libraryOwnerRoom(library, pendingRooms);
-        return !!owner || pendingRooms.some(room => references(room).includes(id));
-      });
-      if (blocked.length) {
-        const names = blocked.slice(0, 3).map(item => item?.name || item?.title || item?.scopeId).join(', ');
-        throw new Error(`활성 주입에 연결된 자료는 삭제할 수 없습니다: ${names}${blocked.length > 3 ? ` 외 ${blocked.length - 3}개` : ''}`);
-      }
-      const existingIds = new Set(existing.characterLibraries.map(item => String(item?.scopeId || '')).filter(id => selected.has(id)));
-      if (!existingIds.size) throw new Error('선택한 기존 자료를 찾지 못했습니다.');
-      await new Promise((resolve, reject) => {
-        const tx = db.transaction(['rooms', 'characterLibraries'], 'readwrite');
-        try {
-          const libraryStore = tx.objectStore('characterLibraries');
-          for (const id of existingIds) libraryStore.delete(id);
-          const roomStore = tx.objectStore('rooms');
-          for (const room of existing.rooms) {
-            const active = Array.isArray(room?.activeLorePackIds) ? room.activeLorePackIds.map(String) : [];
-            const nextActive = active.filter(id => !existingIds.has(id));
-            const clearAuto = existingIds.has(String(room?.autoCharacterLibraryId || ''));
-            const clearExtra = existingIds.has(String(room?.lastExtraLibraryId || ''));
-            if (nextActive.length === active.length && !clearAuto && !clearExtra) continue;
-            const next = clone(room);
-            next.activeLorePackIds = nextActive;
-            if (clearAuto) delete next.autoCharacterLibraryId;
-            if (clearExtra) delete next.lastExtraLibraryId;
-            next._epoch = crypto.randomUUID ? crypto.randomUUID() : `delete-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            next._rev = Number(room?._rev || 0) + 1;
-            roomStore.put(next);
-          }
-        } catch (error) {
-          try { tx.abort(); } catch (_) {}
-          reject(error);
-          return;
-        }
-        tx.oncomplete = resolve;
-        tx.onerror = tx.onabort = () => reject(tx.error || new Error('기존 자료 삭제 트랜잭션에 실패했습니다.'));
-      });
-      return existingIds.size;
-    } finally { db.close(); }
-  }
   let coreImportPending = false, activeCoreImportBackup = null;
   const coreImportBackups = new WeakMap();
-  const coreCleanupNodes = new WeakMap();
   const nativeRestoreDialog = () => document.querySelector('#wish-rp-root .m3-dialog:not(.m3-leaving) [data-act="bkApply"]')?.closest('.m3-dialog');
   const nativeBackupRoomDialog = () => document.querySelector('#wish-rp-root .m3-dialog:not(.m3-leaving) [data-act="kvRoomAccept"]')?.closest('.m3-dialog');
 
@@ -26872,7 +26820,6 @@ WUIAutoSave.install();
     function decorateCoreBackupDialog(dialog) {
     if (!dialog.querySelector('[data-act="kvRoomAccept"],[data-act="bkApply"]')) return;
     if (!dialog.classList.contains('wish-fbp-core-selection')) dialog.classList.add('wish-fbp-core-selection');
-    if (dialog.querySelector('[data-act="bkApply"]')) attachCoreLibraryCleanup(dialog);
     const backup = coreImportBackups.get(dialog) || activeCoreImportBackup;
     if (backup && !coreImportBackups.has(dialog)) coreImportBackups.set(dialog, backup);
     const rows = [...dialog.querySelectorAll('label[data-key^="bi-"]')];
@@ -26906,129 +26853,8 @@ WUIAutoSave.install();
     }
   }
 
-  function attachCoreLibraryCleanup(dialog) {
-    const body = dialog.querySelector('.m3-dialog-body');
-    if (!body) return;
-    const prior = coreCleanupNodes.get(dialog);
-    if (prior) { if (!prior.isConnected) body.appendChild(prior); return; }
-    const details = document.createElement('details');
-    details.className = 'wish-fbp-local-cleanup';
-    details.setAttribute('data-fx-node', '');
-    details.innerHTML = '<summary>현재 기기에 있는 기존 자료 삭제</summary><p>복원할 백업과 별도로 로컬 자료집을 정리합니다. 삭제 후 새로고침되므로 복원할 백업은 다시 열어 주세요.</p><div data-local-library-list>펼치면 기존 자료를 확인합니다.</div><div class="wish-fbp-local-actions"><button type="button" data-delete-local-libraries disabled>선택한 기존 자료 삭제</button></div>';
-    coreCleanupNodes.set(dialog, details);
-    body.appendChild(details);
-    let loading = false, loaded = false, deleting = false, restoreRequested = false;
-    const button = details.querySelector('[data-delete-local-libraries]');
-    const list = details.querySelector('[data-local-library-list]');
-    const selected = () => [...list.querySelectorAll('input:checked:not(:disabled)')].map(input => input.value);
-    dialog.addEventListener('click', event => {
-      if (deleting && event.target.closest('[data-act]')) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-      if (event.target.closest('[data-act="bkApply"]:not(:disabled)')) { restoreRequested = true; button.disabled = true; }
-    }, true);
-    details.addEventListener('change', () => { button.disabled = deleting || restoreRequested || !selected().length; });
-    details.addEventListener('toggle', async () => {
-      if (!details.open || loading || loaded || restoreRequested) return;
-      loading = true;
-      let db;
-      try {
-        db = await openWishDatabase();
-        const existing = await readAllStores(db);
-        const pending = existing.rooms.filter(room => room.pending);
-        list.innerHTML = existing.characterLibraries.map(item => {
-          const id = String(item.scopeId || '');
-          const blocked = !!libraryOwnerRoom(item, pending) || pending.some(room =>
-            [...(room.activeLorePackIds || []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id));
-          return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" value="${esc(id)}" ${blocked?'disabled':''}><span><b>${esc(item.name || item.title || id)}</b><small>${esc(libraryOwnerLabel(item, existing.rooms))}${blocked?' · 활성 주입에 연결되어 삭제할 수 없음':''}</small></span></label>`;
-        }).join('') || '<p>삭제할 기존 자료가 없습니다.</p>';
-        loaded = true;
-      } catch (error) { list.textContent = `기존 자료 확인 실패: ${error.message}`; }
-      finally { db?.close(); loading = false; }
-    });
-    button.onclick = async event => {
-      event.preventDefault(); event.stopPropagation();
-      const ids = selected();
-      if (restoreRequested || deleting || !ids.length || !confirm(`선택한 기존 로컬 자료 ${ids.length}개를 삭제할까요?\n서버 백업은 유지됩니다. 삭제 후 새로고침되며 복원할 백업은 다시 열어야 합니다.`)) return;
-      deleting = true;
-      button.disabled = true;
-      try {
-        const count = await deleteLocalLibraries(new Set(ids));
-        sessionStorage.setItem(RESTORE_NOTICE_KEY, `기존 로컬 자료 ${count}개를 삭제했습니다.`);
-        location.reload();
-      } catch (error) {
-        notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000);
-        deleting = false;
-        button.disabled = !selected().length;
-      }
-    };
-  }
-
   async function openRestoreSelection(backup, expectedRoute = patchRouteKey()) {
-    assertPatchRoute(expectedRoute);
-    // Native keeps Core 2.0.5's validator, locking and commit path. Embedded is
-    // an explicit faster alternative and never silently replaces the native path.
-    if (BACKUP_ENGINE === 'native') return openCoreRestoreSelection(backup, expectedRoute);
-    const db = await openWishDatabase();
-    let existing;
-    try { existing = await readAllStores(db); }
-    finally { db.close(); }
-    const pendingIds = new Set(existing.rooms.filter(room => room?.pending).map(room => String(room.chatId)));
-    const currentApi = String(location.pathname.match(/\/(?:chats|c|episodes)\/([^/?#]+)/)?.[1] || '');
-    const rooms = backup.rooms.filter(room => room?.chatId);
-    const libraries = backup.characterLibraries.filter(item => item?.scopeId);
-    const localLibraries = existing.characterLibraries.filter(item => item?.scopeId);
-    const localBlockedIds = new Set(localLibraries.filter(item => {
-      const owner = libraryOwnerRoom(item, existing.rooms);
-      const id = String(item.scopeId);
-      return !!owner?.pending || existing.rooms.some(room => room?.pending && [...(Array.isArray(room.activeLorePackIds) ? room.activeLorePackIds : []), room.autoCharacterLibraryId, room.lastExtraLibraryId].filter(Boolean).map(String).includes(id));
-    }).map(item => String(item.scopeId)));
-    const modal = createModal('서버 백업 선택 복원', '선택한 Wish 로컬 데이터만 교체하고 완료 즉시 페이지를 새로고침합니다.');
-    modal.body.innerHTML = `<div class="wish-fbp-toolbar"><button type="button" data-pick-current>현재 방만</button><button type="button" data-pick-all>전체 선택</button><button type="button" data-pick-none>선택 해제</button><span data-pick-count>0개 선택</span></div><h3>RP 채팅방 · ${rooms.length}개</h3>${rooms.map(room => { const id=String(room.chatId), blocked=pendingIds.has(id), current=apiChatIdOf(room)===currentApi; return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" data-room-id="${esc(id)}" ${blocked?'disabled':''}><span><b>${current?'● ':''}${esc(roomDisplayName(room))}</b><small>${blocked?'현재 활성 주입 때문에 복원 제외':`기억 슬롯 ${Array.isArray(room.slots)?room.slots.length:0}개`}</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">백업에 채팅방 데이터가 없습니다.</div>'}<h3>자료집 · ${libraries.length}개</h3>${libraries.map(item => { const owner=libraryOwnerLabel(item, rooms); return `<label class="wish-fbp-row"><input type="checkbox" data-library-id="${esc(item.scopeId)}"><span><b>${esc(item.name || item.title || item.scopeId)}${owner?` <em class="wish-fbp-owner">· ${esc(owner)}</em>`:''}</b><small>${Array.isArray(item.entries)?item.entries.length:Array.isArray(item.characters)?item.characters.length:0}개 항목</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">백업에 자료집 데이터가 없습니다.</div>'}<h3>공용 설정</h3><label class="wish-fbp-row"><input type="checkbox" data-global-settings><span><b>공용 지침 · 기본 프리셋 · 인지 설정</b><small>원본 파일 백업과 같은 전역 설정 묶음</small></span></label><div class="wish-fbp-note">활성 주입 중인 방은 선택할 수 없습니다. API 키와 패치 로그인 정보는 백업에 포함되지 않습니다.</div><details class="wish-fbp-local-cleanup"><summary>현재 기기에 있는 기존 자료 삭제 · ${localLibraries.length}개</summary><p>복원 전에 필요 없는 로컬 자료집만 별도로 삭제합니다. 서버의 백업 파일은 삭제되지 않습니다.</p><div data-local-library-list>${localLibraries.map(item => { const id=String(item.scopeId), blocked=localBlockedIds.has(id), owner=libraryOwnerLabel(item, existing.rooms); return `<label class="wish-fbp-row ${blocked?'blocked':''}"><input type="checkbox" data-delete-library-id="${esc(id)}" ${blocked?'disabled':''}><span><b>${esc(item.name || item.title || id)}${owner?` <em class="wish-fbp-owner">· ${esc(owner)}</em>`:''}</b><small>${blocked?'활성 주입에 연결되어 삭제할 수 없음':`${Array.isArray(item.entries)?item.entries.length:Array.isArray(item.characters)?item.characters.length:0}개 항목`}</small></span></label>`; }).join('') || '<div class="wish-fbp-empty">삭제할 기존 자료가 없습니다.</div>'}</div><div class="wish-fbp-local-actions"><span data-delete-count>0개 선택</span><button type="button" class="danger" data-delete-local-libraries disabled>선택한 기존 자료 삭제</button></div></details>`;
-    modal.footer.innerHTML = '<span></span><button type="button" data-fbp-cancel>취소</button><button type="button" class="primary" data-fbp-restore disabled>선택 항목 복원</button>';
-    const boxes = () => [...modal.body.querySelectorAll('[data-room-id]:not(:disabled),[data-library-id]:not(:disabled),[data-global-settings]:not(:disabled)')];
-    const deleteBoxes = () => [...modal.body.querySelectorAll('[data-delete-library-id]:not(:disabled)')];
-    const update = () => {
-      const count = boxes().filter(box => box.checked).length;
-      modal.body.querySelector('[data-pick-count]').textContent = `${count}개 선택`;
-      modal.footer.querySelector('[data-fbp-restore]').disabled = count === 0;
-    };
-    modal.body.querySelector('[data-pick-current]').onclick = () => { boxes().forEach(box => { box.checked = !!box.dataset.roomId && apiChatIdOf(rooms.find(room => String(room.chatId) === box.dataset.roomId)) === currentApi; }); update(); };
-    modal.body.querySelector('[data-pick-all]').onclick = () => { boxes().forEach(box => { box.checked = true; }); update(); };
-    modal.body.querySelector('[data-pick-none]').onclick = () => { boxes().forEach(box => { box.checked = false; }); update(); };
-    boxes().forEach(box => box.onchange = update);
-    const updateDelete = () => {
-      const count = deleteBoxes().filter(box => box.checked).length;
-      modal.body.querySelector('[data-delete-count]').textContent = `${count}개 선택`;
-      modal.body.querySelector('[data-delete-local-libraries]').disabled = count === 0;
-    };
-    deleteBoxes().forEach(box => box.onchange = updateDelete);
-    modal.body.querySelector('[data-delete-local-libraries]').onclick = async event => {
-      const button = event.currentTarget;
-      const ids = new Set(deleteBoxes().filter(box => box.checked).map(box => box.dataset.deleteLibraryId));
-      const labels = localLibraries.filter(item => ids.has(String(item.scopeId))).slice(0, 4).map(item => item.name || item.title || item.scopeId).join('\n• ');
-      if (!ids.size || !confirm(`선택한 기존 자료 ${ids.size}개를 이 기기에서 삭제할까요?\n\n• ${labels}${ids.size > 4 ? `\n• 외 ${ids.size - 4}개` : ''}\n\n서버 백업은 삭제되지 않으며, 이 작업 후 페이지가 새로고침됩니다.`)) return;
-      button.disabled = true;
-      try {
-        const count = await deleteLocalLibraries(ids);
-        sessionStorage.setItem(RESTORE_NOTICE_KEY, `기존 로컬 자료 ${count}개를 삭제했습니다.`);
-        location.reload();
-      } catch (error) { notify(`기존 자료 삭제 실패: ${error.message}`, 'error', 8000); button.disabled = false; }
-    };
-    modal.footer.querySelector('[data-fbp-cancel]').onclick = modal.close;
-    modal.footer.querySelector('[data-fbp-restore]').onclick = async event => {
-      const button = event.currentTarget;
-      const roomIds = new Set(boxes().filter(box => box.checked && box.dataset.roomId).map(box => box.dataset.roomId));
-      const libraryIds = new Set(boxes().filter(box => box.checked && box.dataset.libraryId).map(box => box.dataset.libraryId));
-      const restoreSettings = !!modal.body.querySelector('[data-global-settings]')?.checked;
-      if (!confirm(`선택한 서버 백업을 복원할까요?\n\n방 ${roomIds.size}개 · 직접 선택 자료집 ${libraryIds.size}개 · 공용 설정 ${restoreSettings?'포함':'제외'}\n기존 Wish 로컬 데이터가 교체되고 페이지가 바로 새로고침됩니다.`)) return;
-      button.disabled = true;
-      try {
-        const result = await restoreCoreBackup(backup, roomIds, libraryIds, restoreSettings);
-        sessionStorage.setItem(RESTORE_NOTICE_KEY, `서버 백업 복원 완료 · 방 ${result.rooms}개 · 자료집 ${result.libraries}개 · 인지 ${result.cognition}개${result.settings?' · 공용 설정 포함':''}`);
-        location.reload();
-      } catch (error) { notify(`서버 백업 복원 실패: ${error.message}`, 'error', 8000); button.disabled = false; }
-    };
-    update();
-    updateDelete();
+    return openCoreRestoreSelection(backup, expectedRoute);
   }
 
   function readSectionSettings(section) {

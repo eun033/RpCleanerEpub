@@ -14,6 +14,8 @@ Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 
 
 0.2.4는 통합 정리의 마지막 AI 응답 원문을 로컬에 하나 보관한다. JSON 파싱 오류가 나면 **다시 적용**으로 AI를 다시 호출하지 않고 저장된 응답만 다시 해석·검증할 수 있다. 같은 방·대화·설정에서 만든 응답일 때만 적용하며, 옆의 복사 아이콘으로 원문 전체를 복사할 수 있다. 정상 적용 후에는 보관 응답을 지운다.
 
+Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 자료 삭제 영역을 제거했다. 로컬 자료 정리는 `자료 관리 → 백업 · 복원 → 로컬 데이터 정리`에서 계속 사용할 수 있다.
+
 ## 1. HAP-gpt 설치
 
 [HAP-gpt 0.2.4 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
