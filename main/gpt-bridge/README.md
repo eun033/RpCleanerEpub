@@ -1,6 +1,6 @@
-# GPT 브리지 0.2.14
+# GPT 브리지 0.2.15
 
-기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. 기본 설치 경로는 Android Termux이며 Windows Git 실행용 PowerShell 감독기도 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
+기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. Android Termux, Windows Git 실행용 PowerShell 감독기와 iOS iSH 설치기를 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
 
 개발 작업은 [CODEX_HANDOFF.md](CODEX_HANDOFF.md), 비공개·공개 배포 준비는 [DEPLOYMENT.md](DEPLOYMENT.md)를 먼저 읽는다. 새 공개 ZIP은 HAP-gpt를 포함하지 않는 브리지 단독 묶음으로 준비한다.
 
@@ -17,6 +17,24 @@ bash install-termux.sh
 ```
 
 Node.js 22 이상이 필요하고 별도 npm 패키지는 설치하지 않는다. 설치본은 `~/local-gpt-subscription-bridge`, OAuth 인증과 작업 기록은 권한이 제한된 `~/.local-gpt-subscription-bridge`에 저장된다.
+
+## iOS iSH 처음 설치
+
+iSH의 Alpine 셸에서 신규 단독 공개 ZIP을 받아 설치한다. 기존 HAP-gpt 합본 주소는 이전 설치의 마이그레이션 전용이며 iSH 설치 파일을 포함하지 않는다.
+
+```sh
+apk update
+apk add curl unzip
+cd /root
+curl -fL -o GPT_Bridge.zip https://raw.githubusercontent.com/eun033/RpCleanerEpub/main/main/gpt-bridge/GPT_Bridge.zip
+unzip -o GPT_Bridge.zip
+cd gpt-bridge
+sh install-ish.sh
+```
+
+설치기는 기존 저장소 설정을 `/root/repositories.gpt-bridge.bak`에 보관하고 Alpine 3.22로 갱신한 뒤 Node.js 22, 컴파일 도구, ZIP·Git 도구를 설치한다. 이어 iSH에서 Node.js가 호출하는 미지원 syscall을 안전하게 처리하는 로컬 shim을 빌드한다. iSH에서 필요한 `node-fetch` 2.7.0과 세 의존성만 고정된 SHA-256으로 확인해 설치하며 Android·Windows 실행에는 추가하지 않는다.
+
+이후 실행은 `sh ~/local-gpt-subscription-bridge/start-ish.sh`를 사용한다. 이 실행법은 감독기를 거치므로 관리 화면의 **↻ 서버**와 **ZIP 업데이트**가 동작한다. 업데이트 중에도 iSH shim과 fetch 호환 계층을 유지한다. iOS가 iSH를 백그라운드에서 중단하면 서버도 멈출 수 있으므로 iSH를 다시 열어 위 명령으로 시작한다.
 
 ## Windows Git 실행
 
@@ -38,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File .\start-windows.ps1
 3. **사용 가능한 모델 확인**을 눌러 계정별 목록을 확인한다.
 4. **확장 프로그램용 연결 주소 복사**를 눌러 HAP-gpt 설정에 붙여 넣는다.
 
-관리 화면은 각진 카드와 버튼을 사용하며 기기의 다크·라이트 모드를 따른다. 활성 항목에 점과 아래선을 표시하는 `서버`·`최근 작업`·`설정` 탭으로 나뉜다. 연결 코드가 없거나 연결 확인에 실패하면 설정 탭을 열고, 정상 연결되면 서버 탭을 연다. 서버 탭에는 서버 관리와 호출량, 설정 탭에는 로컬 연결·ChatGPT 구독·호출량 설정이 있다. 페이지 상단의 `v0.2.14`처럼 표시되는 값은 현재 실행 중인 브리지 버전이다. 옅게 번지는 녹색 신호는 로컬 서버가 정상 응답 중이라는 뜻이다. 서버 관리 제목 오른쪽 **↻ 서버**는 파일을 받지 않고 서버만 재시작한다. 최근 작업 탭의 큰 ↻ 버튼은 상태만 다시 읽으며 AI 요청을 만들지 않는다.
+관리 화면은 각진 카드와 버튼을 사용하며 기기의 다크·라이트 모드를 따른다. 활성 항목에 점과 아래선을 표시하는 `서버`·`최근 작업`·`설정` 탭으로 나뉜다. 연결 코드가 없거나 연결 확인에 실패하면 설정 탭을 열고, 정상 연결되면 서버 탭을 연다. 서버 탭에는 서버 관리와 호출량, 설정 탭에는 로컬 연결·ChatGPT 구독·호출량 설정이 있다. 페이지 상단의 `v0.2.15`처럼 표시되는 값은 현재 실행 중인 브리지 버전이다. 옅게 번지는 녹색 신호는 로컬 서버가 정상 응답 중이라는 뜻이다. 서버 관리 제목 오른쪽 **↻ 서버**는 파일을 받지 않고 서버만 재시작한다. 최근 작업 탭의 큰 ↻ 버튼은 상태만 다시 읽으며 AI 요청을 만들지 않는다.
 
 0.2.7부터 최근 작업의 접힌 항목을 54px 한 줄 목록으로 표시해 한 화면에서 더 많은 작업을 확인할 수 있다. 요청한 확프가 선택적으로 보낸 로컬 표시용 `client` 정보가 있으면 `방 이름 · 작업명`과 확프 이름을 표시한다. HAP-gpt 0.1.4가 이 정보를 보낸다. 구버전과 다른 확프처럼 정보가 없는 요청은 종전처럼 모델명만 표시한다. 표시 정보는 작업 JSON에만 저장하고 OpenAI Responses 요청 본문에는 전달하지 않는다.
 
@@ -96,7 +114,9 @@ Android 배터리 최적화가 Termux를 종료하면 자동 정리가 중단될
 
 ## 업데이트
 
-0.2.14는 페이지 상단에 현재 실행 버전을 표시하고, 저장된 완료 응답의 입력·출력·총 토큰을 합산한다. 단독 공개 배포의 `main/gpt-bridge/version.json`과 고정 파일명 `GPT_Bridge.zip`을 읽어 현재 버전과 비교한다.
+0.2.15는 공개 이전 주소의 고정 HAP-gpt ZIP에 호환 업데이트를 한 번 제공한다. 기존 주소로 설치한 사용자는 관리 화면에서 평소처럼 업데이트하면 0.2.15를 받은 뒤 이후부터 신규 단독 공개 경로를 자동 확인한다. 주소 변경이나 계정·pair·작업 자료 이동은 필요 없다. 신규 `main/gpt-bridge`에만 iSH 설치·실행 파일을 제공하며 iSH 감독 실행에서도 관리 화면 재시작과 ZIP 업데이트가 유지된다.
+
+0.2.14는 페이지 상단에 현재 실행 버전을 표시하고, 저장된 완료 응답의 입력·출력·총 토큰을 합산한다. 단독 공개 배포의 `main/gpt-bridge/version.json`과 고정 파일명 `GPT_Bridge.zip`을 읽어 현재 버전과 비교한다. 새 공개 경로가 아직 배치되지 않은 설치에서는 기존 HAP-gpt 합본 ZIP 경로를 폴백으로 확인한다.
 
 0.2.13은 관리 페이지를 열 때 현재 설치 방식의 업데이트를 자동 확인한다. 새 버전이 있으면 `GPT 브리지` 제목 옆에 `업데이트 가능` 칩을 표시하며, 최신 상태이거나 확인에 실패하면 칩을 숨긴다.
 

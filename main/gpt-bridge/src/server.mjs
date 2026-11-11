@@ -30,7 +30,7 @@ export function compareVersions(a,b){const left=String(a).split('.').map(Number)
 export function selectZipRelease(entries,name='GPT_Bridge.zip'){return entries.find(entry=>entry?.name===name&&String(entry.download_url||'').startsWith('https://raw.githubusercontent.com/eun033/RpCleanerEpub/')&&String(entry.git_url||'').startsWith('https://api.github.com/repos/eun033/RpCleanerEpub/git/blobs/'))||null;}
 export function zipSourcePrefix(entries){
   if(!entries.length||entries.some(entry=>entry.includes('\\')||entry.split('/').includes('..')))return '';
-  for(const prefix of ['gpt-bridge/','wish-core-hap-gpt/termux-bridge/'])if(entries.every(entry=>entry.startsWith(prefix))&&['package.json','update-termux.sh','src/start.mjs','src/server.mjs'].every(file=>entries.includes(prefix+file)))return prefix;
+  for(const [root,prefix] of [['gpt-bridge/','gpt-bridge/'],['wish-core-hap-gpt/','wish-core-hap-gpt/termux-bridge/']])if(entries.every(entry=>entry.startsWith(root))&&['package.json','update-termux.sh','src/start.mjs','src/server.mjs'].every(file=>entries.includes(prefix+file)))return prefix;
   return '';
 }
 export function validZipEntries(entries){return !!zipSourcePrefix(entries);}
@@ -47,7 +47,7 @@ export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   }
   throw new BridgeError('UPDATE_CHECK','공개 ZIP 버전을 확인하지 못했습니다.',502);
 }
-const BRIDGE_FILES=['package.json','version.json','src','start-windows.ps1','start.sh','update-termux.sh','install-termux.sh','LICENSE','README.md','VALIDATION.md','examples'];
+const BRIDGE_FILES=['package.json','version.json','src','start-windows.ps1','start.sh','start-ish.sh','update-termux.sh','install-termux.sh','install-ish.sh','ish','LICENSE','README.md','VALIDATION.md','examples'];
 async function copyBridgeFiles(source,target){await fs.mkdir(target,{recursive:true});for(const file of BRIDGE_FILES){const from=path.join(source,file);if(await fs.stat(from).then(()=>true,()=>false))await fs.cp(from,path.join(target,file),{recursive:true,force:true});}}
 async function powershellCommand(exists,platform){if(platform!=='win32')return '';for(const name of ['powershell.exe','pwsh.exe','pwsh'])if(await exists(name,platform))return name;return '';}
 export async function applyPublicZipUpdate(fetchImpl,state,{platform=process.platform,runtimeSource='',commandImpl=command,commandExistsImpl=commandExists}={}){

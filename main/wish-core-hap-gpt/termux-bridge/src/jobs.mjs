@@ -89,7 +89,16 @@ export class JobBridge {
   save(job){return writeJSON(path.join(this.dir,'jobs',sha(job.request_id)+'.json'),job);}
   publicJob(job){const {body,fingerprint,...publicFields}=job;return publicFields;}
   counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
-  status(){return {version:'0.2.13',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  tokenUsage(){
+    let input_tokens=0,output_tokens=0,recorded_jobs=0,unreported_calls=0;
+    for(const job of this.jobs.values()){
+      const input=Number(job.usage?.input_tokens),output=Number(job.usage?.output_tokens);
+      if(!Number.isFinite(input)||input<0||!Number.isFinite(output)||output<0){if(Number.isFinite(job.started_at))unreported_calls++;continue;}
+      input_tokens+=input;output_tokens+=output;recorded_jobs++;
+    }
+    return {input_tokens,output_tokens,total_tokens:input_tokens+output_tokens,recorded_jobs,unreported_calls};
+  }
+  status(){return {version:'0.2.15',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};

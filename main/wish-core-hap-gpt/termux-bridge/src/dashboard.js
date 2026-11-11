@@ -29,6 +29,11 @@ function updateMeter(prefix,used,limit){
   el(prefix+'Text').textContent=used+' / '+safeLimit+'회';el(prefix+'Remain').textContent=remaining+'% 남음';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.title='사용 '+used+'회 · 남은 로컬 한도 '+Math.max(0,safeLimit-used)+'회';
   requestAnimationFrame(()=>{meter.querySelector('.meter-fill').style.width=percent+'%';meter.querySelector('.meter-dot').style.left=percent+'%';});
 }
+function updateTokens(tokens={}){
+  for(const [id,key] of [['tokenInput','input_tokens'],['tokenOutput','output_tokens'],['tokenTotal','total_tokens']])el(id).textContent=(Number(tokens[key])||0).toLocaleString('ko-KR');
+  const recorded=Number(tokens.recorded_jobs)||0,missing=Number(tokens.unreported_calls)||0;
+  el('tokenNote').textContent='완료 응답 '+recorded.toLocaleString('ko-KR')+'건에 기록된 합계'+(missing?' · 사용량 미확인 '+missing.toLocaleString('ko-KR')+'회 제외':'')+'입니다.';
+}
 function statusLabel(value){return ({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
 function renderAccount(){
   const connected=!!state?.connected,models=modelCache.models;
@@ -64,8 +69,9 @@ function renderJobs(){
 }
 function render(){
   for(const key of ['max_chars','max_calls_5h','max_calls_7d'])el(key).value=state.settings[key];
+  el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy;
-  renderAccount();renderUpdate();serverState(state.settings.paused?'서버 정상 · 요청 일시정지':'서버 정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);renderJobs();
+  renderAccount();renderUpdate();serverState(state.settings.paused?'서버 정상 · 요청 일시정지':'서버 정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
 }
 function saveRefreshTime(){const now=Date.now();storage.set(localStorage,LAST_REFRESH,String(now));el('lastRefresh').textContent='마지막 갱신 '+formatTime(now);}
 async function refresh(announce=true){state=await api('/api/status');render();saveRefreshTime();if(announce)message('서버 상태와 브리지 호출량을 갱신했습니다.');return state;}
