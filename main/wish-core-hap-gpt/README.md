@@ -1,14 +1,14 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.4
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.5
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.4다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.5다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
 
 중요 내용은 남기고 오래되어 해결된 반복 과정부터 줄이는 보강 지침은 실행판과 분리해 [복사용 Markdown](API_MEMORY_GUIDE_IMPORTANCE_COMPRESSION.md)에 보관한다. 파일 본문 전체를 그대로 복사해 사용할 수 있다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
-2026-11-11 공식 출시된 `gemini-4-carbon`을 AI Studio·Firebase·Vertex 모델 선택에 추가했다. Firebase·Vertex에서는 지원 위치인 `global`로 호출하며, 공식 종료일은 아직 발표되지 않았다.
+0.2.5는 2026-11-11 공식 출시된 `gemini-4-carbon`을 AI Studio·Firebase·Vertex 모델 선택에 추가했다. Firebase·Vertex에서는 지원 위치인 `global`로 호출하며, 공식 종료일은 아직 발표되지 않았다.
 
 0.2.0부터 다른 방 자료 복사에서 연표 카드를 선택해 새 방의 수동 보호 사본으로 가져올 수 있다. 같은 내용의 기존 카드는 중복 복사하지 않는다. ChatGPT 구독 통합 정리는 240초 뒤에도 같은 요청 번호를 30초 간격으로 두 번 더 확인해 약 5분까지 기다리며, 확인 중에는 새 요청을 보내지 않는다.
 
@@ -20,7 +20,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.4 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.5 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
