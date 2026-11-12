@@ -87,33 +87,18 @@ export class JobBridge {
     return this;
   }
   save(job){return writeJSON(path.join(this.dir,'jobs',sha(job.request_id)+'.json'),job);}
-  async countInputTokens(value){
-    check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>['model','instructions','input'].includes(key)),'TOKEN_COUNT_FIELDS','토큰 계산에는 model, instructions, input만 사용할 수 있습니다.');
-    const {body,chars}=normalizePayload({request_id:'token-count-preview',...value});
-    check(chars<=this.settings.max_chars,'LOCAL_SIZE','설정한 요청 크기를 넘었습니다.',413);
-    const token=await this.auth.access();
-    let response;
-    try{response=await this.auth.fetch(API+'/responses/input_tokens',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({model:body.model,instructions:body.instructions,input:body.input}),signal:AbortSignal.timeout(30000)});}
-    catch{throw new BridgeError('TOKEN_COUNT_CONNECTION','토큰 계산 서버에 연결하지 못했습니다. 잠시 후 다시 계산하세요.',502);}
-    if([401,403].includes(response.status))throw new BridgeError('TOKEN_COUNT_UNAVAILABLE','현재 ChatGPT 구독 인증으로 입력 토큰 계산 API를 사용할 수 없습니다. 완료 응답의 실제 토큰 사용량은 계속 집계됩니다.',409);
-    check(response.ok,'TOKEN_COUNT_FAILED','입력 토큰 계산이 거절됐습니다 ('+response.status+'). 모델과 입력을 확인하세요.',502);
-    const raw=await response.text();check(raw.length<=10000,'TOKEN_COUNT_FORMAT','토큰 계산 응답을 확인하지 못했습니다.',502);
-    let data;try{data=JSON.parse(raw);}catch{throw new BridgeError('TOKEN_COUNT_FORMAT','토큰 계산 응답을 읽지 못했습니다.',502);}
-    check(data?.object==='response.input_tokens'&&Number.isSafeInteger(data.input_tokens)&&data.input_tokens>=0,'TOKEN_COUNT_FORMAT','유효한 입력 토큰 수를 받지 못했습니다.',502);
-    return {object:data.object,input_tokens:data.input_tokens,model:body.model};
-  }
   publicJob(job){const {body,fingerprint,...publicFields}=job;return publicFields;}
   counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
   tokenUsage(){
     let input_tokens=0,output_tokens=0,recorded_jobs=0,unreported_calls=0;
     for(const job of this.jobs.values()){
-      const input=Number(job.usage?.input_tokens),output=Number(job.usage?.output_tokens);
-      if(!Number.isFinite(input)||input<0||!Number.isFinite(output)||output<0){if(Number.isFinite(job.started_at))unreported_calls++;continue;}
+      const input=job.usage?.input_tokens,output=job.usage?.output_tokens;
+      if(!Number.isSafeInteger(input)||input<0||!Number.isSafeInteger(output)||output<0){if(Number.isFinite(job.started_at))unreported_calls++;continue;}
       input_tokens+=input;output_tokens+=output;recorded_jobs++;
     }
     return {input_tokens,output_tokens,total_tokens:input_tokens+output_tokens,recorded_jobs,unreported_calls};
   }
-  status(){return {version:'0.2.16',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  status(){return {version:'0.2.17',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};

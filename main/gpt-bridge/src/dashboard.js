@@ -4,7 +4,7 @@ const PAIR_SESSION='gpt-bridge-pair-session-v1',PAIR_LOCAL='gpt-bridge-pair-loca
 const storage={get:(area,key)=>{try{return area.getItem(key)||'';}catch{return '';}},set:(area,key,value)=>{try{value?area.setItem(key,value):area.removeItem(key);}catch{}}};
 const fragmentPair=new URLSearchParams(location.hash.slice(1)).get('pair')||'',savedPair=storage.get(localStorage,PAIR_LOCAL);
 function readModelCache(){try{const value=JSON.parse(storage.get(localStorage,MODEL_CACHE)||'null');return value&&Array.isArray(value.models)?{models:value.models.filter(model=>model&&model.slug),at:Number(value.at)||0}:{models:[],at:0};}catch{return {models:[],at:0};}}
-let pair=fragmentPair||storage.get(sessionStorage,PAIR_SESSION)||savedPair,state=null,updateStates={git:null,zip:null},busy=false,countingTokens=false,modelCache=readModelCache();
+let pair=fragmentPair||storage.get(sessionStorage,PAIR_SESSION)||savedPair,state=null,updateStates={git:null,zip:null},busy=false,modelCache=readModelCache();
 if(location.hash)history.replaceState(null,'',location.pathname);
 el('pair').value=pair;el('rememberPair').checked=!!savedPair&&savedPair===pair;
 let messageTimer=null;
@@ -34,6 +34,18 @@ function updateTokens(tokens={}){
   const recorded=Number(tokens.recorded_jobs)||0,missing=Number(tokens.unreported_calls)||0;
   el('tokenNote').textContent='완료 응답 '+recorded.toLocaleString('ko-KR')+'건에 기록된 합계'+(missing?' · 사용량 미확인 '+missing.toLocaleString('ko-KR')+'회 제외':'')+'입니다.';
 }
+const validTokens=value=>Number.isSafeInteger(value)&&value>=0;
+const formatTokens=value=>validTokens(value)?value.toLocaleString('ko-KR'):'미제공';
+function jobTokenText(job){
+  const usage=job.usage,input=usage?.input_tokens,output=usage?.output_tokens;
+  if(!validTokens(input)||!validTokens(output))return job.status==='running'||job.status==='queued'?'응답 완료 후 실제 사용량을 표시합니다.':'토큰 사용량 추정 못함';
+  const total=input+output;
+  let text='입력 '+formatTokens(input)+' · 출력 '+formatTokens(output)+' · 총 '+formatTokens(total)+' 토큰';
+  const cached=usage.input_tokens_details?.cached_tokens,reasoning=usage.output_tokens_details?.reasoning_tokens;
+  if(validTokens(cached))text+='\n입력 중 캐시 '+formatTokens(cached)+' 토큰 (입력에 포함)';
+  if(validTokens(reasoning))text+='\n출력 중 추론 '+formatTokens(reasoning)+' 토큰 (출력에 포함)';
+  return text;
+}
 function statusLabel(value){return ({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
 function renderAccount(){
   const connected=!!state?.connected,models=modelCache.models;
@@ -43,11 +55,6 @@ function renderAccount(){
   else if(connected)el('modelList').textContent='ChatGPT 계정에 연결되었습니다. 모델 정보를 가져오는 중이거나 [모델 확인]을 눌러 갱신할 수 있습니다.';
   else el('modelList').textContent='ChatGPT 계정 연결이 필요합니다.';
   el('modelRefresh').textContent='마지막 모델 확인 '+formatDateTime(modelCache.at);
-  const selected=el('tokenModel').value;el('tokenModel').replaceChildren();
-  for(const model of connected?models:[]){const option=document.createElement('option');option.value=model.slug;option.textContent=model.name||model.slug;el('tokenModel').append(option);}
-  if(!el('tokenModel').options.length){const option=document.createElement('option');option.value='';option.textContent='설정에서 모델을 확인하세요';el('tokenModel').append(option);}
-  if(models.some(model=>model.slug===selected))el('tokenModel').value=selected;
-  el('tokenModel').disabled=!connected||!models.length;el('countTokens').disabled=countingTokens||!connected||!models.length;
 }
 function renderUpdate(){
   const labels={current:'최신',available:'업데이트 있음',local_changes:'로컬 수정 있음',local_ahead:'설치본이 더 새로움',diverged:'기록 갈림'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',parts=[];
@@ -66,8 +73,9 @@ function renderJobs(){
     const summary=document.createElement('summary'),top=document.createElement('div'),dot=document.createElement('i'),label=document.createElement('span'),time=document.createElement('time'),name=document.createElement('div'),meta=document.createElement('div'),body=document.createElement('div'),output=document.createElement('pre');
     const client=job.client||{},clientName=String(client.name||''),roomName=String(client.room_name||''),taskName=String(client.task_name||'');
     top.className='job-top';dot.className='job-dot';label.textContent=statusLabel(job.status);time.textContent=formatTime(job.created_at);name.className='job-name';name.textContent=[roomName,taskName].filter(Boolean).join(' · ')||clientName||job.model||'AI 요청';meta.className='job-meta';
-    const tokens=Number(job.usage?.input_tokens||0)+Number(job.usage?.output_tokens||0),parts=[clientName,job.model,job.request_id.slice(0,12),job.effort,job.started_at?duration(job):'',tokens?tokens.toLocaleString()+' 토큰':''].filter(Boolean);meta.textContent=parts.join(' · ');
-    top.append(dot,label,time);summary.append(top,name,meta);body.className='job-body';output.textContent='펼치면 저장된 결과를 조회합니다.';body.append(output);details.append(summary,body);let loaded=false;
+    const parts=[clientName,job.model,job.request_id.slice(0,12),job.effort,job.started_at?duration(job):'',job.status==='completed'?jobTokenText(job).split('\n')[0]:''].filter(Boolean);meta.textContent=parts.join(' · ');
+    const usage=document.createElement('p');usage.className='job-usage';usage.textContent=jobTokenText(job);
+    top.append(dot,label,time);summary.append(top,name,meta);body.className='job-body';output.textContent='펼치면 저장된 결과를 조회합니다.';body.append(usage,output);details.append(summary,body);let loaded=false;
     details.addEventListener('toggle',()=>{if(details.open&&!loaded){loaded=true;api('/api/jobs/'+job.request_id).then(data=>{output.textContent=JSON.stringify(data,null,2);if(data.status==='blocked_budget'){const resume=document.createElement('button');resume.className='btn secondary';resume.textContent='설정 확인 후 작업 재개';resume.addEventListener('click',()=>run(async()=>{await api('/api/jobs/'+job.request_id+'/resume',{});await refresh();}));body.append(resume);}}).catch(error=>{loaded=false;output.textContent=error.message;});}});
     el('jobs').append(details);
   }
@@ -77,6 +85,9 @@ function render(){
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy;
   renderAccount();renderUpdate();serverState(state.settings.paused?'서버 정상 · 요청 일시정지':'서버 정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
+  const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];
+  el('latestUsage').textContent=latest?jobTokenText(latest):'아직 완료된 응답이 없습니다.';
+  el('latestUsageMeta').textContent=latest?[latest.client?.task_name,latest.model,formatDateTime(latest.finished_at||latest.created_at)].filter(Boolean).join(' · '):'';
 }
 function saveRefreshTime(){const now=Date.now();storage.set(localStorage,LAST_REFRESH,String(now));el('lastRefresh').textContent='마지막 갱신 '+formatTime(now);}
 async function refresh(announce=true){state=await api('/api/status');render();saveRefreshTime();if(announce)message('서버 상태와 브리지 호출량을 갱신했습니다.');return state;}
@@ -89,16 +100,6 @@ el('connect').onclick=()=>run(async()=>{const next=parsePair(el('pair').value);i
 el('copy').onclick=()=>run(async()=>{if(!pair)throw Error('연결 코드를 먼저 넣으세요.');await navigator.clipboard.writeText(location.origin+'/#pair='+pair);message('이 기기의 연결 주소를 복사했습니다.');});
 el('login').onclick=()=>run(async()=>{message('ChatGPT 구독 연결 화면을 여는 중입니다.');const result=await api('/api/login',{});location.assign(result.url);});
 el('models').onclick=()=>run(()=>refreshModels());
-const tokenInput=()=>({model:el('tokenModel').value,instructions:el('tokenInstructions').value,input:el('tokenText').value});
-el('tokenForm').onsubmit=async event=>{
-  event.preventDefault();if(countingTokens)return;
-  const input=tokenInput(),connection=pair;
-  countingTokens=true;renderAccount();el('countTokens').textContent='계산 중';el('tokenResult').classList.remove('error');el('tokenResult').textContent='입력 토큰을 계산하고 있습니다.';
-  try{const result=await api('/api/tokens/count',input);if(pair===connection&&JSON.stringify(input)===JSON.stringify(tokenInput()))el('tokenResult').textContent='입력 '+result.input_tokens.toLocaleString('ko-KR')+' 토큰 · '+result.model;else el('tokenResult').textContent='입력 또는 연결이 변경됐습니다. 다시 계산하세요.';}
-  catch(error){el('tokenResult').textContent=error.message;el('tokenResult').classList.add('error');}
-  finally{countingTokens=false;el('countTokens').textContent='입력 토큰 계산';renderAccount();}
-};
-for(const id of ['tokenModel','tokenInstructions','tokenText'])el(id).addEventListener('input',()=>{el('tokenResult').textContent=countingTokens?'입력이 변경됐습니다. 계산이 끝난 뒤 다시 계산하세요.':'입력이 변경됐습니다. 다시 계산하세요.';el('tokenResult').classList.remove('error');});
 el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={models:[],at:0};storage.set(localStorage,MODEL_CACHE,'');await refresh();message('계정 연결을 해제했습니다.');});
 el('save').onclick=()=>run(async()=>{await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d'].map(key=>[key,Number(el(key).value)])));await refresh();});
 el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();});
