@@ -5,7 +5,8 @@ const storage={get:(area,key)=>{try{return area.getItem(key)||'';}catch{return '
 const fragmentPair=new URLSearchParams(location.hash.slice(1)).get('pair')||'',savedPair=storage.get(localStorage,PAIR_LOCAL);
 function readModelCache(){try{const value=JSON.parse(storage.get(localStorage,MODEL_CACHE)||'null');return value&&Array.isArray(value.models)?{models:value.models.filter(model=>model&&model.slug),at:Number(value.at)||0}:{models:[],at:0};}catch{return {models:[],at:0};}}
 let pair=fragmentPair||storage.get(sessionStorage,PAIR_SESSION)||savedPair,state=null,updateStates={git:null,zip:null},busy=false,modelCache=readModelCache();
-if(location.hash)history.replaceState(null,'',location.pathname);
+if(pair)storage.set(sessionStorage,PAIR_SESSION,pair);
+if(location.hash&&(storage.get(sessionStorage,PAIR_SESSION)===pair||savedPair===pair))history.replaceState(null,'',location.pathname);
 el('pair').value=pair;el('rememberPair').checked=!!savedPair&&savedPair===pair;
 let messageTimer=null;
 function message(text,error=false,sticky=false){clearTimeout(messageTimer);el('status').hidden=false;el('status').textContent=text;el('status').classList.toggle('error',error);if(!error&&!sticky)messageTimer=setTimeout(()=>{el('status').hidden=true;},2400);}
@@ -15,11 +16,11 @@ function parsePair(value){
   const url=new URL(raw);if(url.origin!==location.origin||url.hostname!=='127.0.0.1')throw Error('현재 관리 화면과 같은 주소의 코드를 넣으세요.');
   return new URLSearchParams(url.hash.slice(1)).get('pair')||'';
 }
-function remember(){storage.set(sessionStorage,PAIR_SESSION,pair);storage.set(localStorage,PAIR_LOCAL,el('rememberPair').checked?pair:'');}
+function remember(){storage.set(sessionStorage,PAIR_SESSION,pair);storage.set(localStorage,PAIR_LOCAL,el('rememberPair').checked?pair:'');if(pair&&storage.get(sessionStorage,PAIR_SESSION)!==pair&&storage.get(localStorage,PAIR_LOCAL)!==pair)history.replaceState(null,'',location.pathname+'#pair='+encodeURIComponent(pair));}
 async function api(route,body){
   if(!pair)throw Error('Termux가 표시한 연결 코드를 먼저 넣으세요.');
   const response=await fetch(route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+pair,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
-  const data=await response.json();if(!response.ok)throw Error(data.message||data.code||'연결에 실패했습니다.');return data;
+  const data=await response.json();if(!response.ok)throw Object.assign(Error(data.message||data.code||'연결에 실패했습니다.'),{status:response.status});return data;
 }
 function formatTime(value){if(!value)return '—';return new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit'}).format(value);}
 function formatDateTime(value){if(!value)return '없음';return new Intl.DateTimeFormat('ko-KR',{dateStyle:'short',timeStyle:'short'}).format(value);}
@@ -105,9 +106,35 @@ el('save').onclick=()=>run(async()=>{await api('/api/settings',Object.fromEntrie
 el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();});
 el('usageRefresh').onclick=()=>run(refresh);el('refreshJobs').onclick=()=>run(refresh);
 el('checkUpdate').onclick=()=>run(()=>checkUpdates());
-async function applyUpdate(method){if(updateStates[method]?.status!=='available')throw Error('먼저 업데이트 확인을 눌러 주세요.');if(!confirm((method==='git'?'Git':'ZIP')+' 버전을 받고 서버를 재시작할까요? 진행 중인 요청이 있으면 실행되지 않습니다. 완료 표시가 보이지 않으면 5분 뒤 이 페이지를 다시 열고 [↻ 서버]를 눌러 주세요.'))return;const fallback='완료 표시가 보이지 않으면 5분 뒤 이 페이지를 다시 열고 서버 관리의 [↻ 서버]를 눌러 주세요.';storage.set(localStorage,UPDATE_STARTED,String(Date.now()));serverState('업데이트 중');message('확인된 새 버전을 적용하고 있습니다. '+fallback,false,true);try{const result=await api('/api/update',{method});storage.set(localStorage,UPDATE_STARTED,'');message((result.message||'업데이트를 적용하고 서버를 다시 시작합니다.')+' 페이지가 자동으로 열리지 않으면 새로고침해 주세요.',false,true);setTimeout(()=>location.reload(),2200);}catch(error){throw Error(error.message+' '+fallback);}}
+async function reconnectAfterRestart(updated=false){
+  const previous=state?.instance_id,deadline=Date.now()+300000;
+  serverState('서버 연결 대기');message('서버가 다시 준비되면 연결 코드를 유지한 채 페이지를 엽니다.',false,true);
+  while(Date.now()<deadline){
+    await new Promise(resolve=>setTimeout(resolve,2000));
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4000);
+    try{
+      const response=await fetch('/api/status',{headers:{Authorization:'Bearer '+pair},cache:'no-store',signal:controller.signal});
+      if(response.status===401)throw Object.assign(Error('연결 코드를 확인할 수 없습니다. 터미널에 표시된 관리 화면 주소 전체를 다시 열어 주세요.'),{status:401});
+      if(!response.ok)continue;
+      const next=await response.json();
+      if(!next.instance_id||next.instance_id===previous||next.update_busy)continue;
+      if(updated)storage.set(localStorage,UPDATE_STARTED,'');
+      remember();history.replaceState(null,'',location.pathname+'#pair='+encodeURIComponent(pair));location.reload();return;
+    }catch(error){if(error.status===401)throw error;}finally{clearTimeout(timer);}
+  }
+  throw Error('5분 동안 서버 재연결을 확인하지 못했습니다. 브리지 실행 상태를 확인한 뒤 터미널의 관리 화면 주소 전체를 다시 열어 주세요.');
+}
+async function applyUpdate(method){
+  if(updateStates[method]?.status!=='available')throw Error('먼저 업데이트 확인을 눌러 주세요.');
+  if(!confirm((method==='git'?'Git':'ZIP')+' 버전을 받고 서버를 재시작할까요? 진행 중인 요청이 있으면 실행되지 않습니다.'))return;
+  storage.set(localStorage,UPDATE_STARTED,String(Date.now()));serverState('업데이트 중');message('확인된 새 버전을 적용하고 있습니다.',false,true);
+  let result;
+  try{result=await api('/api/update',{method});}catch(error){if(error.status)throw Error(error.message+' 완료 표시가 보이지 않으면 5분 뒤 이 페이지를 다시 열고 서버 관리의 [↻ 서버]를 눌러 주세요.');}
+  if(result?.updated===false){storage.set(localStorage,UPDATE_STARTED,'');message(result.message||'업데이트할 파일이 없습니다.');return;}
+  await reconnectAfterRestart(true);
+}
 el('updateGit').onclick=()=>run(()=>applyUpdate('git'));el('updateZip').onclick=()=>run(()=>applyUpdate('zip'));
-el('restart').onclick=()=>run(async()=>{if(!confirm('진행 중인 요청이 없을 때 서버를 재시작합니다. 계속할까요?'))return;await api('/api/restart',{});serverState('재시작 중');message('서버를 재시작하는 중입니다.');setTimeout(()=>location.reload(),1500);});
+el('restart').onclick=()=>run(async()=>{if(!confirm('진행 중인 요청이 없을 때 서버를 재시작합니다. 계속할까요?'))return;try{await api('/api/restart',{});}catch(error){if(error.status)throw error;}await reconnectAfterRestart();});
 const last=Number(storage.get(localStorage,LAST_REFRESH));if(Number.isFinite(last)&&last>0)el('lastRefresh').textContent='마지막 갱신 '+formatTime(last);
 if(pair){storage.set(sessionStorage,PAIR_SESSION,pair);run(async()=>{try{await refresh(false);try{await checkUpdates(false);}catch{renderUpdate();}if(state.connected&&!modelCache.models.length)await refreshModels(false);}catch(error){selectTab('settings');throw error;}});}else{serverState('연결 필요');renderAccount();message('Termux가 표시한 주소 전체를 열거나 연결 코드를 넣으세요.',true);}
 const updateStarted=Number(storage.get(localStorage,UPDATE_STARTED));if(Number.isFinite(updateStarted)&&updateStarted>0)message('업데이트 완료 여부가 확인되지 않았습니다. 시작 '+formatDateTime(updateStarted)+' · 5분 뒤 이 페이지를 다시 열고 서버 관리의 [↻ 서버]를 눌러 주세요.',false,true);

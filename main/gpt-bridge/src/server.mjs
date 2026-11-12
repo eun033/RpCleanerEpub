@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {BridgeError,check,equal} from './auth.mjs';
 import {JobBridge} from './jobs.mjs';
@@ -90,6 +90,7 @@ export async function applyGitUpdate(gitInfo,runtimeSource,{platform=process.pla
 }
 export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subscription-bridge'),fetchImpl=globalThis.fetch,clock=Date.now,appName='Local GPT Subscription Bridge',onRestart=null,onUpdateCheck=null,onUpdate=null,updateMethods=[],installMethod=''}={}){
   const bridge=await new JobBridge(dir,{fetchImpl,clock,appName}).init();
+  const instanceId=randomUUID();
   let updateBusy=false;const restartBusy=()=>updateBusy||bridge.running||[...bridge.jobs.values()].some(job=>['queued','running'].includes(job.status));
   const server=http.createServer(async(req,res)=>{
     const port=server.address()?.port,base='http://127.0.0.1:'+port;
@@ -111,7 +112,7 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
       }
       check(equal(req.headers.authorization||'','Bearer '+bridge.auth.identity.pair),'PAIR','관리 화면에서 복사한 로컬 연결 코드가 필요합니다.',401);
       const methods=updateMethods.length?updateMethods:typeof onUpdate==='function'?['git']:[];
-      if(req.method==='GET'&&url.pathname==='/api/status')return send(res,200,{...bridge.status(),can_restart:typeof onRestart==='function',restart_busy:restartBusy(),can_update:typeof onUpdate==='function',install_method:installMethod||methods[0]||'unknown',update_methods:methods,update_busy:updateBusy});
+      if(req.method==='GET'&&url.pathname==='/api/status')return send(res,200,{...bridge.status(),instance_id:instanceId,can_restart:typeof onRestart==='function',restart_busy:restartBusy(),can_update:typeof onUpdate==='function',install_method:installMethod||methods[0]||'unknown',update_methods:methods,update_busy:updateBusy});
       if(req.method==='GET'&&url.pathname==='/api/update/check'){
         const method=url.searchParams.get('method')||methods[0];
         check(typeof onUpdateCheck==='function'&&methods.includes(method),'UPDATE_UNAVAILABLE','현재 설치 방식에서 사용할 수 없는 업데이트입니다.',409);
