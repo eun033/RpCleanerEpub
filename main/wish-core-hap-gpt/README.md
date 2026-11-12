@@ -1,12 +1,16 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.5
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.7
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.5다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.7이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
 
 중요 내용은 남기고 오래되어 해결된 반복 과정부터 줄이는 보강 지침은 실행판과 분리해 [복사용 Markdown](API_MEMORY_GUIDE_IMPORTANCE_COMPRESSION.md)에 보관한다. 파일 본문 전체를 그대로 복사해 사용할 수 있다.
 
 기존 Core·Cloud Patch·HAP은 끄고 HAP-gpt 하나만 사용한다. 기존 AI Studio·Firebase·Vertex·DeepSeek·Claude·OpenAI API·외부 AI 설정은 보존되며, ChatGPT 구독 실패 시 다른 유료 API로 자동 전환하지 않는다.
+
+0.2.7은 Firebase·Google Drive 백업 파일을 준비하고 업로드하거나 복원 파일을 읽는 동안 하단 진행 알림을 계속 표시한다. 방 수와 파일 용량을 함께 보여 주며, 같은 알림이 완료·실패 결과로 바뀐 뒤 자동으로 닫힌다.
+
+0.2.6은 복원 안내를 목록 위로 옮기고 주입방 이름 뒤에 주황색 `[주입중]`을 표시한다. `선택 항목 복원`은 선택한 주입방을 건너뛰며, `주입방 포함 복원`은 선택한 주입을 서버에서 먼저 해제한 후 교체한다. 해제 실패 시 백업 데이터는 쓰지 않는다.
 
 0.2.5는 2026-11-11 공식 출시된 `gemini-4-carbon`을 AI Studio·Firebase·Vertex 모델 선택에 추가했다. Firebase·Vertex에서는 지원 위치인 `global`로 호출하며, 공식 종료일은 아직 발표되지 않았다.
 
@@ -20,7 +24,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.5 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.7 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
