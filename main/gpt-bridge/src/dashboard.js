@@ -4,7 +4,7 @@ const PAIR_SESSION='gpt-bridge-pair-session-v1',PAIR_LOCAL='gpt-bridge-pair-loca
 const storage={get:(area,key)=>{try{return area.getItem(key)||'';}catch{return '';}},set:(area,key,value)=>{try{value?area.setItem(key,value):area.removeItem(key);}catch{}}};
 const fragmentPair=new URLSearchParams(location.hash.slice(1)).get('pair')||'',savedPair=storage.get(localStorage,PAIR_LOCAL);
 function readModelCache(){try{const value=JSON.parse(storage.get(localStorage,MODEL_CACHE)||'null');return value&&Array.isArray(value.models)?{models:value.models.filter(model=>model&&model.slug),at:Number(value.at)||0}:{models:[],at:0};}catch{return {models:[],at:0};}}
-let pair=fragmentPair||storage.get(sessionStorage,PAIR_SESSION)||savedPair,state=null,updateStates={git:null,zip:null},busy=false,modelCache=readModelCache();
+let pair=fragmentPair||storage.get(sessionStorage,PAIR_SESSION)||savedPair,state=null,updateStates={git:null,zip:null},busy=false,countingTokens=false,modelCache=readModelCache();
 if(location.hash)history.replaceState(null,'',location.pathname);
 el('pair').value=pair;el('rememberPair').checked=!!savedPair&&savedPair===pair;
 let messageTimer=null;
@@ -43,6 +43,11 @@ function renderAccount(){
   else if(connected)el('modelList').textContent='ChatGPT 계정에 연결되었습니다. 모델 정보를 가져오는 중이거나 [모델 확인]을 눌러 갱신할 수 있습니다.';
   else el('modelList').textContent='ChatGPT 계정 연결이 필요합니다.';
   el('modelRefresh').textContent='마지막 모델 확인 '+formatDateTime(modelCache.at);
+  const selected=el('tokenModel').value;el('tokenModel').replaceChildren();
+  for(const model of connected?models:[]){const option=document.createElement('option');option.value=model.slug;option.textContent=model.name||model.slug;el('tokenModel').append(option);}
+  if(!el('tokenModel').options.length){const option=document.createElement('option');option.value='';option.textContent='설정에서 모델을 확인하세요';el('tokenModel').append(option);}
+  if(models.some(model=>model.slug===selected))el('tokenModel').value=selected;
+  el('tokenModel').disabled=!connected||!models.length;el('countTokens').disabled=countingTokens||!connected||!models.length;
 }
 function renderUpdate(){
   const labels={current:'최신',available:'업데이트 있음',local_changes:'로컬 수정 있음',local_ahead:'설치본이 더 새로움',diverged:'기록 갈림'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',parts=[];
@@ -84,6 +89,16 @@ el('connect').onclick=()=>run(async()=>{const next=parsePair(el('pair').value);i
 el('copy').onclick=()=>run(async()=>{if(!pair)throw Error('연결 코드를 먼저 넣으세요.');await navigator.clipboard.writeText(location.origin+'/#pair='+pair);message('이 기기의 연결 주소를 복사했습니다.');});
 el('login').onclick=()=>run(async()=>{message('ChatGPT 구독 연결 화면을 여는 중입니다.');const result=await api('/api/login',{});location.assign(result.url);});
 el('models').onclick=()=>run(()=>refreshModels());
+const tokenInput=()=>({model:el('tokenModel').value,instructions:el('tokenInstructions').value,input:el('tokenText').value});
+el('tokenForm').onsubmit=async event=>{
+  event.preventDefault();if(countingTokens)return;
+  const input=tokenInput(),connection=pair;
+  countingTokens=true;renderAccount();el('countTokens').textContent='계산 중';el('tokenResult').classList.remove('error');el('tokenResult').textContent='입력 토큰을 계산하고 있습니다.';
+  try{const result=await api('/api/tokens/count',input);if(pair===connection&&JSON.stringify(input)===JSON.stringify(tokenInput()))el('tokenResult').textContent='입력 '+result.input_tokens.toLocaleString('ko-KR')+' 토큰 · '+result.model;else el('tokenResult').textContent='입력 또는 연결이 변경됐습니다. 다시 계산하세요.';}
+  catch(error){el('tokenResult').textContent=error.message;el('tokenResult').classList.add('error');}
+  finally{countingTokens=false;el('countTokens').textContent='입력 토큰 계산';renderAccount();}
+};
+for(const id of ['tokenModel','tokenInstructions','tokenText'])el(id).addEventListener('input',()=>{el('tokenResult').textContent=countingTokens?'입력이 변경됐습니다. 계산이 끝난 뒤 다시 계산하세요.':'입력이 변경됐습니다. 다시 계산하세요.';el('tokenResult').classList.remove('error');});
 el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={models:[],at:0};storage.set(localStorage,MODEL_CACHE,'');await refresh();message('계정 연결을 해제했습니다.');});
 el('save').onclick=()=>run(async()=>{await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d'].map(key=>[key,Number(el(key).value)])));await refresh();});
 el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();});

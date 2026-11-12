@@ -119,6 +119,7 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
         updateBusy=true;try{return send(res,200,await onUpdateCheck(method));}finally{updateBusy=false;}
       }
       if(req.method==='GET'&&url.pathname==='/api/models')return send(res,200,await bridge.auth.models());
+      if(req.method==='POST'&&url.pathname==='/api/tokens/count')return send(res,200,await bridge.countInputTokens(await readBody(req)));
       if(req.method==='POST'&&url.pathname==='/api/login'){check(!bridge.running,'BUSY','진행 중인 작업이 끝난 뒤 로그인하세요.',409);return send(res,200,{url:bridge.auth.startLogin(port)});}
       if(req.method==='POST'&&url.pathname==='/api/logout'){check(!bridge.running,'BUSY','진행 중인 작업이 끝난 뒤 연결을 해제하세요.',409);await bridge.auth.logout();await bridge.settingsChange({paused:true});return send(res,200,{ok:true});}
       if(req.method==='POST'&&url.pathname==='/api/settings')return send(res,200,await bridge.settingsChange(await readBody(req)));
