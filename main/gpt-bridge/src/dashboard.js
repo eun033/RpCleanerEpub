@@ -1,7 +1,7 @@
 'use strict';
 const el=id=>document.getElementById(id);
-const ICON_PATHS={refresh:'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',restart:'M3 10a9 9 0 1 1 2.6 8.4 M3 4v6h6',chevron:'m9 6 6 6-6 6',download:'M12 3v12 m-5-5 5 5 5-5 M5 16v5h14v-5',spinner:'M21 12a9 9 0 1 1-9-9',check:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M8 12l3 3 5-6',alert:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v6 M12 17h.01',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2',external:'M14 3h7v7 M21 3l-9 9 M10 3H3v18h18v-7'};
-function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [key,value] of Object.entries({viewBox:'0 0 24 24',width:'20',height:'20',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false',class:'ui-icon '+name}))svg.setAttribute(key,value);const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',ICON_PATHS[name]);svg.append(path);return svg;}
+const ICON_PATHS={close:'m6 6 12 12 M18 6 6 18',refresh:'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',restart:'M3 10a9 9 0 1 1 2.6 8.4 M3 4v6h6',chevron:'m9 6 6 6-6 6',download:'M12 3v12 m-5-5 5 5 5-5 M5 16v5h14v-5',spinner:'M21 12a9 9 0 1 1-9-9',check:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M8 12l3 3 5-6',alert:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v6 M12 17h.01',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2',external:'M14 3h7v7 M21 3l-9 9 M10 3H3v18h18v-7'};
+function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [key,value] of Object.entries({viewBox:'0 0 24 24',width:'20',height:'20',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false',class:'ui-icon '+name}))svg.setAttribute(key,value);const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',ICON_PATHS[name]);if(name==='check'){const circle=document.createElementNS(svg.namespaceURI,'circle');for(const [key,value] of Object.entries({cx:'12',cy:'12',r:'10',fill:'currentColor',stroke:'none'}))circle.setAttribute(key,value);svg.append(circle);path.setAttribute('d','m7.5 12 3 3 6-6');path.setAttribute('stroke','#fff');path.setAttribute('stroke-width','2.25');}svg.append(path);return svg;}
 for(const [id,name] of [['restart','restart'],['updateGit','download'],['updateZip','download']])el(id).prepend(icon(name));
 for(const id of ['usageRefresh','refreshJobs'])el(id).replaceChildren(icon('refresh'));
 for(const summary of document.querySelectorAll('.fold>summary,.advanced>summary'))summary.prepend(icon('chevron'));
@@ -11,6 +11,8 @@ const storage={get:(area,key)=>{try{return area.getItem(key)||'';}catch{return '
 const fragmentPair=new URLSearchParams(location.hash.slice(1)).get('pair')||'',savedPair=storage.get(localStorage,PAIR_LOCAL);
 function readModelCache(){try{const value=JSON.parse(storage.get(localStorage,MODEL_CACHE)||'null');return value&&Array.isArray(value.models)?{models:value.models.filter(model=>model&&model.slug),at:Number(value.at)||0}:{models:[],at:0};}catch{return {models:[],at:0};}}
 let pair=fragmentPair||storage.get(sessionStorage,PAIR_SESSION)||savedPair,state=null,updateStates={git:null,zip:null},busy=false,modelCache=readModelCache();
+let updateChecking=false,updateCheckFailed=false,modelChecking=false,modelFresh=false,modelFailed=false,localConnected=false;
+let connectionTime=Number(storage.get(sessionStorage,'gpt-bridge-connection-time-v1'))||0;
 function readRecovery(){
   for(const raw of [history.state?.bridgeRecovery,storage.get(localStorage,UPDATE_STARTED),storage.get(sessionStorage,UPDATE_STARTED)])try{
     const value=typeof raw==='string'?JSON.parse(raw||'null'):raw;
@@ -25,8 +27,30 @@ const pendingRecovery=()=>recovery&&recovery.kind!=='legacy'&&recovery.phase!=='
 if(pair)storage.set(sessionStorage,PAIR_SESSION,pair);
 if(location.hash&&(storage.get(sessionStorage,PAIR_SESSION)===pair||savedPair===pair))history.replaceState(history.state,'',location.pathname);
 el('pair').value=pair;el('rememberPair').checked=!!savedPair&&savedPair===pair;
+renderLocal();
 let messageTimer=null;
-function message(text,error=false,sticky=false,progress=false,tone=''){clearTimeout(messageTimer);el('status').hidden=false;el('status').textContent=text;el('status').className='notice'+(error?' error':progress?' progress':tone==='unknown'?' unknown':'');if(progress)el('status').prepend(icon('spinner'));if(!error&&!sticky)messageTimer=setTimeout(()=>{el('status').hidden=true;},2400);}
+function message(text,error=false,sticky=false,progress=false,tone=''){
+  clearTimeout(messageTimer);const toast=el('status'),body=document.createElement('span'),close=document.createElement('button');
+  body.className='toast-body';body.textContent=text;if(progress)body.prepend(icon('spinner'));
+  close.type='button';close.className='icon-button toast-close';close.setAttribute('aria-label','알림 닫기');close.append(icon('close'));close.onclick=()=>{toast.hidden=true;clearTimeout(messageTimer);};
+  toast.className='notice'+(error?' error':progress?' progress':tone?' '+tone:'');toast.setAttribute('role',error?'alert':'status');toast.setAttribute('aria-live',error?'assertive':'polite');toast.replaceChildren(body,close);toast.hidden=false;
+  if(!error&&!sticky)messageTimer=setTimeout(()=>{toast.hidden=true;},3000);
+}
+function feedback(id,text,tone=''){const node=el(id);node.textContent=text;node.hidden=!text;node.className='inline-state '+tone;}
+function updateFailure(error=null){el('updateFailure').hidden=!error;el('updateFailure').open=false;el('updateFailureText').textContent=error?String(error.message||error):'';}
+function connectionState(connected,checked=false){
+  const wasConnected=localConnected;localConnected=connected;
+  if(checked){connectionTime=Date.now();storage.set(sessionStorage,'gpt-bridge-connection-time-v1',String(connectionTime));}
+  if(!connected||!wasConnected)el('localDetails').open=!connected;
+  renderLocal();
+}
+function renderLocal(){
+  el('localState').textContent=localConnected?'로컬 연결됨':'로컬 연결 필요';el('localState').className='chip'+(localConnected?' connected':' warning');
+  el('connectionTime').textContent=connectionTime?'마지막 연결 확인 '+confirmationTime(connectionTime):'확인 기록 없음';
+  el('pairSaved').textContent=pair&&storage.get(localStorage,PAIR_LOCAL)===pair?'이 브라우저에 저장됨':'브라우저 저장 안 함';el('copy').disabled=!pair;el('disconnectLocal').hidden=!pair;
+}
+function weekBounds(day=state?.settings?.week_start??1){const start=new Date();start.setHours(0,0,0,0);start.setDate(start.getDate()-(start.getDay()-day+7)%7);const end=new Date(start);end.setDate(end.getDate()+7);return {start_at:start.getTime(),end_at:end.getTime()};}
+function statusRoute(day){const range=weekBounds(day);return '/api/status?week_start_at='+range.start_at+'&week_end_at='+range.end_at;}
 function serverState(label,kind=''){el('serverState').className='server-state '+kind;el('serverState').querySelector('span').textContent=label;el('serverState').replaceChild(icon(kind==='online'?'check':kind==='busy'?'spinner':['error','warning'].includes(kind)?'alert':'clock'),el('serverState').firstElementChild);el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'연결이 끊겼어요. 브리지 실행 화면을 확인해 주세요.':label;}
 function parsePair(value){
   const raw=value.trim();if(!raw.startsWith('http'))return raw;
@@ -35,12 +59,20 @@ function parsePair(value){
 }
 function remember(){storage.set(sessionStorage,PAIR_SESSION,pair);storage.set(localStorage,PAIR_LOCAL,el('rememberPair').checked?pair:'');if(pair&&storage.get(sessionStorage,PAIR_SESSION)!==pair&&storage.get(localStorage,PAIR_LOCAL)!==pair)history.replaceState(history.state,'',location.pathname+'#pair='+encodeURIComponent(pair));}
 async function api(route,body,signal){
-  if(!pair)throw Error('Termux가 표시한 연결 코드를 먼저 넣으세요.');
+  if(!pair)throw Error('브리지 실행 화면의 연결 코드를 먼저 넣으세요.');
+  const statusRequest=route.split('?')[0]==='/api/status',defaultRange=route==='/api/status';if(defaultRange)route=statusRoute();
+  try{
   const response=await fetch(route,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+pair,'Content-Type':'application/json'},cache:'no-store',signal,...(body===undefined?{}:{body:JSON.stringify(body)})});
-  const data=await response.json();if(!response.ok)throw Object.assign(Error(data.message||data.code||'연결에 실패했습니다.'),{status:response.status,code:data.code});return data;
+  const data=await response.json();if(!response.ok)throw Object.assign(Error(data.message||data.code||'연결에 실패했습니다.'),{status:response.status,code:data.code});
+  if(statusRequest){if(defaultRange&&data.usage_windows?.week&&data.usage_windows.week.start_at!==weekBounds(data.settings?.week_start??1).start_at)return api(statusRoute(data.settings?.week_start??1),undefined,signal);connectionState(true,true);}
+  return data;
+  }catch(error){if(statusRequest||error.status===401||!error.status){connectionState(false);if(!reconnecting)serverState(error.status===401?'연결 필요':error.status?'오류':'중지',error.status?'error':'warning');}throw error;}
 }
-function formatTime(value){if(!value)return '—';return new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit'}).format(value);}
-function formatDateTime(value){if(!value)return '없음';return new Intl.DateTimeFormat('ko-KR',{dateStyle:'short',timeStyle:'short'}).format(value);}
+function formatTime(value){if(!value)return '—';return new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(value);}
+function formatDateTime(value){if(!value)return '없음';return new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(value);}
+function today(value){const date=new Date(value),now=new Date();return date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate();}
+function confirmationTime(value){return today(value)?formatTime(value):new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(value);}
+function jobTime(value){if(!value)return '—';if(today(value))return formatTime(value);const date=new Date(value),stamp=String(date.getMonth()+1).padStart(2,'0')+'.'+String(date.getDate()).padStart(2,'0');return date.getFullYear()===new Date().getFullYear()?stamp:date.getFullYear()+'\n'+stamp;}
 function duration(job){const end=job.finished_at||Date.now(),start=job.started_at;if(!start)return '';const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60);return minutes?minutes+'분 '+String(seconds%60).padStart(2,'0')+'초':seconds+'초';}
 function updateMeter(prefix,used,limit){
   const safeLimit=Math.max(1,Number(limit)||1),percent=Math.min(100,Math.max(0,used/safeLimit*100)),meter=el(prefix+'Meter');
@@ -48,10 +80,19 @@ function updateMeter(prefix,used,limit){
   requestAnimationFrame(()=>{meter.querySelector('.meter-fill').style.width=percent+'%';});
 }
 function updateTokens(tokens={}){
+  const range=state?.usage_windows?.[el('tokenScope').value],scope=el('tokenScope').value==='week'?'이번 주':'최근 5시간';
+  el('cumulativeTokens').textContent='전체 기록 · 총 '+(Number(tokens.total_tokens)||0).toLocaleString('ko-KR')+' 토큰 · 입력 '+(Number(tokens.input_tokens)||0).toLocaleString('ko-KR')+' · 출력 '+(Number(tokens.output_tokens)||0).toLocaleString('ko-KR');
+  const week=state?.usage_windows?.week;
+  el('weekCalls').textContent=week?week.calls.toLocaleString('ko-KR')+'회':'집계 미지원';
+  el('weekRange').textContent=week?new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).format(week.start_at)+' ~ '+new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).format(week.end_at-1):'고정 주간 집계는 브리지 업데이트 후 표시됩니다.';
+  el('tokenScopeLabel').textContent=scope+' 총 토큰';
+  if(!range){for(const id of ['tokenInput','tokenOutput','tokenTotal'])el(id).textContent='—';el('tokenNote').textContent='구간별 토큰 집계 미지원 · 전체 누적 기록은 아래에서 확인할 수 있어요.';return;}
+  tokens=range;
   for(const [id,key] of [['tokenInput','input_tokens'],['tokenOutput','output_tokens'],['tokenTotal','total_tokens']])el(id).textContent=(Number(tokens[key])||0).toLocaleString('ko-KR');
-  const recorded=Number(tokens.recorded_jobs)||0,missing=Number(tokens.unreported_calls)||0;
-  el('tokenNote').textContent='완료 응답 '+recorded.toLocaleString('ko-KR')+'건에 기록된 합계'+(missing?' · 사용량 미확인 '+missing.toLocaleString('ko-KR')+'회 제외':'')+'입니다.';
+  const recorded=Number(tokens.recorded_jobs)||0,missing=Number(tokens.unreported_completed)||0,unplaced=Number(tokens.unplaced_completed)||0;
+  el('tokenNote').textContent=scope+' 완료 '+tokens.completed_jobs+'건 · 토큰 기록 '+recorded+'건'+(missing?' · 사용량 미확인 '+missing+'건 제외':'')+'. 호출 시작·토큰 완료 시각 기준.'+(unplaced?' 완료 시각이 없는 '+unplaced+'건은 구간 미확인으로 제외.':'');
 }
+el('tokenScope').onchange=()=>updateTokens(state?.tokens);
 const validTokens=value=>Number.isSafeInteger(value)&&value>=0;
 const formatTokens=value=>validTokens(value)?value.toLocaleString('ko-KR'):'미제공';
 function jobTokenText(job){
@@ -67,25 +108,41 @@ function jobTokenText(job){
 function statusLabel(value){return ({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
 function renderAccount(){
   const connected=!!state?.connected,models=modelCache.models;
-  el('accountState').textContent=connected?'연결됨':'연결 필요';el('accountState').classList.toggle('connected',connected);el('login').textContent=connected?'재연결':'계정 연결';el('models').disabled=!connected;el('logout').hidden=!connected;
+  el('accountState').textContent=connected?'연결됨':'연결 필요';el('accountState').classList.toggle('connected',connected);el('login').textContent=connected?'재연결':'계정 연결';el('models').disabled=!connected||modelChecking;el('models').replaceChildren(...(modelChecking?[icon('spinner')]:[]),document.createTextNode(modelChecking?'확인 중...':'모델 확인'));el('logout').hidden=!connected;
   if(connected&&models.length)el('modelList').textContent=models.map(model=>(model.name||model.slug)+' · '+model.slug).join('\n');
   else if(connected&&modelCache.at)el('modelList').textContent='마지막 확인에서 사용 가능한 모델이 없었습니다. [모델 확인]으로 다시 가져올 수 있습니다.';
   else if(connected)el('modelList').textContent='ChatGPT 계정에 연결되었습니다. 모델 정보를 가져오는 중이거나 [모델 확인]을 눌러 갱신할 수 있습니다.';
   else el('modelList').textContent='ChatGPT 계정 연결이 필요합니다.';
-  el('modelRefresh').textContent='마지막 모델 확인 '+formatDateTime(modelCache.at);
+  el('modelRefresh').textContent=modelCache.at?'마지막 모델 확인 '+confirmationTime(modelCache.at):'확인 기록 없음';
+  el('modelState').textContent=modelChecking?'확인 중':modelFailed?'확인 실패':modelCache.at?(modelFresh?'새로 확인함':'저장된 목록'):'모델 미확인';el('modelState').className='chip'+(modelFailed?' warning':modelFresh?' success':'');
   el('modelSummary').textContent=connected?'연결됨 · '+(modelCache.at?'사용 가능 모델 '+models.length+'개':'모델 확인 필요'):'계정 연결이 필요합니다.';
 }
 function renderUpdate(){
-  const labels={current:'최신 버전입니다.',available:'업데이트 있음',local_changes:'로컬 수정이 있어 자동 업데이트할 수 없습니다.',local_ahead:'설치본이 더 새롭습니다.',diverged:'저장소 기록을 확인하세요.'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',item=updateStates[installed];
-  for(const method of ['git','zip']){const button=el('update'+(method==='git'?'Git':'Zip')),available=method===installed&&methods.has(method)&&updateStates[method]?.status==='available';button.hidden=!available;button.disabled=!available||!!state?.restart_busy||!!state?.update_busy||!!pendingRecovery()||reconnecting;}
+  const labels={current:'최신 버전',available:'업데이트 있음',local_changes:'로컬 수정이 있어 자동 업데이트할 수 없습니다.',local_ahead:'설치본이 더 새롭습니다.',diverged:'저장소 기록을 확인하세요.'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',item=updateStates[installed];
+  el('installMethod').textContent=state?'설치 방식 · '+({git:'Git',zip:'ZIP',unknown:'확인 불가'}[installed]||installed):'설치 방식 확인 중';
+  for(const method of ['git','zip']){const button=el('update'+(method==='git'?'Git':'Zip')),available=method===installed&&methods.has(method)&&updateStates[method]?.status==='available';button.hidden=!available||updateCheckFailed;button.disabled=!available||updateChecking||!!state?.restart_busy||!!state?.update_busy||!!pendingRecovery()||reconnecting;}
   el('updateResult').textContent=methods.size?item?(labels[item.status]||'확인하지 못했습니다.'):'업데이트를 확인해 주세요.':['git','zip'].includes(installed)?'관리 화면에서 업데이트하려면 감독 실행이 필요합니다.':'설치 상태를 확인하세요.';
   if(recovery?.kind==='update')el('updateResult').textContent=({applying:'업데이트 적용 중',restarting:'브리지 재시작 중',verifying:'업데이트 결과 확인 중',unknown:'업데이트 결과 미확인',complete:'업데이트 완료'})[recovery.phase]||'업데이트 결과 확인 중';
-  el('checkUpdate').disabled=reconnecting||(!pendingRecovery()&&(!methods.size||!!state?.update_busy));el('checkUpdate').replaceChildren(icon(reconnecting?'spinner':'refresh'),document.createTextNode(pendingRecovery()?(recovery.kind==='restart'?'연결 다시 확인':'결과 다시 확인'):'업데이트 확인'));
-  const available=[...methods].map(method=>updateStates[method]).find(value=>value?.status==='available');el('updateBadge').hidden=!available;el('updateBadge').textContent=available?'v'+available.latest_version+' 업데이트 가능':'';
+  else if(updateChecking)el('updateResult').textContent='업데이트 확인 중';else if(updateCheckFailed)el('updateResult').textContent='업데이트 확인 불가';
+  el('checkUpdate').disabled=updateChecking||reconnecting||(!pendingRecovery()&&(!methods.size||!!state?.update_busy));el('checkUpdate').replaceChildren(icon(updateChecking||reconnecting?'spinner':'refresh'),document.createTextNode(updateChecking?'확인 중...':pendingRecovery()?(recovery.kind==='restart'?'연결 다시 확인':'결과 다시 확인'):'업데이트 확인'));
+  const available=[...methods].map(method=>updateStates[method]).find(value=>value?.status==='available'),badge=el('updateBadge');badge.hidden=!state||!methods.size;badge.className='chip update-badge';
+  badge.textContent=pendingRecovery()?(recovery.phase==='unknown'?'결과 미확인':'진행 중'):updateChecking?'확인 중':updateCheckFailed?'확인 불가':available?'v'+available.latest_version+' 업데이트 가능':item?.status==='current'?'최신 버전':'미확인';
+  if(!updateChecking&&!updateCheckFailed&&!pendingRecovery()&&(available||item?.status==='current'))badge.classList.add('success');
 }
-async function checkUpdates(announce=true){for(const method of state?.update_methods||[])updateStates[method]=await api('/api/update/check?method='+method);renderUpdate();if(announce)message(Object.values(updateStates).some(item=>item?.status==='available')?'새 버전을 확인했습니다.':'업데이트 확인을 마쳤습니다.');}
+async function checkUpdates(announce=true){
+  if(updateChecking||reconnecting||pendingRecovery()||state?.update_busy)return;
+  updateChecking=true;updateCheckFailed=false;updateFailure();renderUpdate();
+  try{for(const method of state?.update_methods||[])updateStates[method]=await api('/api/update/check?method='+method);if(announce){feedback('serverFeedback','');message(Object.values(updateStates).some(item=>item?.status==='available')?'새 버전을 확인했습니다.':'업데이트 확인을 마쳤습니다.');}}
+  catch(error){updateCheckFailed=true;updateFailure(error);if(announce){feedback('serverFeedback','업데이트 확인 불가 · 잠시 후 다시 확인해 주세요.','warning');message('업데이트를 확인하지 못했어요. 잠시 후 다시 확인해 주세요.',false,false,false,'warning');}}
+  finally{updateChecking=false;renderUpdate();}
+}
 function saveModels(models){modelCache={models:models.map(model=>({name:String(model.name||model.display_name||model.slug||''),slug:String(model.slug||'')})).filter(model=>model.slug),at:Date.now()};storage.set(localStorage,MODEL_CACHE,JSON.stringify(modelCache));renderAccount();}
-async function refreshModels(announce=true){const models=await api('/api/models');if(!Array.isArray(models))throw Error('모델 목록 형식을 확인하지 못했습니다.');saveModels(models);if(announce)message('모델 정보와 확인 시간을 저장했습니다.');return models;}
+async function refreshModels(announce=true){
+  if(modelChecking)return modelCache.models;modelChecking=true;modelFailed=false;renderAccount();
+  try{const models=await api('/api/models');if(!Array.isArray(models))throw Error('모델 목록 형식을 확인하지 못했습니다.');saveModels(models);modelFresh=true;feedback('modelFeedback','');if(announce)message('모델 정보와 확인 시간을 저장했습니다.');return models;}
+  catch(error){modelFailed=true;feedback('modelFeedback','모델 확인에 실패했어요. 이전 목록과 확인 시각은 유지됩니다.','error');throw error;}
+  finally{modelChecking=false;renderAccount();}
+}
 const compactJobs=matchMedia('(max-width:599px)');
 compactJobs.addEventListener('change',()=>{for(const cell of document.querySelectorAll('.job-span'))cell.colSpan=compactJobs.matches?3:4;const title=document.querySelector('.job-title-column');if(title)title.textContent=compactJobs.matches?'작업 / 모델':'작업명';});
 function renderJobs(){
@@ -120,10 +177,10 @@ function renderJobs(){
       mobileModel.className='mobile-model';mobileModel.textContent=' · '+[job.model,job.effort].filter(Boolean).join(' · ');meta.append(mobileModel);meta.title=[client.name,job.model,job.effort].filter(Boolean).join(' · ');
       text.className='job-title-text';text.append(name,meta);toggle.type='button';toggle.className='job-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',title+' 상세');toggle.append(icon('chevron'),text);titleCell.append(toggle);
       modelCell.className='model-column';const model=document.createElement('span'),effort=document.createElement('span');model.className='job-model';model.textContent=job.model||'—';model.title=job.model||'';effort.className='job-meta';effort.textContent=job.effort||'';modelCell.append(model,effort);
-      statusCell.className='status-column';const status=document.createElement('span');status.className='job-status';
+      statusCell.className='status-column';const status=document.createElement('span');status.className='job-status chip';
       if(job.status==='completed'){const dot=document.createElement('span');dot.className='status-dot';dot.setAttribute('aria-hidden','true');status.append(dot);}else status.append(icon(job.status==='running'?'spinner':job.status==='queued'?'clock':'alert'));
       status.append(document.createTextNode(statusLabel(job.status)));statusCell.append(status);
-      timeCell.className='time-column';const time=document.createElement('time'),date=document.createElement('span');time.textContent=job.created_at?new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(job.created_at):'—';if(job.created_at)time.dateTime=new Date(job.created_at).toISOString();time.title=formatDateTime(job.created_at);date.className='job-date';date.textContent=job.created_at?new Intl.DateTimeFormat('ko-KR',{month:'numeric',day:'numeric'}).format(job.created_at):'';timeCell.append(time,date);
+      timeCell.className='time-column';const time=document.createElement('time');time.textContent=jobTime(job.created_at);if(job.created_at)time.dateTime=new Date(job.created_at).toISOString();time.title=formatDateTime(job.created_at);time.setAttribute('aria-label',time.title);timeCell.append(time);
       row.append(titleCell,modelCell,statusCell,timeCell);
       const detailRow=document.createElement('tr'),detailCell=document.createElement('td'),body=document.createElement('div');
       detailRow.className='job-detail';detailRow.hidden=true;detailCell.className='job-span';detailCell.colSpan=compactJobs.matches?3:4;body.className='job-body';body.id='job-detail-'+index++;toggle.setAttribute('aria-controls',body.id);
@@ -134,7 +191,7 @@ function renderJobs(){
       responseDetails.className='fold response-details';responseTitle.append(icon('chevron'),document.createTextNode('응답 내용'));responseText.textContent='조회 중입니다.';responseDetails.append(responseTitle,responseText);
       const rawDetails=document.createElement('details'),rawTitle=document.createElement('summary'),rawText=document.createElement('pre');
       rawDetails.className='fold raw-details';rawTitle.append(icon('chevron'),document.createTextNode('원본 로그'));rawDetails.append(rawTitle,rawText);
-      body.append(overview,usage,feedback,responseDetails,rawDetails);detailCell.append(body);detailRow.append(detailCell);
+      const created=document.createElement('p');created.className='sub';created.textContent='요청 '+formatDateTime(job.created_at);body.append(overview,usage,created,feedback,responseDetails,rawDetails);detailCell.append(body);detailRow.append(detailCell);
       let loaded=false,saved=null;
       rawDetails.addEventListener('toggle',()=>{if(rawDetails.open&&saved)rawText.textContent=JSON.stringify(saved,null,2);});
       const expand=()=>{
@@ -159,28 +216,36 @@ function renderJobs(){
 }
 function render(){
   for(const key of ['max_chars','max_calls_5h','max_calls_7d'])el(key).value=state.settings[key];
+  el('week_start').value=String(state.settings.week_start??1);
+  el('week_start').disabled=!state.usage_windows?.week;
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy||!!pendingRecovery()||reconnecting;
-  renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
+  renderLocal();renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
   const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];
   el('latestUsage').textContent=latest?jobTokenText(latest):'아직 완료된 응답이 없습니다.';
   el('latestUsageMeta').textContent=latest?[latest.client?.task_name,latest.model,formatDateTime(latest.finished_at||latest.created_at)].filter(Boolean).join(' · '):'';
 }
 function saveRefreshTime(){const now=Date.now();storage.set(localStorage,LAST_REFRESH,String(now));el('lastRefresh').textContent='마지막 갱신 '+formatTime(now);}
 async function refresh(announce=true){try{state=await api('/api/status');render();saveRefreshTime();if(pendingRecovery()&&!reconnecting){if(recoveryConfirmed(state))recoveryComplete(state,true);else recoveryUnknown(state);}else if(announce)message('서버 상태와 로컬 사용량을 갱신했습니다.');return state;}catch(error){serverState(error.status===401?'연결 필요':error.status?'오류':'중지',error.status?'error':'warning');throw error;}}
-async function run(task){if(busy)return;busy=true;try{await task();}catch(error){message(error.message,true);}finally{busy=false;}}
+async function run(task,target='serverFeedback'){if(busy)return;busy=true;feedback(target,'');try{await task();}catch(error){feedback(target,error.message,'error');message(error.message,true);}finally{busy=false;}}
 function selectTab(name){for(const tab of document.querySelectorAll('[data-tab]'))tab.setAttribute('aria-selected',String(tab.dataset.tab===name));for(const panel of document.querySelectorAll('.tab-panel'))panel.hidden=panel.id!==name+'Panel';}
 for(const tab of document.querySelectorAll('[data-tab]'))tab.addEventListener('click',()=>selectTab(tab.dataset.tab));
 selectTab(pair?'server':'settings');
-el('rememberPair').addEventListener('change',()=>remember());
-el('connect').onclick=()=>run(async()=>{const next=parsePair(el('pair').value);if(!next)throw Error('연결 코드가 비어 있습니다.');if(next!==pair){modelCache={models:[],at:0};storage.set(localStorage,MODEL_CACHE,'');saveRecovery(null);}pair=next;remember();await refresh();selectTab('server');if(state.connected&&!modelCache.models.length)await refreshModels(false);});
-el('copy').onclick=()=>run(async()=>{if(!pair)throw Error('연결 코드를 먼저 넣으세요.');await navigator.clipboard.writeText(location.origin+'/#pair='+pair);message('이 기기의 연결 주소를 복사했습니다.');});
-el('login').onclick=()=>run(async()=>{message('ChatGPT 구독 연결 화면을 여는 중입니다.');const result=await api('/api/login',{});location.assign(result.url);});
-el('models').onclick=()=>run(async()=>{await refreshModels();el('modelDetails').open=true;});
-el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={models:[],at:0};storage.set(localStorage,MODEL_CACHE,'');await refresh();message('계정 연결을 해제했습니다.');});
-el('save').onclick=()=>run(async()=>{await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d'].map(key=>[key,Number(el(key).value)])));await refresh();});
-el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();});
-el('usageRefresh').onclick=()=>run(refresh);el('refreshJobs').onclick=()=>run(refresh);
+el('rememberPair').addEventListener('change',()=>{remember();renderLocal();});
+el('disconnectLocal').onclick=()=>run(async()=>{
+  pair='';el('pair').value='';el('rememberPair').checked=false;for(const area of [sessionStorage,localStorage])storage.set(area,area===sessionStorage?PAIR_SESSION:PAIR_LOCAL,'');
+  saveRecovery(null);state=null;updateStates={git:null,zip:null};connectionState(false);renderAccount();renderUpdate();el('restart').disabled=true;el('bridgeVersion').textContent='v—';document.title='GPT 브리지';serverState('연결 필요','warning');
+  feedback('localFeedback','브리지 실행 화면의 주소로 다시 연결할 수 있어요.');message('로컬 연결을 해제했어요.',false,false,false,'info');el('pair').focus();
+  try{history.replaceState(history.state,'',location.pathname);}catch{throw Error('주소의 연결 코드를 지우지 못했어요. 이 탭을 닫아 주세요.');}
+},'localFeedback');
+el('connect').onclick=()=>run(async()=>{const next=parsePair(el('pair').value);if(!next)throw Error('연결 코드가 비어 있습니다.');if(next!==pair){modelCache={models:[],at:0};modelFresh=false;modelFailed=false;storage.set(localStorage,MODEL_CACHE,'');saveRecovery(null);connectionState(false);}pair=next;remember();await refresh();selectTab('server');if(state.connected&&!modelCache.models.length)await refreshModels(false);},'localFeedback');
+el('copy').onclick=()=>run(async()=>{if(!pair)throw Error('연결 코드를 먼저 넣으세요.');await navigator.clipboard.writeText(location.origin+'/#pair='+pair);message('이 기기의 연결 주소를 복사했습니다.');},'localFeedback');
+el('login').onclick=()=>run(async()=>{message('ChatGPT 구독 연결 화면을 여는 중입니다.',false,false,false,'info');const result=await api('/api/login',{});location.assign(result.url);},'modelFeedback');
+el('models').onclick=()=>run(async()=>{await refreshModels();el('modelDetails').open=true;},'modelFeedback');
+el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={models:[],at:0};modelFresh=false;modelFailed=false;storage.set(localStorage,MODEL_CACHE,'');await refresh();message('계정 연결을 해제했습니다.');},'modelFeedback');
+el('save').onclick=()=>run(async()=>{if(!state||!localConnected)throw Error('로컬 연결을 먼저 확인해 주세요.');await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d','week_start'].map(key=>[key,Number(el(key).value)]).filter(([key,value])=>value!==(state.settings[key]??(key==='week_start'?1:undefined)))));await refresh();},'advancedFeedback');
+el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();},'advancedFeedback');
+el('usageRefresh').onclick=()=>run(refresh);el('refreshJobs').onclick=()=>run(refresh,'jobsFeedback');
 el('checkUpdate').onclick=()=>run(()=>pendingRecovery()?reconnectAfterRestart(true,true):checkUpdates());
 function versionAtLeast(current,target){
   if(!/^\d+\.\d+\.\d+$/.test(current||'')||!/^\d+\.\d+\.\d+$/.test(target||''))return false;
@@ -195,23 +260,27 @@ function recoveryProgress(phase){
   el('restart').disabled=true;
   serverState(phase==='applying'?'업데이트 중':phase==='restarting'?'재시작 중':'결과 확인 중','busy');
   message(phase==='applying'?'업데이트를 적용하고 있어요.':phase==='restarting'?'브리지를 다시 시작하고 있어요.':recovery.kind==='update'?'업데이트 결과를 확인하고 있어요.':'브리지 연결을 확인하고 있어요.',false,true,true);
+  feedback('serverFeedback',el('status').textContent);
 }
 async function timedApi(route,body,timeout=4000){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
   try{return await api(route,body,controller.signal);}finally{clearTimeout(timer);}
 }
 function recoveryComplete(next,reload){
+  updateFailure();
   state=next;reconnecting=false;saveRecovery({...recovery,phase:'complete'});render();saveRefreshTime();
-  message(recovery.kind==='update'?'v'+next.version+' 새 버전으로 업데이트했어요.':'브리지를 다시 시작했어요.',false,true);
+  message(recovery.kind==='update'?'v'+next.version+' 새 버전으로 업데이트했어요.':'브리지를 다시 시작했어요.');
+  feedback('serverFeedback',el('status').textContent);
   if(!reload){saveRecovery(null);return;}
   try{remember();history.replaceState(history.state,'',location.pathname+'#pair='+encodeURIComponent(pair));location.reload();}
-  catch{message('브리지는 정상 실행 중이에요. 페이지를 다시 열지 못했습니다. 현재 페이지를 새로고침해 주세요.',false,true,false,'unknown');}
+  catch{message('브리지는 정상 실행 중이에요. 페이지를 다시 열지 못했습니다. 현재 페이지를 새로고침해 주세요.',false,true,false,'unknown');feedback('serverFeedback',el('status').textContent,'warning');}
 }
 function recoveryUnknown(next,unauthorized=false){
   reconnecting=false;saveRecovery({...recovery,phase:'unknown'});
   if(next){state=next;render();}else{if(state)render();else renderUpdate();serverState(unauthorized?'연결 필요':'중지',unauthorized?'error':'warning');}
   const text=recovery.kind==='update'?'업데이트 결과를 아직 확인하지 못했어요.':'브리지 연결을 아직 확인하지 못했어요.';
   message(text+(unauthorized?' 브리지 실행 화면의 연결 주소 전체를 다시 열어 주세요.':next?' 현재 v'+next.version+'가 응답하고 있어요. ['+(recovery.kind==='update'?'결과 다시 확인':'연결 다시 확인')+']으로 다시 확인할 수 있어요.':' 브리지 실행 화면을 확인한 뒤 다시 확인해 주세요.'),recovery.kind==='restart',true,false,'unknown');
+  feedback('serverFeedback',el('status').textContent,'warning');
 }
 async function reconnectAfterRestart(reload=true,manual=false){
   // Reloading keeps the original deadline; an explicit recheck gets a short GET-only window.
@@ -235,6 +304,7 @@ async function startControl(kind,method){
   if(kind==='update'&&updateStates[method]?.status!=='available')throw Error('먼저 업데이트 확인을 눌러 주세요.');
   if(!confirm(kind==='update'?'새 버전을 받고 브리지를 다시 시작할까요? 진행 중인 요청이 있으면 실행되지 않습니다.':'진행 중인 요청이 없을 때 브리지를 다시 시작할까요?'))return;
   saveRecovery({kind,started_at:Date.now(),previous_instance:state.instance_id,target_version:kind==='update'?updateStates[method].latest_version:'',phase:kind==='update'?'applying':'restarting'});
+  updateFailure();
   recoveryProgress(recovery.phase);
   let result;
   try{result=await timedApi(kind==='update'?'/api/update':'/api/restart',kind==='update'?{method}:{},120000);}
@@ -242,11 +312,12 @@ async function startControl(kind,method){
     if(error.status){
       let next=null;try{next=await timedApi('/api/status');}catch{}
       if(next&&recoveryConfirmed(next)){recoveryComplete(next,true);return;}
+      updateFailure(error);
       reconnecting=false;saveRecovery(null);if(next){state=next;render();}else{render();serverState(error.status===401?'연결 필요':'중지',error.status===401?'error':'warning');}
-      message((kind==='update'?'업데이트하지 못했어요.':'브리지를 다시 시작하지 못했어요.')+(error.code==='BUSY'?' 진행 중인 작업이 끝나면 다시 시도해 주세요.':error.status===401?' 브리지 실행 화면의 연결 주소 전체를 다시 열어 주세요.':' 연결 상태를 확인한 뒤 다시 시도해 주세요.'),true,true);return;
+      message((kind==='update'?'업데이트하지 못했어요.':'브리지를 다시 시작하지 못했어요.')+(error.code==='BUSY'?' 진행 중인 작업이 끝나면 다시 시도해 주세요.':error.status===401?' 브리지 실행 화면의 연결 주소 전체를 다시 열어 주세요.':' 연결 상태를 확인한 뒤 다시 시도해 주세요.'),true,true);feedback('serverFeedback',el('status').textContent,'error');return;
     }
   }
-  if(result?.updated===false){reconnecting=false;saveRecovery(null);await refresh(false);await checkUpdates(false);message('적용할 업데이트가 없어요.',false,true,false,'unknown');return;}
+  if(result?.updated===false){reconnecting=false;saveRecovery(null);await refresh(false);await checkUpdates(false);message('적용할 업데이트가 없어요.',false,false,false,'info');return;}
   recoveryProgress('restarting');await reconnectAfterRestart();
 }
 el('updateGit').onclick=()=>run(()=>startControl('update','git'));el('updateZip').onclick=()=>run(()=>startControl('update','zip'));
@@ -254,6 +325,6 @@ el('restart').onclick=()=>run(()=>startControl('restart'));
 const last=Number(storage.get(localStorage,LAST_REFRESH));if(Number.isFinite(last)&&last>0)el('lastRefresh').textContent='마지막 갱신 '+formatTime(last);
 if(pair){storage.set(sessionStorage,PAIR_SESSION,pair);run(async()=>{try{
   if(recovery&&recovery.kind!=='legacy'){if(!await reconnectAfterRestart(false))return;}
-  else{await refresh(false);if(recovery?.kind==='legacy'){saveRecovery(null);message('현재 v'+state.version+' 브리지가 응답하고 있어요. 이전 업데이트 결과는 기록이 부족해 확인할 수 없어요.',false,true,false,'unknown');}}
+  else{await refresh(false);if(recovery?.kind==='legacy'){saveRecovery(null);message('현재 v'+state.version+' 브리지가 응답하고 있어요. 이전 업데이트 결과는 기록이 부족해 확인할 수 없어요.',false,true,false,'unknown');feedback('serverFeedback',el('status').textContent,'warning');}}
   try{await checkUpdates(false);}catch{renderUpdate();}if(state.connected&&!modelCache.models.length)await refreshModels(false);
 }catch(error){selectTab('settings');throw error;}});}else{serverState('연결 필요');renderAccount();message('브리지 실행 화면의 주소 전체를 열거나 연결 코드를 넣으세요.',true);}

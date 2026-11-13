@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {API,SubscriptionAuth,BridgeError,check,sha,readJSON,writeJSON} from './auth.mjs';
 
-export const DEFAULT_SETTINGS={paused:false,max_chars:240000,max_calls_5h:20,max_calls_7d:200};
+export const DEFAULT_SETTINGS={paused:false,max_chars:240000,max_calls_5h:20,max_calls_7d:200,week_start:1};
 export function bridgePlatform(platform=process.platform,env=process.env){
   if(platform==='android'||env?.TERMUX_VERSION)return 'android';
   if(platform==='darwin')return 'mac';
@@ -77,6 +77,7 @@ export class JobBridge {
     await this.auth.init();await fs.mkdir(path.join(this.dir,'jobs'),{recursive:true,mode:0o700});
     const saved=await readJSON(path.join(this.dir,'settings.json'),{});
     this.settings=Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key=>[key,Object.hasOwn(saved,key)?saved[key]:DEFAULT_SETTINGS[key]]));
+    if(!Number.isInteger(this.settings.week_start)||this.settings.week_start<0||this.settings.week_start>6)this.settings.week_start=1;
     for(const file of await fs.readdir(path.join(this.dir,'jobs'))){
       if(!/^[a-f0-9]{64}\.json$/.test(file))continue;
       const job=await readJSON(path.join(this.dir,'jobs',file),null);if(!job)continue;
@@ -98,13 +99,34 @@ export class JobBridge {
     }
     return {input_tokens,output_tokens,total_tokens:input_tokens+output_tokens,recorded_jobs,unreported_calls};
   }
-  status(){return {version:'0.2.25',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  windowUsage(start_at,end_at){
+    const out={start_at,end_at,calls:0,completed_jobs:0,recorded_jobs:0,unreported_completed:0,unplaced_completed:0,input_tokens:0,output_tokens:0,total_tokens:0};
+    const includes=value=>Number.isFinite(value)&&value>=start_at&&value<end_at;
+    for(const job of this.jobs.values()){
+      if(includes(job.started_at))out.calls++;
+      if(job.status!=='completed')continue;
+      if(!Number.isFinite(job.finished_at)){out.unplaced_completed++;continue;}
+      if(!includes(job.finished_at))continue;
+      out.completed_jobs++;
+      const input=job.usage?.input_tokens,output=job.usage?.output_tokens;
+      if(!Number.isSafeInteger(input)||input<0||!Number.isSafeInteger(output)||output<0){out.unreported_completed++;continue;}
+      out.recorded_jobs++;out.input_tokens+=input;out.output_tokens+=output;
+    }
+    out.total_tokens=out.input_tokens+out.output_tokens;return out;
+  }
+  usageWindows({week_start_at,week_end_at}={}){
+    const now=this.now(),start=new Date(now);start.setHours(0,0,0,0);start.setDate(start.getDate()-(start.getDay()-this.settings.week_start+7)%7);
+    const end=new Date(start);end.setDate(end.getDate()+7);
+    return {five_hours:this.windowUsage(now-18000000,now+1),week:this.windowUsage(week_start_at??start.getTime(),week_end_at??end.getTime())};
+  }
+  status(range){return {version:'0.2.26',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};
     check(typeof next.paused==='boolean','SETTINGS','일시정지 값은 true/false여야 합니다.');
     for(const [key,minimum,maximum] of [['max_chars',1000,1000000],['max_calls_5h',1,200],['max_calls_7d',1,2000]])check(Number.isInteger(next[key])&&next[key]>=minimum&&next[key]<=maximum,'SETTINGS','설정 범위를 확인해 주세요: '+key);
-    await writeJSON(path.join(this.dir,'settings.json'),next);this.settings=next;if(!next.paused)void this.drain();return next;
+    check(Number.isInteger(next.week_start)&&next.week_start>=0&&next.week_start<=6,'SETTINGS','주 시작 요일을 확인해 주세요.');
+    await writeJSON(path.join(this.dir,'settings.json'),next);this.settings=next;if(!next.paused&&Object.keys(value).some(key=>key!=='week_start'))void this.drain();return next;
   }
   async add(value){
     const create=async()=>{

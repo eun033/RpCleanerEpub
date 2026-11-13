@@ -118,7 +118,15 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
       }
       check(equal(req.headers.authorization||'','Bearer '+bridge.auth.identity.pair),'PAIR','관리 화면에서 복사한 로컬 연결 코드가 필요합니다.',401);
       const methods=updateMethods.length?updateMethods:typeof onUpdate==='function'?['git']:[];
-      if(req.method==='GET'&&url.pathname==='/api/status')return send(res,200,{...bridge.status(),instance_id:instanceId,can_restart:typeof onRestart==='function',restart_busy:restartBusy(),can_update:typeof onUpdate==='function',install_method:installMethod||methods[0]||'unknown',update_methods:methods,update_busy:updateBusy});
+      if(req.method==='GET'&&url.pathname==='/api/status'){
+        let range;
+        if(url.searchParams.has('week_start_at')||url.searchParams.has('week_end_at')){
+          const start=Number(url.searchParams.get('week_start_at')),end=Number(url.searchParams.get('week_end_at'));
+          check(url.searchParams.has('week_start_at')&&url.searchParams.has('week_end_at')&&Number.isSafeInteger(start)&&Number.isSafeInteger(end)&&Math.abs(start)<=8640000000000000&&Math.abs(end)<=8640000000000000&&end-start>=6*86400000&&end-start<=8*86400000,'USAGE_RANGE','주간 집계 범위를 확인해 주세요.');
+          range={week_start_at:start,week_end_at:end};
+        }
+        return send(res,200,{...bridge.status(range),instance_id:instanceId,can_restart:typeof onRestart==='function',restart_busy:restartBusy(),can_update:typeof onUpdate==='function',install_method:installMethod||methods[0]||'unknown',update_methods:methods,update_busy:updateBusy});
+      }
       if(req.method==='GET'&&url.pathname==='/api/update/check'){
         const method=url.searchParams.get('method')||methods[0];
         check(typeof onUpdateCheck==='function'&&methods.includes(method),'UPDATE_UNAVAILABLE','현재 설치 방식에서 사용할 수 없는 업데이트입니다.',409);
