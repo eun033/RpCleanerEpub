@@ -174,16 +174,21 @@ async function reconnectAfterRestart(updated=false){
   while(Date.now()<deadline){
     await new Promise(resolve=>setTimeout(resolve,2000));
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4000);
+    let next;
     try{
       const response=await fetch('/api/status',{headers:{Authorization:'Bearer '+pair},cache:'no-store',signal:controller.signal});
       if(response.status===401)throw Object.assign(Error('연결 코드를 확인할 수 없습니다. 터미널에 표시된 관리 화면 주소 전체를 다시 열어 주세요.'),{status:401});
       if(!response.ok)continue;
-      const next=await response.json();
-      if(!next.instance_id||next.instance_id===previous||next.update_busy)continue;
-      if(updated)storage.set(localStorage,UPDATE_STARTED,'');
-      remember();history.replaceState(null,'',location.pathname+'#pair='+encodeURIComponent(pair));location.reload();return;
-    }catch(error){if(error.status===401)throw error;}finally{clearTimeout(timer);}
+      next=await response.json();
+    }catch(error){if(error.status===401){serverState('연결 필요','error');throw error;}}finally{clearTimeout(timer);}
+    if(!next?.instance_id||next.instance_id===previous||next.update_busy)continue;
+    if(updated)storage.set(localStorage,UPDATE_STARTED,'');
+    serverState('정상','online');
+    try{remember();history.replaceState(null,'',location.pathname+'#pair='+encodeURIComponent(pair));location.reload();}
+    catch{throw Error('서버 재시작은 완료됐지만 페이지를 다시 열지 못했습니다. 터미널의 관리 화면 주소 전체를 다시 열어 주세요.');}
+    return;
   }
+  serverState('오류','error');
   throw Error('5분 동안 서버 재연결을 확인하지 못했습니다. 브리지 실행 상태를 확인한 뒤 터미널의 관리 화면 주소 전체를 다시 열어 주세요.');
 }
 async function applyUpdate(method){

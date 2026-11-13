@@ -88,6 +88,12 @@ export async function applyGitUpdate(gitInfo,runtimeSource,{platform=process.pla
   if(path.resolve(source)!==path.resolve(runtimeSource)){if(platform==='win32')await copyBridgeFiles(source,runtimeSource);else await commandImpl('bash',[path.join(source,'update-termux.sh')],source);}
   return {updated:true,method:'git',message:'Git 버전을 적용했습니다. 서버를 다시 시작합니다.'};
 }
+export function restartServer({server,bridge},exit=code=>process.exit(code)){
+  bridge.close();
+  // Incomplete HTTP requests can otherwise keep close() waiting indefinitely.
+  const drain=setTimeout(()=>server.closeAllConnections(),1000);
+  server.close(()=>{clearTimeout(drain);exit(75);});
+}
 export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subscription-bridge'),fetchImpl=globalThis.fetch,clock=Date.now,appName='Local GPT Subscription Bridge',onRestart=null,onUpdateCheck=null,onUpdate=null,updateMethods=[],installMethod=''}={}){
   const bridge=await new JobBridge(dir,{fetchImpl,clock,appName}).init();
   const instanceId=randomUUID();
@@ -147,7 +153,7 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const port=Number(process.env.GPT_BRIDGE_PORT||DEFAULT_PORT);
   check(Number.isInteger(port)&&port>=1024&&port<=65535,'PORT','사용할 포트를 확인하세요.');
   const supervised=process.env.GPT_BRIDGE_SUPERVISED==='1',runtimeSource=path.resolve(ROOT,'..'),manifestPath=path.join(runtimeSource,'package.json');
-  const restart=supervised?({server,bridge})=>{bridge.close();server.close(()=>process.exit(75));}:null;
+  const restart=supervised?restartServer:null;
   const marker=await fs.readFile(path.join(runtimeSource,'.git-source'),'utf8').then(value=>value.trim(),()=>''),candidates=gitSourceCandidates({runtimeSource,explicit:process.env.GPT_BRIDGE_SOURCE,marker});
   let gitInfo=null;
   if(await commandExists('git'))for(const candidate of candidates)try{
