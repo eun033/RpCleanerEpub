@@ -1,5 +1,11 @@
 'use strict';
 const el=id=>document.getElementById(id);
+const ICON_PATHS={refresh:'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',restart:'M3 10a9 9 0 1 1 2.6 8.4 M3 4v6h6',chevron:'m9 6 6 6-6 6',download:'M12 3v12 m-5-5 5 5 5-5 M5 16v5h14v-5',spinner:'M21 12a9 9 0 1 1-9-9',check:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M8 12l3 3 5-6',alert:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v6 M12 17h.01',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2',external:'M14 3h7v7 M21 3l-9 9 M10 3H3v18h18v-7'};
+function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [key,value] of Object.entries({viewBox:'0 0 24 24',width:'20',height:'20',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false',class:'ui-icon '+name}))svg.setAttribute(key,value);const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',ICON_PATHS[name]);svg.append(path);return svg;}
+for(const [id,name] of [['restart','restart'],['updateGit','download'],['updateZip','download']])el(id).prepend(icon(name));
+for(const id of ['usageRefresh','refreshJobs'])el(id).replaceChildren(icon('refresh'));
+for(const summary of document.querySelectorAll('.fold>summary,.advanced>summary'))summary.prepend(icon('chevron'));
+document.querySelector('.usage-link').replaceChildren(document.createTextNode('ChatGPT 공식 한도 확인'),icon('external'));
 const PAIR_SESSION='gpt-bridge-pair-session-v1',PAIR_LOCAL='gpt-bridge-pair-local-v1',LAST_REFRESH='gpt-bridge-last-refresh-v1',MODEL_CACHE='gpt-bridge-model-cache-v1',UPDATE_STARTED='gpt-bridge-update-started-v1';
 const storage={get:(area,key)=>{try{return area.getItem(key)||'';}catch{return '';}},set:(area,key,value)=>{try{value?area.setItem(key,value):area.removeItem(key);}catch{}}};
 const fragmentPair=new URLSearchParams(location.hash.slice(1)).get('pair')||'',savedPair=storage.get(localStorage,PAIR_LOCAL);
@@ -9,8 +15,8 @@ if(pair)storage.set(sessionStorage,PAIR_SESSION,pair);
 if(location.hash&&(storage.get(sessionStorage,PAIR_SESSION)===pair||savedPair===pair))history.replaceState(null,'',location.pathname);
 el('pair').value=pair;el('rememberPair').checked=!!savedPair&&savedPair===pair;
 let messageTimer=null;
-function message(text,error=false,sticky=false,progress=false){clearTimeout(messageTimer);el('status').hidden=false;el('status').textContent=text;el('status').className='notice'+(error?' error':progress?' progress':'');if(!error&&!sticky)messageTimer=setTimeout(()=>{el('status').hidden=true;},2400);}
-function serverState(label,kind=''){el('serverState').className='server-state '+kind;el('serverState').querySelector('span').textContent=label;el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'중지 또는 연결 끊김 · 터미널 실행 상태를 확인하세요.':label;}
+function message(text,error=false,sticky=false,progress=false){clearTimeout(messageTimer);el('status').hidden=false;el('status').textContent=text;el('status').className='notice'+(error?' error':progress?' progress':'');if(progress)el('status').prepend(icon('spinner'));if(!error&&!sticky)messageTimer=setTimeout(()=>{el('status').hidden=true;},2400);}
+function serverState(label,kind=''){el('serverState').className='server-state '+kind;el('serverState').querySelector('span').textContent=label;el('serverState').replaceChild(icon(kind==='online'?'check':kind==='busy'?'spinner':kind==='error'?'alert':'clock'),el('serverState').firstElementChild);el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'중지 또는 연결 끊김 · 터미널 실행 상태를 확인하세요.':label;}
 function parsePair(value){
   const raw=value.trim();if(!raw.startsWith('http'))return raw;
   const url=new URL(raw);if(url.origin!==location.origin||url.hostname!=='127.0.0.1')throw Error('현재 관리 화면과 같은 주소의 코드를 넣으세요.');
@@ -62,12 +68,14 @@ function renderUpdate(){
   const labels={current:'최신 버전입니다.',available:'업데이트 있음',local_changes:'로컬 수정이 있어 자동 업데이트할 수 없습니다.',local_ahead:'설치본이 더 새롭습니다.',diverged:'저장소 기록을 확인하세요.'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',item=updateStates[installed];
   for(const method of ['git','zip']){const button=el('update'+(method==='git'?'Git':'Zip')),available=method===installed&&methods.has(method)&&updateStates[method]?.status==='available';button.hidden=!available;button.disabled=!available||!!state?.restart_busy||!!state?.update_busy;}
   el('updateResult').textContent=methods.size?item?(labels[item.status]||'확인하지 못했습니다.'):'업데이트를 확인해 주세요.':['git','zip'].includes(installed)?'관리 화면에서 업데이트하려면 감독 실행이 필요합니다.':'설치 상태를 확인하세요.';
-  el('checkUpdate').disabled=!methods.size||!!state?.update_busy;el('checkUpdate').textContent=state?.update_busy?'확인 중…':'업데이트 확인';
+  el('checkUpdate').disabled=!methods.size||!!state?.update_busy;el('checkUpdate').replaceChildren(icon(state?.update_busy?'spinner':'refresh'),document.createTextNode(state?.update_busy?'확인 중…':'업데이트 확인'));
   const available=[...methods].map(method=>updateStates[method]).find(value=>value?.status==='available');el('updateBadge').hidden=!available;el('updateBadge').textContent=available?'v'+available.latest_version+' 업데이트 가능':'';
 }
 async function checkUpdates(announce=true){for(const method of state?.update_methods||[])updateStates[method]=await api('/api/update/check?method='+method);renderUpdate();if(announce)message(Object.values(updateStates).some(item=>item?.status==='available')?'새 버전을 확인했습니다.':'업데이트 확인을 마쳤습니다.');}
 function saveModels(models){modelCache={models:models.map(model=>({name:String(model.name||model.display_name||model.slug||''),slug:String(model.slug||'')})).filter(model=>model.slug),at:Date.now()};storage.set(localStorage,MODEL_CACHE,JSON.stringify(modelCache));renderAccount();}
 async function refreshModels(announce=true){const models=await api('/api/models');if(!Array.isArray(models))throw Error('모델 목록 형식을 확인하지 못했습니다.');saveModels(models);if(announce)message('모델 정보와 확인 시간을 저장했습니다.');return models;}
+const compactJobs=matchMedia('(max-width:599px)');
+compactJobs.addEventListener('change',()=>{for(const cell of document.querySelectorAll('.job-span'))cell.colSpan=compactJobs.matches?3:4;const title=document.querySelector('.job-title-column');if(title)title.textContent=compactJobs.matches?'작업 / 모델':'작업명';});
 function renderJobs(){
   const recent=state?.recent||[],groups=[
     {name:'진행 중',jobs:recent.filter(job=>['running','queued'].includes(job.status))},
@@ -76,29 +84,48 @@ function renderJobs(){
   ];
   el('activeCount').textContent=groups[0].jobs.length;el('doneCount').textContent=groups[1].jobs.length;el('errorCount').textContent=groups[2].jobs.length;el('jobs').replaceChildren();
   if(!recent.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='아직 요청한 작업이 없습니다.';el('jobs').append(empty);return;}
+  const table=document.createElement('table');table.className='job-table';
+  const caption=document.createElement('caption');caption.className='sr-only';caption.textContent='최근 작업 목록';table.append(caption);
+  const head=document.createElement('thead'),headRow=document.createElement('tr');
+  for(const [text,className] of [[compactJobs.matches?'작업 / 모델':'작업명','job-title-column'],['모델','model-column'],['상태','status-column'],['시간','time-column']]){
+    const cell=document.createElement('th');cell.scope='col';cell.className=className;cell.textContent=text;headRow.append(cell);
+  }
+  head.append(headRow);table.append(head);
+  let openButton=null,openRow=null,index=0;
+  const close=()=>{if(openRow){openRow.hidden=true;openButton.setAttribute('aria-expanded','false');}openRow=null;openButton=null;};
+  table.addEventListener('keydown',event=>{if(event.key==='Escape'&&openRow){const target=openButton;close();target.focus();event.preventDefault();}});
   for(const group of groups){
     if(!group.jobs.length)continue;
-    const heading=document.createElement('h3');heading.className='job-group';heading.textContent=group.name;el('jobs').append(heading);
+    const section=document.createElement('tbody'),groupRow=document.createElement('tr'),groupCell=document.createElement('th');
+    groupRow.className='job-group';groupCell.className='job-span';groupCell.colSpan=compactJobs.matches?3:4;groupCell.scope='rowgroup';groupCell.textContent=group.name+' · '+group.jobs.length;groupRow.append(groupCell);section.append(groupRow);
     for(const job of group.jobs){
-      const details=document.createElement('details');details.className='job '+job.status;details.dataset.requestId=job.request_id;
-      const summary=document.createElement('summary'),top=document.createElement('div'),label=document.createElement('span'),time=document.createElement('time'),name=document.createElement('div'),meta=document.createElement('div'),body=document.createElement('div');
-      const client=job.client||{};
-      top.className='job-top';label.textContent=statusLabel(job.status);time.textContent=formatTime(job.created_at);
-      name.className='job-name';name.textContent=[client.room_name,client.task_name].filter(Boolean).join(' · ')||client.name||job.model||'AI 요청';
-      meta.className='job-meta';meta.textContent=[client.name,job.model,job.effort].filter(Boolean).join(' · ');
-      top.append(label,time);summary.append(name,meta,top);
+      const row=document.createElement('tr');row.className='job-row '+job.status;row.dataset.requestId=job.request_id;
+      const titleCell=document.createElement('td'),modelCell=document.createElement('td'),statusCell=document.createElement('td'),timeCell=document.createElement('td'),toggle=document.createElement('button');
+      const client=job.client||{},title=[client.room_name,client.task_name].filter(Boolean).join(' · ')||client.name||job.model||'AI 요청';
+      const name=document.createElement('span'),meta=document.createElement('span'),mobileModel=document.createElement('span'),text=document.createElement('span');
+      name.className='job-name';name.textContent=title;name.title=title;
+      meta.className='job-meta';meta.append(document.createTextNode(client.name||'클라이언트 미지정'));
+      mobileModel.className='mobile-model';mobileModel.textContent=' · '+[job.model,job.effort].filter(Boolean).join(' · ');meta.append(mobileModel);meta.title=[client.name,job.model,job.effort].filter(Boolean).join(' · ');
+      text.className='job-title-text';text.append(name,meta);toggle.type='button';toggle.className='job-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',title+' 상세');toggle.append(icon('chevron'),text);titleCell.append(toggle);
+      modelCell.className='model-column';const model=document.createElement('span'),effort=document.createElement('span');model.className='job-model';model.textContent=job.model||'—';model.title=job.model||'';effort.className='job-meta';effort.textContent=job.effort||'';modelCell.append(model,effort);
+      statusCell.className='status-column';const status=document.createElement('span');status.className='job-status';status.append(icon(job.status==='completed'?'check':job.status==='running'?'spinner':['queued'].includes(job.status)?'clock':'alert'),document.createTextNode(statusLabel(job.status)));statusCell.append(status);
+      timeCell.className='time-column';const time=document.createElement('time'),date=document.createElement('span');time.textContent=job.created_at?new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(job.created_at):'—';if(job.created_at)time.dateTime=new Date(job.created_at).toISOString();time.title=formatDateTime(job.created_at);date.className='job-date';date.textContent=job.created_at?new Intl.DateTimeFormat('ko-KR',{month:'numeric',day:'numeric'}).format(job.created_at):'';timeCell.append(time,date);
+      row.append(titleCell,modelCell,statusCell,timeCell);
+      const detailRow=document.createElement('tr'),detailCell=document.createElement('td'),body=document.createElement('div');
+      detailRow.className='job-detail';detailRow.hidden=true;detailCell.className='job-span';detailCell.colSpan=compactJobs.matches?3:4;body.className='job-body';body.id='job-detail-'+index++;toggle.setAttribute('aria-controls',body.id);
       const overview=document.createElement('p'),usage=document.createElement('p'),feedback=document.createElement('p');
       overview.className='job-overview';overview.textContent=statusLabel(job.status)+' · '+(job.started_at?'소요 '+duration(job):'실행 전');
       usage.className='job-usage';usage.textContent=jobTokenText(job);feedback.className='job-feedback';feedback.textContent='저장된 결과를 조회합니다.';
       const responseDetails=document.createElement('details'),responseTitle=document.createElement('summary'),responseText=document.createElement('pre');
-      responseDetails.className='fold response-details';responseTitle.textContent='응답 내용';responseText.textContent='조회 중입니다.';responseDetails.append(responseTitle,responseText);
+      responseDetails.className='fold response-details';responseTitle.append(icon('chevron'),document.createTextNode('응답 내용'));responseText.textContent='조회 중입니다.';responseDetails.append(responseTitle,responseText);
       const rawDetails=document.createElement('details'),rawTitle=document.createElement('summary'),rawText=document.createElement('pre');
-      rawDetails.className='fold raw-details';rawTitle.textContent='원본 로그';rawDetails.append(rawTitle,rawText);
-      body.className='job-body';body.append(overview,usage,feedback,responseDetails,rawDetails);details.append(summary,body);
+      rawDetails.className='fold raw-details';rawTitle.append(icon('chevron'),document.createTextNode('원본 로그'));rawDetails.append(rawTitle,rawText);
+      body.append(overview,usage,feedback,responseDetails,rawDetails);detailCell.append(body);detailRow.append(detailCell);
       let loaded=false,saved=null;
       rawDetails.addEventListener('toggle',()=>{if(rawDetails.open&&saved)rawText.textContent=JSON.stringify(saved,null,2);});
-      details.addEventListener('toggle',()=>{
-        if(!details.open||loaded)return;loaded=true;
+      const expand=()=>{
+        if(openRow===detailRow){close();return;}close();detailRow.hidden=false;toggle.setAttribute('aria-expanded','true');openRow=detailRow;openButton=toggle;
+        if(loaded)return;loaded=true;
         api('/api/jobs/'+job.request_id).then(data=>{
           saved=data;feedback.textContent=data.message||'';feedback.hidden=!data.message;
           const fresh={...job,...data};usage.textContent=jobTokenText(fresh);overview.textContent=statusLabel(fresh.status)+' · '+(fresh.started_at?'소요 '+duration(fresh):'실행 전');
@@ -108,10 +135,13 @@ function renderJobs(){
             const resume=document.createElement('button');resume.className='btn secondary';resume.textContent='설정 확인 후 작업 재개';resume.addEventListener('click',()=>run(async()=>{await api('/api/jobs/'+job.request_id+'/resume',{});await refresh();}));body.append(resume);
           }
         }).catch(error=>{loaded=false;feedback.hidden=false;feedback.textContent=error.message;});
-      });
-      el('jobs').append(details);
+      };
+      toggle.addEventListener('click',expand);row.addEventListener('click',event=>{if(!event.target.closest('button'))expand();});
+      section.append(row,detailRow);
     }
+    table.append(section);
   }
+  el('jobs').append(table);
 }
 function render(){
   for(const key of ['max_chars','max_calls_5h','max_calls_7d'])el(key).value=state.settings[key];
