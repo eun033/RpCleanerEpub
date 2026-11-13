@@ -47,7 +47,7 @@ export async function checkPublicZipUpdate(fetchImpl,currentVersion){
   }
   throw new BridgeError('UPDATE_CHECK','공개 ZIP 버전을 확인하지 못했습니다.',502);
 }
-const BRIDGE_FILES=['package.json','version.json','src','start-windows.ps1','start.sh','start-ish.sh','update-termux.sh','install-termux.sh','install-ish.sh','ish','LICENSE','README.md','VALIDATION.md','examples'];
+const BRIDGE_FILES=['package.json','version.json','src','start-windows.ps1','start-windows.bat','start.sh','start-ish.sh','update-termux.sh','install-termux.sh','install-ish.sh','ish','LICENSE','README.md','VALIDATION.md','examples'];
 async function copyBridgeFiles(source,target){await fs.mkdir(target,{recursive:true});for(const file of BRIDGE_FILES){const from=path.join(source,file);if(await fs.stat(from).then(()=>true,()=>false))await fs.cp(from,path.join(target,file),{recursive:true,force:true});}}
 async function powershellCommand(exists,platform){if(platform!=='win32')return '';for(const name of ['powershell.exe','pwsh.exe','pwsh'])if(await exists(name,platform))return name;return '';}
 export async function applyPublicZipUpdate(fetchImpl,state,{platform=process.platform,runtimeSource='',commandImpl=command,commandExistsImpl=commandExists}={}){

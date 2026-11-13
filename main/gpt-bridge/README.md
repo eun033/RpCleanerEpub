@@ -1,4 +1,4 @@
-# GPT 브리지 0.2.26
+# GPT 브리지 0.2.27
 
 기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. Android Termux, Windows Git 실행용 PowerShell 감독기와 iOS iSH 설치기를 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
 
@@ -36,9 +36,15 @@ sh install-ish.sh
 
 이후 실행은 `sh ~/local-gpt-subscription-bridge/start-ish.sh`를 사용한다. 이 실행법은 감독기를 거치므로 관리 화면의 **↻ 서버**와 **ZIP 업데이트**가 동작한다. 업데이트 중에도 iSH shim과 fetch 호환 계층을 유지한다. iOS가 iSH를 백그라운드에서 중단하면 서버도 멈출 수 있으므로 iSH를 다시 열어 위 명령으로 시작한다.
 
-## Windows Git 실행
+## Windows 더블클릭 실행
 
-Git과 Node.js 22 이상을 설치하고 PowerShell에서 저장소의 브리지 폴더로 이동한 뒤 실행한다.
+Node.js 22 이상을 설치한 뒤 브리지 폴더의 **start-windows.bat**를 더블클릭한다. 공개 ZIP은 먼저 압축을 풀고 실행한다. Git 설치판은 Git도 필요하다.
+
+배치 파일은 같은 폴더의 `start-windows.ps1`을 PowerShell로 실행한다. 경로에 공백이 있어도 사용할 수 있으며 오류나 종료 안내를 읽을 수 있도록 마지막에 키 입력을 기다린다. 실행 창을 유지해야 서버가 동작한다. 표시된 관리 화면 주소 전체를 브라우저에서 연다.
+
+기존 설치를 업데이트했는데 배치 파일이 없다면 공개 `start-windows.bat`만 받아 `start-windows.ps1` 옆에 둬도 된다. 기존 Windows ZIP 업데이트 코드의 복사 목록에는 새 배치 파일이 없을 수 있다.
+
+PowerShell에서 직접 실행하는 기존 방법도 유지한다.
 
 ```powershell
 cd "$HOME\gpt-codex-work\gpt-brige-crack\bridge-main"
@@ -134,6 +140,8 @@ chmod 700 ~/.termux/boot/hap-gpt-bridge
 Android 배터리 최적화가 Termux를 종료하면 자동 정리가 중단될 수 있으므로 Termux의 백그라운드 실행을 허용한다.
 
 ## 업데이트
+
+0.2.27은 Windows 더블클릭용 `start-windows.bat`를 추가한다. 기존 PowerShell 감독 실행을 사용하므로 대시보드의 재시작·업데이트 동작은 유지한다. 시스템 전체 실행 정책은 변경하지 않는다.
 
 0.2.26은 헤더·탭 여백을 압축하고 정상 표시를 녹색 원 안의 흰색 체크로 정리한다. 후광 대신 아주 작은 밝기 변화만 유지한다. 안내는 하단 고정 토스트 한 개로 표시하고 짧은 안내는 약 3초 후 닫는다. 진행·미확인·연결 문제·조치가 필요한 오류는 관련 영역에도 남는다. 최초 자동 업데이트 확인은 카드 버튼의 스피너로만 표시하고 Git/ZIP 설치 방식과 결과를 칩으로 구분한다.
 
