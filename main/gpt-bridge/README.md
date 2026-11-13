@@ -1,4 +1,4 @@
-# GPT 브리지 0.2.27
+# GPT 브리지 0.2.28
 
 기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. Android Termux, Windows Git 실행용 PowerShell 감독기와 iOS iSH 설치기를 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
 
@@ -140,6 +140,10 @@ chmod 700 ~/.termux/boot/hap-gpt-bridge
 Android 배터리 최적화가 Termux를 종료하면 자동 정리가 중단될 수 있으므로 Termux의 백그라운드 실행을 허용한다.
 
 ## 업데이트
+
+0.2.28은 비공개 Git의 이전 `work-hap-gpt/termux-bridge` 경로를 한 번의 이전 업데이트를 위한 호환 진입점으로 복원한다. 0.2.10처럼 원격의 옛 package.json부터 읽는 서버도 업데이트 확인을 통과하고 실제 원본인 `gpt-brige-crack/bridge-main`으로 넘어간다. 이전 경로·`.git-source`·`GPT_BRIDGE_SOURCE`가 남아 있어도 새 원본을 우선한다. 계정·pair·작업은 기존 홈 데이터 폴더에 유지한다.
+
+옛 폴더의 package.json은 이전용 고정 버전 0.2.28이며 최신 실행 버전의 기준이 아니다. 이후 업데이트는 새 원본을 확인한다. 호환 폴더를 삭제하면 구버전의 첫 업데이트가 다시 막히므로 유지한다. 실제 Windows PowerShell 동작은 별도 검증이 필요하며, 회귀 검사는 원본 0.2.10 Node 서버와 임시 로컬 Git 저장소로 수행한다.
 
 0.2.27은 Windows 더블클릭용 `start-windows.bat`를 추가한다. 기존 PowerShell 감독 실행을 사용하므로 대시보드의 재시작·업데이트 동작은 유지한다. 시스템 전체 실행 정책은 변경하지 않는다.
 

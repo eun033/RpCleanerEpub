@@ -18,7 +18,15 @@ async function readBody(req){let bytes=0;const chunks=[];for await(const chunk o
 function command(file,args,cwd){return new Promise((resolve,reject)=>{const child=spawn(file,args,{cwd,stdio:['ignore','pipe','pipe']}),chunks=[];for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{if(chunks.reduce((n,x)=>n+x.length,0)<100000)chunks.push(chunk);});child.on('error',reject);child.on('close',code=>code===0?resolve(Buffer.concat(chunks).toString('utf8').trim()):reject(new BridgeError('UPDATE_FAILED','업데이트 명령을 실행하지 못했습니다. 인터넷 연결과 설치 상태를 확인하세요. ('+Buffer.concat(chunks).toString('utf8').trim().split('\n').slice(-1)[0]+')',500)));});}
 export function commandLookup(name,platform=process.platform){return platform==='win32'?{file:'where.exe',args:[name]}:{file:'sh',args:['-c','command -v "$1" >/dev/null 2>&1','sh',name]};}
 function commandExists(name,platform=process.platform){return new Promise(resolve=>{const lookup=commandLookup(name,platform),child=spawn(lookup.file,lookup.args,{stdio:'ignore'});child.on('error',()=>resolve(false));child.on('close',code=>resolve(code===0));});}
-export function gitSourceCandidates({runtimeSource,explicit='',marker='',home=os.homedir()}={}){return [...new Set([explicit,marker,runtimeSource,path.join(home,'gpt-codex-work','gpt-brige-crack','bridge-main'),path.join(home,'gpt-codex-work','work-hap-gpt','termux-bridge'),path.join(home,'RpCleanerEpub','main','wish-core-hap-gpt','termux-bridge')].filter(Boolean).map(value=>path.resolve(value)))];}
+export function gitSourceCandidates({runtimeSource,explicit='',marker='',home=os.homedir()}={}){
+  const sources=[explicit,marker,runtimeSource,path.join(home,'gpt-codex-work','gpt-brige-crack','bridge-main'),path.join(home,'gpt-codex-work','work-hap-gpt','termux-bridge'),path.join(home,'RpCleanerEpub','main','wish-core-hap-gpt','termux-bridge')].filter(Boolean).map(value=>path.resolve(value));
+  return [...new Set(sources.flatMap(source=>{
+    const parent=path.basename(path.dirname(source)).toLowerCase();
+    if(path.basename(source).toLowerCase()==='termux-bridge'&&parent==='work-hap-gpt')return [path.resolve(source,'../../gpt-brige-crack/bridge-main'),source];
+    if(path.basename(source).toLowerCase()==='termux-bridge'&&parent==='wish-core-hap-gpt')return [path.resolve(source,'../../gpt-bridge'),source];
+    return [source];
+  }))];
+}
 export function classifyUpdate({local,remote,base,dirty,currentVersion,latestVersion,localTree='',remoteTree=''}){
   if(dirty)return 'local_changes';
   if(currentVersion===latestVersion&&(local===remote||localTree&&localTree===remoteTree))return 'current';
