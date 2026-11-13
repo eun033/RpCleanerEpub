@@ -173,13 +173,14 @@ function renderJobs(){
       const client=job.client||{},title=[client.room_name,client.task_name].filter(Boolean).join(' · ')||client.name||job.model||'AI 요청';
       const name=document.createElement('span'),meta=document.createElement('span'),mobileModel=document.createElement('span'),text=document.createElement('span');
       name.className='job-name';name.textContent=title;name.title=title;
-      meta.className='job-meta';meta.append(document.createTextNode(client.name||'클라이언트 미지정'));
+      const clientName=document.createElement('span'),elapsed=document.createElement('span');clientName.className='job-client-name';clientName.textContent=client.name||'클라이언트 미지정';elapsed.className='job-duration';elapsed.textContent='('+(job.started_at?duration(job):job.status==='queued'?'실행 전':'시간 미상')+')';
+      meta.className='job-meta job-meta-line';meta.append(clientName,elapsed);
       mobileModel.className='mobile-model';mobileModel.textContent=' · '+[job.model,job.effort].filter(Boolean).join(' · ');meta.append(mobileModel);meta.title=[client.name,job.model,job.effort].filter(Boolean).join(' · ');
-      text.className='job-title-text';text.append(name,meta);toggle.type='button';toggle.className='job-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',title+' 상세');toggle.append(icon('chevron'),text);titleCell.append(toggle);
+      text.className='job-title-text';text.append(name,meta);toggle.type='button';toggle.className='job-toggle';toggle.setAttribute('aria-expanded','false');toggle.setAttribute('aria-label',title+' '+elapsed.textContent+' 상세');toggle.append(icon('chevron'),text);titleCell.append(toggle);
       modelCell.className='model-column';const model=document.createElement('span'),effort=document.createElement('span');model.className='job-model';model.textContent=job.model||'—';model.title=job.model||'';effort.className='job-meta';effort.textContent=job.effort||'';modelCell.append(model,effort);
       statusCell.className='status-column';const status=document.createElement('span');status.className='job-status chip';
       if(job.status==='completed'){const dot=document.createElement('span');dot.className='status-dot';dot.setAttribute('aria-hidden','true');status.append(dot);}else status.append(icon(job.status==='running'?'spinner':job.status==='queued'?'clock':'alert'));
-      status.append(document.createTextNode(statusLabel(job.status)));statusCell.append(status);
+      status.title=statusLabel(job.status);status.append(document.createTextNode(job.status==='blocked_budget'?'한도':statusLabel(job.status)));statusCell.append(status);
       timeCell.className='time-column';const time=document.createElement('time');time.textContent=jobTime(job.created_at);if(job.created_at)time.dateTime=new Date(job.created_at).toISOString();time.title=formatDateTime(job.created_at);time.setAttribute('aria-label',time.title);timeCell.append(time);
       row.append(titleCell,modelCell,statusCell,timeCell);
       const detailRow=document.createElement('tr'),detailCell=document.createElement('td'),body=document.createElement('div');

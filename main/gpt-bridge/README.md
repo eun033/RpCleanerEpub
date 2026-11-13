@@ -1,4 +1,4 @@
-# GPT 브리지 0.2.28
+# GPT 브리지 0.2.29
 
 기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. Android Termux, Windows Git 실행용 PowerShell 감독기와 iOS iSH 설치기를 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
 
