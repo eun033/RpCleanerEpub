@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.7
+// @version      0.2.8
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -222,6 +222,7 @@
   const AI_GEMINI_MODELS = Object.freeze([
     'gemini-4-carbon',
     'gemini-4-argon',
+    'gemini-4-hydrogen',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
     'gemini-3.6-flash',
@@ -234,7 +235,7 @@
   // Gemini 3.x는 sampling 값을 임의로 낮추지 않고 모델 기본값을 유지합니다.
   const AI_GEMINI_KEEP_DEFAULT_SAMPLING_MODELS = new Set(AI_GEMINI_MODELS);
   // Firebase/Vertex에서 global endpoint를 강제하던 기존 범위는 sampling 정책과 분리합니다.
-  const AI_GEMINI_GLOBAL_LOCATION_MODELS = new Set(['gemini-4-carbon', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']);
+  const AI_GEMINI_GLOBAL_LOCATION_MODELS = new Set(['gemini-4-carbon', 'gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']);
   const AI_DEEPSEEK_MODELS = Object.freeze([
     { id:'deepseek-v4-flash', label:'V4 Flash' },
     { id:'deepseek-v4-pro', label:'V4 Pro' },
@@ -261,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.7';
+  const HAP_GPT_CLIENT_VERSION = '0.2.8';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -13620,9 +13621,9 @@ const RecallSeat=(()=>{
 function requiredFitFloor(room,required){try{const plan=requiredFitPlan(room,required);return plan.at(plan.steps.length);}catch(error){console.debug('[Wish] required fit skipped',error);return required;}}
 // 선택된 기억 AI 재검토, Gemini B·C1 (b204 recallcost, paid check rc204 1a/1b: the request below is the one that was checked).
 // recallBModel: the model the review asks with in that shape - gemini-3.8-flash for a Gemini connection on gemini-3.8-flash or
-// gemini-4-carbon/argon (C1), '' for every other connection and model (today's requests). The settings stay as saved: the caller sends a
+// gemini-4-carbon/argon/hydrogen (C1), '' for every other connection and model (today's requests). The settings stay as saved: the caller sends a
 // request-local copy with that model.
-const RECALL_B_MODELS=new Map([['gemini-3.8-flash','gemini-3.8-flash'],['gemini-4-carbon','gemini-3.8-flash'],['gemini-4-argon','gemini-3.8-flash']]),RECALL_B_PROVIDERS=new Set(['ai-studio','firebase','vertex']);
+const RECALL_B_MODELS=new Map([['gemini-3.8-flash','gemini-3.8-flash'],['gemini-4-carbon','gemini-3.8-flash'],['gemini-4-argon','gemini-3.8-flash'],['gemini-4-hydrogen','gemini-3.8-flash']]),RECALL_B_PROVIDERS=new Set(['ai-studio','firebase','vertex']);
 const RECALL_B_MAX_CHARS=120000,RECALL_B_MAX_OUTPUT_TOKENS=8192,RECALL_B_KIND_ORDER=new Map([['lore',0],['log',1],['relationship',2]]);
 const RECALL_B_ANSWER_LINE='- JSON {"scores":[{"id":0,"relevance":90,"related":true}]}만 반환한다.';
 const RECALL_B_GUIDE_TAIL='- candidates의 각 후보는 [id, kind, title, text, local_match] 순서의 배열이다. current_state_excerpt는 현재상태 앞부분이다.\n- JSON {"scores":[[0,90,true]]}만 반환한다. 각 항목은 [id, relevance, related] 순서다.';
@@ -24973,7 +24974,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.7-hap-gpt';
+  const PATCH_VERSION = '0.2.8-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
