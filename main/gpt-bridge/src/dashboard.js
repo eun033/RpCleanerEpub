@@ -9,8 +9,8 @@ if(pair)storage.set(sessionStorage,PAIR_SESSION,pair);
 if(location.hash&&(storage.get(sessionStorage,PAIR_SESSION)===pair||savedPair===pair))history.replaceState(null,'',location.pathname);
 el('pair').value=pair;el('rememberPair').checked=!!savedPair&&savedPair===pair;
 let messageTimer=null;
-function message(text,error=false,sticky=false){clearTimeout(messageTimer);el('status').hidden=false;el('status').textContent=text;el('status').classList.toggle('error',error);if(!error&&!sticky)messageTimer=setTimeout(()=>{el('status').hidden=true;},2400);}
-function serverState(label,kind=''){el('serverState').className='server-state '+kind;el('serverState').querySelector('span').textContent=label;}
+function message(text,error=false,sticky=false,progress=false){clearTimeout(messageTimer);el('status').hidden=false;el('status').textContent=text;el('status').className='notice'+(error?' error':progress?' progress':'');if(!error&&!sticky)messageTimer=setTimeout(()=>{el('status').hidden=true;},2400);}
+function serverState(label,kind=''){el('serverState').className='server-state '+kind;el('serverState').querySelector('span').textContent=label;el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'중지 또는 연결 끊김 · 터미널 실행 상태를 확인하세요.':label;}
 function parsePair(value){
   const raw=value.trim();if(!raw.startsWith('http'))return raw;
   const url=new URL(raw);if(url.origin!==location.origin||url.hostname!=='127.0.0.1')throw Error('현재 관리 화면과 같은 주소의 코드를 넣으세요.');
@@ -26,9 +26,9 @@ function formatTime(value){if(!value)return '—';return new Intl.DateTimeFormat
 function formatDateTime(value){if(!value)return '없음';return new Intl.DateTimeFormat('ko-KR',{dateStyle:'short',timeStyle:'short'}).format(value);}
 function duration(job){const end=job.finished_at||Date.now(),start=job.started_at;if(!start)return '';const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60);return minutes?minutes+'분 '+String(seconds%60).padStart(2,'0')+'초':seconds+'초';}
 function updateMeter(prefix,used,limit){
-  const safeLimit=Math.max(1,Number(limit)||1),percent=Math.min(100,Math.max(0,used/safeLimit*100)),remaining=Math.max(0,Math.round(100-percent)),meter=el(prefix+'Meter');
-  el(prefix+'Text').textContent=used+' / '+safeLimit+'회';el(prefix+'Remain').textContent=remaining+'% 남음';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.title='사용 '+used+'회 · 남은 로컬 한도 '+Math.max(0,safeLimit-used)+'회';
-  requestAnimationFrame(()=>{meter.querySelector('.meter-fill').style.width=percent+'%';meter.querySelector('.meter-dot').style.left=percent+'%';});
+  const safeLimit=Math.max(1,Number(limit)||1),percent=Math.min(100,Math.max(0,used/safeLimit*100)),meter=el(prefix+'Meter');
+  el(prefix+'Text').textContent=used+' / '+safeLimit+'회';el(prefix+'Remain').textContent='로컬 보호 한도 '+Math.max(0,safeLimit-used)+'회 남음';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.setAttribute('aria-valuetext',used+'회 사용 / 로컬 보호 한도 '+safeLimit+'회');
+  requestAnimationFrame(()=>{meter.querySelector('.meter-fill').style.width=percent+'%';});
 }
 function updateTokens(tokens={}){
   for(const [id,key] of [['tokenInput','input_tokens'],['tokenOutput','output_tokens'],['tokenTotal','total_tokens']])el(id).textContent=(Number(tokens[key])||0).toLocaleString('ko-KR');
@@ -56,43 +56,75 @@ function renderAccount(){
   else if(connected)el('modelList').textContent='ChatGPT 계정에 연결되었습니다. 모델 정보를 가져오는 중이거나 [모델 확인]을 눌러 갱신할 수 있습니다.';
   else el('modelList').textContent='ChatGPT 계정 연결이 필요합니다.';
   el('modelRefresh').textContent='마지막 모델 확인 '+formatDateTime(modelCache.at);
+  el('modelSummary').textContent=connected?'연결됨 · '+(modelCache.at?'사용 가능 모델 '+models.length+'개':'모델 확인 필요'):'계정 연결이 필요합니다.';
 }
 function renderUpdate(){
-  const labels={current:'최신',available:'업데이트 있음',local_changes:'로컬 수정 있음',local_ahead:'설치본이 더 새로움',diverged:'기록 갈림'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',parts=[];
-  for(const method of ['git','zip']){const item=updateStates[method],name=method==='git'?'Git':'ZIP',detected=installed===method;parts.push(name+': '+(methods.has(method)?item?(labels[item.status]||'확인 실패')+' · '+item.current_version+' → '+item.latest_version:'확인 전':detected?'설치됨 · 재시작 지원 실행 필요':'현재 설치 방식 아님'));el('update'+(method==='git'?'Git':'Zip')).disabled=!methods.has(method)||state?.restart_busy||state?.update_busy||item?.status!=='available';}
-  el('updateResult').textContent=parts.join(' / ');el('checkUpdate').disabled=!methods.size||state?.update_busy;el('checkUpdate').textContent=state?.update_busy?'확인 중':'확인';el('updateBadge').hidden=!Object.values(updateStates).some(item=>item?.status==='available');
+  const labels={current:'최신 버전입니다.',available:'업데이트 있음',local_changes:'로컬 수정이 있어 자동 업데이트할 수 없습니다.',local_ahead:'설치본이 더 새롭습니다.',diverged:'저장소 기록을 확인하세요.'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',item=updateStates[installed];
+  for(const method of ['git','zip']){const button=el('update'+(method==='git'?'Git':'Zip')),available=method===installed&&methods.has(method)&&updateStates[method]?.status==='available';button.hidden=!available;button.disabled=!available||!!state?.restart_busy||!!state?.update_busy;}
+  el('updateResult').textContent=methods.size?item?(labels[item.status]||'확인하지 못했습니다.'):'업데이트를 확인해 주세요.':['git','zip'].includes(installed)?'관리 화면에서 업데이트하려면 감독 실행이 필요합니다.':'설치 상태를 확인하세요.';
+  el('checkUpdate').disabled=!methods.size||!!state?.update_busy;el('checkUpdate').textContent=state?.update_busy?'확인 중…':'업데이트 확인';
+  const available=[...methods].map(method=>updateStates[method]).find(value=>value?.status==='available');el('updateBadge').hidden=!available;el('updateBadge').textContent=available?'v'+available.latest_version+' 업데이트 가능':'';
 }
 async function checkUpdates(announce=true){for(const method of state?.update_methods||[])updateStates[method]=await api('/api/update/check?method='+method);renderUpdate();if(announce)message(Object.values(updateStates).some(item=>item?.status==='available')?'새 버전을 확인했습니다.':'업데이트 확인을 마쳤습니다.');}
 function saveModels(models){modelCache={models:models.map(model=>({name:String(model.name||model.display_name||model.slug||''),slug:String(model.slug||'')})).filter(model=>model.slug),at:Date.now()};storage.set(localStorage,MODEL_CACHE,JSON.stringify(modelCache));renderAccount();}
 async function refreshModels(announce=true){const models=await api('/api/models');if(!Array.isArray(models))throw Error('모델 목록 형식을 확인하지 못했습니다.');saveModels(models);if(announce)message('모델 정보와 확인 시간을 저장했습니다.');return models;}
 function renderJobs(){
-  const recent=state?.recent||[],done=recent.filter(job=>job.status==='completed').length,active=recent.filter(job=>['running','queued'].includes(job.status)).length,errors=recent.filter(job=>['error','blocked_budget'].includes(job.status)).length;
-  el('doneCount').textContent=done;el('activeCount').textContent=active;el('errorCount').textContent=errors;el('jobs').replaceChildren();
+  const recent=state?.recent||[],groups=[
+    {name:'진행 중',jobs:recent.filter(job=>['running','queued'].includes(job.status))},
+    {name:'완료',jobs:recent.filter(job=>job.status==='completed')},
+    {name:'오류',jobs:recent.filter(job=>!['running','queued','completed'].includes(job.status))}
+  ];
+  el('activeCount').textContent=groups[0].jobs.length;el('doneCount').textContent=groups[1].jobs.length;el('errorCount').textContent=groups[2].jobs.length;el('jobs').replaceChildren();
   if(!recent.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='아직 요청한 작업이 없습니다.';el('jobs').append(empty);return;}
-  for(const job of recent){
-    const details=document.createElement('details');details.className='job '+job.status;
-    const summary=document.createElement('summary'),top=document.createElement('div'),dot=document.createElement('i'),label=document.createElement('span'),time=document.createElement('time'),name=document.createElement('div'),meta=document.createElement('div'),body=document.createElement('div'),output=document.createElement('pre');
-    const client=job.client||{},clientName=String(client.name||''),roomName=String(client.room_name||''),taskName=String(client.task_name||'');
-    top.className='job-top';dot.className='job-dot';label.textContent=statusLabel(job.status);time.textContent=formatTime(job.created_at);name.className='job-name';name.textContent=[roomName,taskName].filter(Boolean).join(' · ')||clientName||job.model||'AI 요청';meta.className='job-meta';
-    const parts=[clientName,job.model,job.request_id.slice(0,12),job.effort,job.started_at?duration(job):'',job.status==='completed'?jobTokenText(job).split('\n')[0]:''].filter(Boolean);meta.textContent=parts.join(' · ');
-    const usage=document.createElement('p');usage.className='job-usage';usage.textContent=jobTokenText(job);
-    top.append(dot,label,time);summary.append(top,name,meta);body.className='job-body';output.textContent='펼치면 저장된 결과를 조회합니다.';body.append(usage,output);details.append(summary,body);let loaded=false;
-    details.addEventListener('toggle',()=>{if(details.open&&!loaded){loaded=true;api('/api/jobs/'+job.request_id).then(data=>{output.textContent=JSON.stringify(data,null,2);if(data.status==='blocked_budget'){const resume=document.createElement('button');resume.className='btn secondary';resume.textContent='설정 확인 후 작업 재개';resume.addEventListener('click',()=>run(async()=>{await api('/api/jobs/'+job.request_id+'/resume',{});await refresh();}));body.append(resume);}}).catch(error=>{loaded=false;output.textContent=error.message;});}});
-    el('jobs').append(details);
+  for(const group of groups){
+    if(!group.jobs.length)continue;
+    const heading=document.createElement('h3');heading.className='job-group';heading.textContent=group.name;el('jobs').append(heading);
+    for(const job of group.jobs){
+      const details=document.createElement('details');details.className='job '+job.status;details.dataset.requestId=job.request_id;
+      const summary=document.createElement('summary'),top=document.createElement('div'),label=document.createElement('span'),time=document.createElement('time'),name=document.createElement('div'),meta=document.createElement('div'),body=document.createElement('div');
+      const client=job.client||{};
+      top.className='job-top';label.textContent=statusLabel(job.status);time.textContent=formatTime(job.created_at);
+      name.className='job-name';name.textContent=[client.room_name,client.task_name].filter(Boolean).join(' · ')||client.name||job.model||'AI 요청';
+      meta.className='job-meta';meta.textContent=[client.name,job.model,job.effort].filter(Boolean).join(' · ');
+      top.append(label,time);summary.append(name,meta,top);
+      const overview=document.createElement('p'),usage=document.createElement('p'),feedback=document.createElement('p');
+      overview.className='job-overview';overview.textContent=statusLabel(job.status)+' · '+(job.started_at?'소요 '+duration(job):'실행 전');
+      usage.className='job-usage';usage.textContent=jobTokenText(job);feedback.className='job-feedback';feedback.textContent='저장된 결과를 조회합니다.';
+      const responseDetails=document.createElement('details'),responseTitle=document.createElement('summary'),responseText=document.createElement('pre');
+      responseDetails.className='fold response-details';responseTitle.textContent='응답 내용';responseText.textContent='조회 중입니다.';responseDetails.append(responseTitle,responseText);
+      const rawDetails=document.createElement('details'),rawTitle=document.createElement('summary'),rawText=document.createElement('pre');
+      rawDetails.className='fold raw-details';rawTitle.textContent='원본 로그';rawDetails.append(rawTitle,rawText);
+      body.className='job-body';body.append(overview,usage,feedback,responseDetails,rawDetails);details.append(summary,body);
+      let loaded=false,saved=null;
+      rawDetails.addEventListener('toggle',()=>{if(rawDetails.open&&saved)rawText.textContent=JSON.stringify(saved,null,2);});
+      details.addEventListener('toggle',()=>{
+        if(!details.open||loaded)return;loaded=true;
+        api('/api/jobs/'+job.request_id).then(data=>{
+          saved=data;feedback.textContent=data.message||'';feedback.hidden=!data.message;
+          const fresh={...job,...data};usage.textContent=jobTokenText(fresh);overview.textContent=statusLabel(fresh.status)+' · '+(fresh.started_at?'소요 '+duration(fresh):'실행 전');
+          responseText.textContent=data.status==='completed'?(data.text||'응답 내용이 없습니다.'):data.partial_text?'미완료 부분 응답입니다. 원문에 적용하지 마세요.\n'+data.partial_text:data.message||'완료된 응답이 없습니다.';
+          if(rawDetails.open)rawText.textContent=JSON.stringify(data,null,2);
+          if(data.status==='blocked_budget'){
+            const resume=document.createElement('button');resume.className='btn secondary';resume.textContent='설정 확인 후 작업 재개';resume.addEventListener('click',()=>run(async()=>{await api('/api/jobs/'+job.request_id+'/resume',{});await refresh();}));body.append(resume);
+          }
+        }).catch(error=>{loaded=false;feedback.hidden=false;feedback.textContent=error.message;});
+      });
+      el('jobs').append(details);
+    }
   }
 }
 function render(){
   for(const key of ['max_chars','max_calls_5h','max_calls_7d'])el(key).value=state.settings[key];
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy;
-  renderAccount();renderUpdate();serverState(state.settings.paused?'서버 정상 · 요청 일시정지':'서버 정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
+  renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
   const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];
   el('latestUsage').textContent=latest?jobTokenText(latest):'아직 완료된 응답이 없습니다.';
   el('latestUsageMeta').textContent=latest?[latest.client?.task_name,latest.model,formatDateTime(latest.finished_at||latest.created_at)].filter(Boolean).join(' · '):'';
 }
 function saveRefreshTime(){const now=Date.now();storage.set(localStorage,LAST_REFRESH,String(now));el('lastRefresh').textContent='마지막 갱신 '+formatTime(now);}
-async function refresh(announce=true){state=await api('/api/status');render();saveRefreshTime();if(announce)message('서버 상태와 브리지 호출량을 갱신했습니다.');return state;}
-async function run(task){if(busy)return;busy=true;try{await task();}catch(error){serverState('확인 필요','error');message(error.message,true);}finally{busy=false;}}
+async function refresh(announce=true){try{state=await api('/api/status');render();saveRefreshTime();if(announce)message('서버 상태와 로컬 사용량을 갱신했습니다.');return state;}catch(error){serverState(error.status===401?'연결 필요':error.status?'오류':'중지','error');throw error;}}
+async function run(task){if(busy)return;busy=true;try{await task();}catch(error){message(error.message,true);}finally{busy=false;}}
 function selectTab(name){for(const tab of document.querySelectorAll('[data-tab]'))tab.setAttribute('aria-selected',String(tab.dataset.tab===name));for(const panel of document.querySelectorAll('.tab-panel'))panel.hidden=panel.id!==name+'Panel';}
 for(const tab of document.querySelectorAll('[data-tab]'))tab.addEventListener('click',()=>selectTab(tab.dataset.tab));
 selectTab(pair?'server':'settings');
@@ -100,7 +132,7 @@ el('rememberPair').addEventListener('change',()=>remember());
 el('connect').onclick=()=>run(async()=>{const next=parsePair(el('pair').value);if(!next)throw Error('연결 코드가 비어 있습니다.');if(next!==pair){modelCache={models:[],at:0};storage.set(localStorage,MODEL_CACHE,'');}pair=next;remember();await refresh();selectTab('server');if(state.connected&&!modelCache.models.length)await refreshModels(false);});
 el('copy').onclick=()=>run(async()=>{if(!pair)throw Error('연결 코드를 먼저 넣으세요.');await navigator.clipboard.writeText(location.origin+'/#pair='+pair);message('이 기기의 연결 주소를 복사했습니다.');});
 el('login').onclick=()=>run(async()=>{message('ChatGPT 구독 연결 화면을 여는 중입니다.');const result=await api('/api/login',{});location.assign(result.url);});
-el('models').onclick=()=>run(()=>refreshModels());
+el('models').onclick=()=>run(async()=>{await refreshModels();el('modelDetails').open=true;});
 el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={models:[],at:0};storage.set(localStorage,MODEL_CACHE,'');await refresh();message('계정 연결을 해제했습니다.');});
 el('save').onclick=()=>run(async()=>{await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d'].map(key=>[key,Number(el(key).value)])));await refresh();});
 el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();});
@@ -108,7 +140,7 @@ el('usageRefresh').onclick=()=>run(refresh);el('refreshJobs').onclick=()=>run(re
 el('checkUpdate').onclick=()=>run(()=>checkUpdates());
 async function reconnectAfterRestart(updated=false){
   const previous=state?.instance_id,deadline=Date.now()+300000;
-  serverState('서버 연결 대기');message('서버가 다시 준비되면 연결 코드를 유지한 채 페이지를 엽니다.',false,true);
+  serverState('재시작 중','busy');message('서버가 다시 준비되면 연결 코드를 유지한 채 페이지를 엽니다.',false,true,true);
   while(Date.now()<deadline){
     await new Promise(resolve=>setTimeout(resolve,2000));
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4000);
@@ -127,14 +159,14 @@ async function reconnectAfterRestart(updated=false){
 async function applyUpdate(method){
   if(updateStates[method]?.status!=='available')throw Error('먼저 업데이트 확인을 눌러 주세요.');
   if(!confirm((method==='git'?'Git':'ZIP')+' 버전을 받고 서버를 재시작할까요? 진행 중인 요청이 있으면 실행되지 않습니다.'))return;
-  storage.set(localStorage,UPDATE_STARTED,String(Date.now()));serverState('업데이트 중');message('확인된 새 버전을 적용하고 있습니다.',false,true);
+  storage.set(localStorage,UPDATE_STARTED,String(Date.now()));state.update_busy=true;renderUpdate();el('restart').disabled=true;serverState('업데이트 중','busy');message('확인된 새 버전을 적용하고 있습니다.',false,true,true);
   let result;
-  try{result=await api('/api/update',{method});}catch(error){if(error.status)throw Error(error.message+' 완료 표시가 보이지 않으면 5분 뒤 이 페이지를 다시 열고 서버 관리의 [↻ 서버]를 눌러 주세요.');}
-  if(result?.updated===false){storage.set(localStorage,UPDATE_STARTED,'');message(result.message||'업데이트할 파일이 없습니다.');return;}
+  try{result=await api('/api/update',{method});}catch(error){if(error.status){state.update_busy=false;render();throw Error(error.message+' 완료 표시가 보이지 않으면 5분 뒤 이 페이지를 다시 열고 서버 관리의 [재시작]을 눌러 주세요.');}}
+  if(result?.updated===false){storage.set(localStorage,UPDATE_STARTED,'');state.update_busy=false;render();message(result.message||'업데이트할 파일이 없습니다.');return;}
   await reconnectAfterRestart(true);
 }
 el('updateGit').onclick=()=>run(()=>applyUpdate('git'));el('updateZip').onclick=()=>run(()=>applyUpdate('zip'));
 el('restart').onclick=()=>run(async()=>{if(!confirm('진행 중인 요청이 없을 때 서버를 재시작합니다. 계속할까요?'))return;try{await api('/api/restart',{});}catch(error){if(error.status)throw error;}await reconnectAfterRestart();});
 const last=Number(storage.get(localStorage,LAST_REFRESH));if(Number.isFinite(last)&&last>0)el('lastRefresh').textContent='마지막 갱신 '+formatTime(last);
 if(pair){storage.set(sessionStorage,PAIR_SESSION,pair);run(async()=>{try{await refresh(false);try{await checkUpdates(false);}catch{renderUpdate();}if(state.connected&&!modelCache.models.length)await refreshModels(false);}catch(error){selectTab('settings');throw error;}});}else{serverState('연결 필요');renderAccount();message('Termux가 표시한 주소 전체를 열거나 연결 코드를 넣으세요.',true);}
-const updateStarted=Number(storage.get(localStorage,UPDATE_STARTED));if(Number.isFinite(updateStarted)&&updateStarted>0)message('업데이트 완료 여부가 확인되지 않았습니다. 시작 '+formatDateTime(updateStarted)+' · 5분 뒤 이 페이지를 다시 열고 서버 관리의 [↻ 서버]를 눌러 주세요.',false,true);
+const updateStarted=Number(storage.get(localStorage,UPDATE_STARTED));if(Number.isFinite(updateStarted)&&updateStarted>0)message('업데이트 완료 여부가 확인되지 않았습니다. 시작 '+formatDateTime(updateStarted)+' · 5분 뒤 이 페이지를 다시 열고 서버 관리의 [재시작]을 눌러 주세요.',false,true);
