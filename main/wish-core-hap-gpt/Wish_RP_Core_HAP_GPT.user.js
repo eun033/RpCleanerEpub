@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.9
+// @version      0.2.10
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -262,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.9';
+  const HAP_GPT_CLIENT_VERSION = '0.2.10';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -14644,7 +14644,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
     }
     async function backup(){
       if(busy)return;const cfg=config();if(!ready(cfg))throw Error('연결 설정을 먼저 저장해 주세요.');
-      const all=WishRoomNames.sort(await getAllRooms());await WishRoomNames.checkRooms(all);const roomRows=all.map((r,i)=>({key:'r'+i,id:String(r.chatId),label:WishRoomNames.label(r),detail:'ID '+r.chatId,current:r.chatId===state.currentRoom?.chatId}));
+      const all=WishRoomNames.sort(await getAllRooms());await WishLocalRooms.pruneDeleted();const roomRows=all.map((r,i)=>({key:'r'+i,id:String(r.chatId),deleted:WishRoomNames.isDeleted(r),label:WishRoomNames.display(r),detail:'ID '+r.chatId,current:r.chatId===state.currentRoom?.chatId}));
       const choice=await WUIOpenPromise('kvRooms',{rows:roomRows,draft:{pick:{},includeSettings:true}});if(!choice)return;
       await run('백업 파일 구성 중',async(c,stage)=>{
         if(identity(cfg)!==identity(c))throw Error('연결이 변경되어 백업을 취소했습니다.');
@@ -14666,12 +14666,13 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
     function select(id){const d=WUI.ui.dlg(id);if(d&&!busy){d.draft.selecting=!d.draft.selecting;d.draft.pick={};}}
     function pick(arg){const [id,mode]=arg.split('|'),d=WUI.ui.dlg(id);if(d&&!busy)for(const row of rows)d.draft.pick[row.id]=mode==='all';}
     function remove(id){const d=WUI.ui.dlg(id),selected=rows.filter(x=>d?.draft.pick?.[x.id]);if(!selected.length||busy)return;const captured=identity(config());WUI.ui.confirm('선택한 Koofr 백업 삭제',selected.length+'개 백업 파일을 저장소에서 삭제합니다. 로컬 방은 그대로 남습니다.','삭제',()=>run('백업 삭제 중',async c=>{if(identity(c)!==captured)throw Error('연결이 바뀌어 삭제를 취소했습니다.');try{for(const row of selected){const r=await request(c,'DELETE',safeFile(row.id),undefined,row.etag?{'If-Match':row.etag}:{});check(r,[200,204,404]);rows=rows.filter(x=>x.id!==row.id);delete d.draft.pick[row.id];}}finally{WUI.paint();}}));}
-    function roomPick(arg){const [id,mode]=arg.split('|'),d=WUI.ui.dlg(id);if(d)for(const row of d.rows)d.draft.pick[row.key]=mode==='all'||mode==='current'&&row.current;}
-    function roomAccept(id){const d=WUI.ui.dlg(id);WUIResolve(id,{ids:d.rows.filter(r=>d.draft.pick[r.key]).map(r=>r.id),settings:!!d.draft.includeSettings});}
+    function roomPick(arg){const [id,mode]=arg.split('|'),d=WUI.ui.dlg(id);if(d)for(const row of d.rows)d.draft.pick[row.key]=!row.deleted&&(mode==='all'||mode==='current'&&row.current);}
+    function roomAccept(id){const d=WUI.ui.dlg(id);WUIResolve(id,{ids:d.rows.filter(r=>!r.deleted&&d.draft.pick[r.key]).map(r=>r.id),settings:!!d.draft.includeSettings});}
     return {view,open,settings,test,save,disconnect,refresh,backup,restore,select,pick,remove,roomPick,roomAccept,subset};
   })();
 
   async function createManagerBackup() {return await WLOG.run("백업 파일 구성 중",async task=>{
+    await WishLocalRooms.pruneDeleted();
     await Promise.all([...storageWrites.values()].map(p=>p.catch(()=>{})));const names=[APP.storeName,APP.libraryStoreName,APP.cognitionStoreName,APP.runtimeStoreName,APP.historyStoreName];
     const data=await new Promise((resolve,reject)=>{
       const tx=state.db.transaction(names,'readonly'),out={};
@@ -14685,7 +14686,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
       guides:Object.fromEntries(Object.keys(GUIDE_DEFAULTS).map(id=>[id,guideBackupValue(id)])),
       defaultExtraPreset:loadDefaultExtraPreset(),
       ...(hasDefaultPreset('character')?{defaultCharacterPreset:loadDefaultExtraPreset('character')}:{}),
-      cognitionSettings:bridge?.getSettings?.()||null});
+      cognitionSettings:bridge?.getSettings?.()||null},data[APP.storeName].filter(r=>!WishRoomNames.isDeleted(r)).map(r=>String(r.chatId)));
   });}
 
   // G-49 b5 (design 6-4 ST-08): a backup file that fails these checks is one failure kind, BACKUP_BAD (a newer schema keeps its own
@@ -14767,14 +14768,14 @@ function formatLocalRecordTime(value){
       tx.oncomplete=()=>resolve(out.sort((a,b)=>Number(b.current)-Number(a.current)||String(b.updatedAt).localeCompare(String(a.updatedAt))||a.id.localeCompare(b.id)).map((r,i)=>({...r,key:'r'+i})));
       tx.onabort=tx.onerror=()=>reject(tx.error||WLOG.tag(Error('로컬 방 목록 읽기 실패'),'STORE_TX_FAIL'));
     });}
-    async function open(){if(removing)throw Error('로컬 정리가 진행 중입니다.');const list=await rows();await WishRoomNames.checkRooms(list);for(const row of list)if(WishRoomNames.isDeleted(row))row.label='[삭제된 방] '+row.label;WUI.openSheet('localRooms',{rows:list,busy:false,draft:{pick:{}}});}
+    async function open(){if(removing)throw Error('로컬 정리가 진행 중입니다.');const list=await rows();await WishRoomNames.checkRooms(list);for(const row of list)row.deleted=WishRoomNames.isDeleted(row);WUI.openSheet('localRooms',{rows:list,busy:false,draft:{pick:Object.fromEntries(list.filter(r=>r.deleted&&!r.current).map(r=>[r.key,true]))}});}
     function selected(d){return d.rows.filter(r=>d.draft.pick[r.key]).map(r=>r.id);}
     function pick(id,mode){const d=WUI.ui.dlg(id);if(!d||d.busy)return;for(const r of d.rows)d.draft.pick[r.key]=mode==='all'&&!r.current;WUI.paint();}
-    async function remove(id){const d=WUI.ui.dlg(id);if(!d||d.busy||removing)return;
+    async function remove(id,automatic=false){const d=automatic?id:WUI.ui.dlg(id);if(!d||d.busy||removing){if(automatic)throw Error('로컬 정리가 진행 중입니다. 잠시 뒤 백업해 주세요.');return;}
       const ids=selected(d),chosen=new Set(ids);if(!ids.length)throw Error('지울 로컬 방을 선택해 주세요.');
       if(d.rows.some(r=>chosen.has(r.id)&&r.current))throw Error('현재 열어 둔 방은 여기서 지울 수 없습니다.');
       const injectedCount=d.rows.filter(r=>chosen.has(r.id)&&r.pending).length;
-      if(!confirm('선택한 '+ids.length+'개 방의 Wish 로컬 기록을 삭제할까요?\n'+(injectedCount?'주입 중인 방 '+injectedCount+'개가 포함돼 있습니다. 해제하지 않고 지우므로 Crack 메시지에 숨김 주석이 남을 수 있습니다.\n':'')+'방별 기억·인지·전용 자료·작업 이력을 함께 정리합니다. Crack 대화는 유지됩니다. 필요한 방은 먼저 파일 백업을 받으세요.'))return false;
+      if(!automatic&&!confirm('선택한 '+ids.length+'개 방의 Wish 로컬 기록을 삭제할까요?\n'+(injectedCount?'주입 중인 방 '+injectedCount+'개가 포함돼 있습니다. 해제하지 않고 지우므로 Crack 메시지에 숨김 주석이 남을 수 있습니다.\n':'')+'방별 기억·인지·전용 자료·작업 이력을 함께 정리합니다. Crack 대화는 유지됩니다. 필요한 방은 먼저 파일 백업을 받으세요.'))return false;
       if(removing||aiUpdateRunning||automaticMemoryJob||automaticLoreJob||memoryImportRunning)throw Error('진행 중인 작업이 끝난 뒤 다시 시도해 주세요.');
       const selectedRows=d.rows.filter(r=>chosen.has(r.id)),apis=[...new Set(selectedRows.map(r=>r.api))],basis=new Map(selectedRows.map(r=>[r.id,r]));
       if(apis.some(api=>generationPending(api)))throw Error('AI 응답 또는 리롤이 끝난 뒤 다시 시도해 주세요.');
@@ -14813,10 +14814,29 @@ function formatLocalRecordTime(value){
           try{await bridge?.invalidateRuntime?.(api);}catch(e){console.warn('[Wish] 로컬 정리 후 인지 캐시 갱신 보류',e);}
         }
         lorePackCacheLoaded=false;await loadLorePackCache(true).catch(e=>console.warn('[Wish] 로컬 정리 후 자료 목록 갱신 보류',e));
-        d.rows=d.rows.filter(r=>!chosen.has(r.id));d.draft.pick={};WUI.paint();notify(ids.length+'개 로컬 방 기록을 정리했습니다.','success',4000);return true;
+        d.rows=d.rows.filter(r=>!chosen.has(r.id));d.draft.pick={};WUI.paint();notify(automatic?'삭제된 방 '+ids.length+'개의 로컬 데이터를 자동 정리했습니다.':ids.length+'개 로컬 방 기록을 정리했습니다.','success',5000);return true;
       }));}finally{d.busy=false;removing=false;WUI.paint();}
     }
-    return {open,selected,pick,remove};
+    async function pruneDeleted(){
+      const list=await rows();
+      await WishRoomNames.checkRooms(list);
+      const candidates=list.filter(r=>!r.current&&WishRoomNames.isDeleted(r));
+      if(!candidates.length)return;
+      await WishRoomNames.checkRooms(candidates,true);
+      const pick=Object.fromEntries(candidates.filter(WishRoomNames.isDeleted).map(r=>[r.key,true]));
+      if(!Object.keys(pick).length)return;
+      await remove({rows:list,busy:false,draft:{pick}},true);
+    }
+    async function removeDeleted(id){
+      const d=WUI.ui.dlg(id);if(!d||d.busy||removing)return;
+      const previous={...d.draft.pick};
+      d.draft.pick=Object.fromEntries(d.rows.filter(r=>r.deleted&&!r.current).map(r=>[r.key,true]));
+      if(!Object.keys(d.draft.pick).length){d.draft.pick=previous;return;}
+      try{if(!await remove(id))d.draft.pick=previous;}
+      catch(error){d.draft.pick=previous;throw error;}
+      finally{WUI.paint();}
+    }
+    return {open,selected,pick,remove,pruneDeleted,removeDeleted};
   })();
 
   // ---------------------------------------------------------------------------
@@ -17579,7 +17599,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
     // device's). For display only: when this device's 인지 cannot be read, the room record's time stands alone.
     const cogApiIds=Array.isArray(data.cognitionRooms)?[...new Set((data.rooms||[]).map(r=>String(apiChatIdOf(r)||'')).filter(Boolean))]:[],backupCogTime=new Map((data.cognitionRooms||[]).map(c=>[String(c?.id||''),Number(c?.updated)||0]));
     const localCogTime=cogApiIds.length?await new Promise(resolve=>{const out=new Map();try{const tx=state.db.transaction(APP.cognitionStoreName,'readonly'),st=tx.objectStore(APP.cognitionStoreName);for(const id of cogApiIds){const q=st.get(id);q.onsuccess=()=>{if(q.result)out.set(id,Number(q.result.updated)||0);};}tx.oncomplete=()=>resolve(out);tx.onerror=tx.onabort=()=>resolve(out);}catch{resolve(out);}}):new Map();
-    const localLibraryIds=new Set((existingLibraries||[]).map(x=>String(x?.scopeId||''))),referencedLibraryIds=new Set((data.rooms||[]).flatMap(r=>[...(r.activeLorePackIds||[]),r.autoCharacterLibraryId,r.lastExtraLibraryId]).filter(Boolean).map(String)),sharedRestoreHint=l=>{const id=String(l.scopeId);if(l.autoManaged===true||(data.rooms||[]).some(r=>r.chatId&&String(r.chatId)===String(l.ownerChatId))||!referencedLibraryIds.has(id))return '';return localLibraryIds.has(id)?' · 이 기기에 있음: 체크해야 백업 버전으로 교체':' · 이 기기에 없음: 이 자료집을 쓰는 방을 고르면 같이 복원';};const localRooms=new Map((existingRooms||[]).map(x=>[String(x?.chatId||''),x])),blocked=new Set(existingRooms.filter(r=>r.pending).map(r=>String(r.chatId))),all=(data.rooms||[]).filter(r=>r.chatId),rooms=all.map(r=>{const local=localRooms.get(String(r.chatId)),api=String(apiChatIdOf(r)||''),saved=Math.max(Date.parse(String(r.updatedAt||''))||0,backupCogTime.get(api)||0),here=local?Math.max(Date.parse(String(local.updatedAt||''))||0,localCogTime.get(api)||0):0,at=t=>formatLocalRecordTime(new Date(t).toISOString());return {id:String(r.chatId),injected:blocked.has(String(r.chatId)),label:(WishRoomNames.isDeleted(r)?'[삭제된 방] ':'')+(r.backupDisplayName||WishRoomNames.display(r)||r.label||'RP '+shortId(r.chatId)),sum:'방 ID '+r.chatId+(saved?' · 백업 '+at(saved):'')+(here?' · 이 기기 '+at(here):''),current:String(r.chatId)===String(state.currentChatId),...(!local?{diff:'신규'}:saved&&here>saved?{diff:'변경 있음'}:{})};}),libs=(data.characterLibraries||[]).filter(l=>l.scopeId&&!(l.autoManaged&&blocked.has(String(l.ownerChatId)))).map(l=>({id:String(l.scopeId),label:l.name||l.title||l.scopeId,sum:sharedRestoreHint(l).replace(/^ · /,''),owner:all.some(r=>String(r.chatId)===String(l.ownerChatId))?String(l.ownerChatId):''}));const global=!!(data.guides||data.defaultExtraPreset||data.defaultCharacterPreset||data.cognitionSettings);if(global)libs.push({id:'wish-global-settings',label:'공용 지침·프리셋·인지 설정 복원',});return WUIOpenPromise('backupImport',{src:'파일 백업',note:rooms.some(r=>r.injected)?'주입 중인 '+rooms.filter(r=>r.injected).length+'개 방이 있습니다. 선택 항목 복원은 주입방을 건너뜁니다. 주입방 포함 복원은 선택한 방의 주입을 먼저 해제합니다. 복원할 방의 기존 데이터는 교체됩니다.':'선택한 방과 설정집의 데이터를 백업으로 교체합니다. API 연결 설정은 유지됩니다.',rooms,libs,blocked:[...blocked],draft:{pick:{}}});}
+    const localLibraryIds=new Set((existingLibraries||[]).map(x=>String(x?.scopeId||''))),referencedLibraryIds=new Set((data.rooms||[]).flatMap(r=>[...(r.activeLorePackIds||[]),r.autoCharacterLibraryId,r.lastExtraLibraryId]).filter(Boolean).map(String)),sharedRestoreHint=l=>{const id=String(l.scopeId);if(l.autoManaged===true||(data.rooms||[]).some(r=>r.chatId&&String(r.chatId)===String(l.ownerChatId))||!referencedLibraryIds.has(id))return '';return localLibraryIds.has(id)?' · 이 기기에 있음: 체크해야 백업 버전으로 교체':' · 이 기기에 없음: 이 자료집을 쓰는 방을 고르면 같이 복원';};const localRooms=new Map((existingRooms||[]).map(x=>[String(x?.chatId||''),x])),blocked=new Set(existingRooms.filter(r=>r.pending).map(r=>String(r.chatId))),all=(data.rooms||[]).filter(r=>r.chatId),rooms=all.map(r=>{const local=localRooms.get(String(r.chatId)),api=String(apiChatIdOf(r)||''),saved=Math.max(Date.parse(String(r.updatedAt||''))||0,backupCogTime.get(api)||0),here=local?Math.max(Date.parse(String(local.updatedAt||''))||0,localCogTime.get(api)||0):0,at=t=>formatLocalRecordTime(new Date(t).toISOString());return {id:String(r.chatId),injected:blocked.has(String(r.chatId)),deleted:WishRoomNames.isDeleted(r),label:r.backupDisplayName||WishRoomNames.display(r)||r.label||'RP '+shortId(r.chatId),sum:'방 ID '+r.chatId+(saved?' · 백업 '+at(saved):'')+(here?' · 이 기기 '+at(here):''),current:String(r.chatId)===String(state.currentChatId),...(!local?{diff:'신규'}:saved&&here>saved?{diff:'변경 있음'}:{})};}),libs=(data.characterLibraries||[]).filter(l=>l.scopeId&&!(l.autoManaged&&blocked.has(String(l.ownerChatId)))).map(l=>({id:String(l.scopeId),label:l.name||l.title||l.scopeId,sum:sharedRestoreHint(l).replace(/^ · /,''),owner:all.some(r=>String(r.chatId)===String(l.ownerChatId))?String(l.ownerChatId):''}));const global=!!(data.guides||data.defaultExtraPreset||data.defaultCharacterPreset||data.cognitionSettings);if(global)libs.push({id:'wish-global-settings',label:'공용 지침·프리셋·인지 설정 복원',});return WUIOpenPromise('backupImport',{src:'파일 백업',note:rooms.some(r=>r.injected)?'주입 중인 '+rooms.filter(r=>r.injected).length+'개 방이 있습니다. 선택 항목 복원은 주입방을 건너뜁니다. 주입방 포함 복원은 선택한 방의 주입을 먼저 해제합니다. 복원할 방의 기존 데이터는 교체됩니다.':'선택한 방과 설정집의 데이터를 백업으로 교체합니다. API 연결 설정은 유지됩니다.',rooms,libs,blocked:[...blocked],draft:{pick:{}}});}
 
   // ---------------------------------------------------------------------------
   // Injection lifecycle
@@ -23444,7 +23464,7 @@ diff:`<div class="m3-shell">
     roomName:roomNameDialogView,
     loreSplit:loreSplitDialogView,
     kvSettings(d){const c=d.draft,busy=WishKoofr.view().busy;return sheet(d,{title:'Koofr 연결',body:`<section class="m3-grp"><div class="m3-gt">${ic('cloud')}개인 저장소</div>${field('이메일',inp(D(d,'email'),c.email,'Koofr 가입 이메일','text',NO_FILL))}${field('앱 비밀번호',secretInp(D(d,'password'),c.password,'저장된 비밀번호 유지'),'Koofr → Preferences → Password에서 Wish용 비밀번호를 만드세요. 로그인 비밀번호와 다릅니다.')}<p class="m3-muted">저장 위치: Koofr / Wish-Core-Backups<br>연결 정보는 이 확장 프로그램에만 저장하며 백업에 포함하지 않습니다.</p></section><div class="m3-status ${c.test==='ok'?'m3-ok':c.test==='err'?'m3-err':''}">${ic(c.test==='ok'?'check':'cloud')}<span>${esc(c.test==='busy'?'연결 확인 중…':c.testMsg||'버튼을 누를 때만 통신합니다. 백업은 암호화하지 않은 JSON 파일입니다.')}</span></div>`,foot:`${btn('연결 테스트','kvTest',{arg:d.id,cls:'mini',dis:busy})}${SP}${closeBtn(d,'취소')}${btn('저장','kvSave',{arg:d.id,cls:'primary',dis:busy})}`});},
-    kvRooms(d){const n=d.rows.filter(r=>d.draft.pick[r.key]).length;return sheet(d,{title:'백업할 방 선택',desc:'같은 이름이어도 방 ID로 구분합니다',body:`<div class="m3-row m3-bottomgap">${btn('현재 방만','kvRoomPick',{arg:d.id+'|current',cls:'mini'})}${btn('전체 선택','kvRoomPick',{arg:d.id+'|all',cls:'mini'})}${btn('선택 해제','kvRoomPick',{arg:d.id+'|none',cls:'quiet mini'})}</div>${d.rows.map(r=>`<label class="m3-cbx ${d.draft.pick[r.key]?'is-on':''}" data-key="kv-${r.key}"><input type="checkbox" data-bind="${D(d,'pick.'+r.key)}"${d.draft.pick[r.key]?' checked':''}><span class="m3-box"></span><span class="m3-t"><b>${esc(r.label)}${r.current?tag('현재 방','ok'):''}</b><small>${esc(r.detail)}</small></span></label>`).join('')||empty('저장된 방이 없습니다.')}<section class="m3-grp m3-topgap">${tog('공용 지침·설정도 함께 저장',D(d,'includeSettings'),d.draft.includeSettings,'선택한 방의 기억·인지·관계·연결 자료집은 항상 함께 저장합니다. API 키는 포함하지 않습니다.')}</section>`,foot:`<span class="m3-muted">${n}개 방 선택</span>${SP}${closeBtn(d,'취소')}${btn('선택한 방 백업','kvRoomAccept',{arg:d.id,cls:'primary',dis:!n})}`});},
+    kvRooms(d){const n=d.rows.filter(r=>!r.deleted&&d.draft.pick[r.key]).length;return sheet(d,{title:'백업할 방 선택',desc:'같은 이름이어도 방 ID로 구분합니다',body:`<div class="m3-row m3-bottomgap">${btn('현재 방만','kvRoomPick',{arg:d.id+'|current',cls:'mini'})}${btn('전체 선택','kvRoomPick',{arg:d.id+'|all',cls:'mini'})}${btn('선택 해제','kvRoomPick',{arg:d.id+'|none',cls:'quiet mini'})}</div>${d.rows.map(r=>`<label class="m3-cbx ${d.draft.pick[r.key]?'is-on':''}" data-key="kv-${r.key}"><input type="checkbox" data-bind="${D(d,'pick.'+r.key)}"${r.deleted?' disabled aria-label="삭제된 방 · 백업 불가"':''}${!r.deleted&&d.draft.pick[r.key]?' checked':''}><span class="m3-box"></span><span class="m3-t"><b>${esc(r.label)}${r.deleted?tag('[삭제된 방]','warn'):''}${r.current?tag('현재 방','ok'):''}</b><small>${esc(r.detail)}</small></span></label>`).join('')||empty('저장된 방이 없습니다.')}<section class="m3-grp m3-topgap">${tog('공용 지침·설정도 함께 저장',D(d,'includeSettings'),d.draft.includeSettings,'선택한 방의 기억·인지·관계·연결 자료집은 항상 함께 저장합니다. API 키는 포함하지 않습니다.')}</section>`,foot:`<span class="m3-muted">${n}개 방 선택</span>${SP}${closeBtn(d,'취소')}${btn('선택한 방 백업','kvRoomAccept',{arg:d.id,cls:'primary',dis:!n})}`});},
     kvList(d){const c=WishKoofr.view(),groups=new Map();d.draft.pick||={};const selecting=!!d.draft.selecting,pick=d.draft.pick,n=c.list.filter(b=>pick[b.id]).length;
       for(const b of c.list){const key=b.deviceId||b.dev||'unknown';if(!groups.has(key))groups.set(key,{id:key,name:b.dev||'이름 없는 기기',mine:b.mine,rows:[]});groups.get(key).rows.push(b);}
       const info=b=>`<b>${esc(b.when)}</b><small>${b.rooms}개 방 · ${esc(b.size)} · Core 백업 · ${b.auto?'자동':'수동'}${b.encrypted?' · 암호화':''}</small>${b.roomNames?'<small class="m3-cloud-names" title="'+esc(b.roomNames)+'">'+esc(b.roomNames)+'</small>':''}`;
@@ -23454,7 +23474,7 @@ diff:`<div class="m3-shell">
     /* props: { src, rooms:[{id,label,sum,diff,current}], libs:[{id,label,sum,diff,owner}], draft:{ pick:{} } } → act bkApply(dlgId) */
     backupImport(d) {
       const pk = d.draft.pick, onOf = x => !!(pk[x.id] || (x.owner && pk[x.owner]));
-      const row = x => { const on = onOf(x), dis = !!(x.owner && pk[x.owner]); return `<label class="m3-cbx ${on ? 'is-on' : ''} ${dis ? 'is-dis' : ''}" data-key="bi-${esc(x.id)}"><input type="checkbox" data-bind="${D(d, 'pick.' + enc(x.id))}"${on ? ' checked' : ''}${dis ? ' disabled' : ''}><span class="m3-box"></span><span class="m3-t"><b>${esc(x.label)}${x.injected ? tag('[주입중]', 'injected') : ''}${x.current ? tag('현재 방', 'ok') : ''}${x.diff ? tag(esc(x.diff), x.diff === '신규' ? 'ok' : x.diff === '변경 있음' ? 'warn' : '') : ''}</b><small>${esc(x.sum || '')}${x.owner ? ' · 방을 고르면 같이 복원' : ''}</small></span></label>`; };
+      const row = x => { const on = onOf(x), dis = !!(x.owner && pk[x.owner]); return `<label class="m3-cbx ${on ? 'is-on' : ''} ${dis ? 'is-dis' : ''}" data-key="bi-${esc(x.id)}"><input type="checkbox" data-bind="${D(d, 'pick.' + enc(x.id))}"${on ? ' checked' : ''}${dis ? ' disabled' : ''}><span class="m3-box"></span><span class="m3-t"><b>${esc(x.label)}${x.deleted ? tag('[삭제된 방]', 'warn') : ''}${x.injected ? tag('[주입중]', 'injected') : ''}${x.current ? tag('현재 방', 'ok') : ''}${x.diff ? tag(esc(x.diff), x.diff === '신규' ? 'ok' : x.diff === '변경 있음' ? 'warn' : '') : ''}</b><small>${esc(x.sum || '')}${x.owner ? ' · 방을 고르면 같이 복원' : ''}</small></span></label>`; };
       const all = [...(d.rooms || []), ...(d.libs || [])], n = all.filter(onOf).length;
       return sheet(d, { title: '복원할 항목 선택', desc: esc(d.src || '백업'), body: `<div class="m3-status m3-bottomgap" role="status">${ic('alert')}<span>${esc(d.note || '복원할 방의 기존 데이터는 교체됩니다.')}</span></div><div class="m3-row m3-bottomgap">${btn('현재 방만', 'bkPick', { arg: d.id + '|cur', cls: 'mini' })}${btn('전체 선택', 'bkPick', { arg: d.id + '|all', cls: 'mini' })}${btn('선택 해제', 'bkPick', { arg: d.id + '|none', cls: 'quiet mini' })}</div>${(d.rooms || []).length ? `<div class="m3-sechead"><b>방</b></div>${d.rooms.map(row).join('')}` : ''}${(d.libs || []).length ? `<div class="m3-sechead"><b>자료집</b></div>${d.libs.map(row).join('')}` : ''}`, foot: `<span class="m3-muted">${n}개 선택</span>${SP}${closeBtn(d, '취소')}${btn('선택 항목 복원', 'bkApply', { arg: d.id, cls: 'primary', icon: 'check', dis: !n })}${btn('주입방 포함 복원', 'bkApplyInjected', { arg: d.id, dis: !n })}` });
     },
@@ -23519,8 +23539,8 @@ nativeBundle(d) {
     },
 
     localRooms(d){const count=WishLocalRooms.selected(d).length,locked=!!d.busy;
-      const items=d.rows.map(r=>`<label class="m3-cbx m3-local-room ${d.draft.pick[r.key]?'is-on':''}${r.current?' is-dis':''}" data-key="local-${esc(r.key)}"><input type="checkbox" data-bind="${D(d,'pick.'+r.key)}"${d.draft.pick[r.key]?' checked':''}${locked||r.current?' disabled':''}><span class="m3-box"></span><span class="m3-t"><b>${esc(r.label)}${r.current?tag('현재 방','ok'):r.pending?tag('주입 중','warn'):''}</b><small title="${esc(r.id)}">${esc(r.detail)}</small></span></label>`).join('');
-      return sheet(d,{title:'로컬 Wish 데이터 정리',desc:'이 기기에 저장된 방 '+d.rows.length+'개',body:`<div class="m3-status m3-bottomgap">Wish의 로컬 방 기록을 고릅니다. Crack 대화는 그대로 남습니다. 현재 방은 기존 ‘현재 방 초기화’에서 관리하세요.</div><div class="m3-row m3-bottomgap">${btn('삭제 전 전체 백업 받기','fileBackup',{cls:'mini',dis:locked})}${btn('다른 방 전체 선택','localRoomPick',{arg:d.id+'|all',cls:'mini',dis:locked})}${btn('선택 해제','localRoomPick',{arg:d.id+'|none',cls:'quiet mini',dis:locked})}</div>${items||empty('저장된 로컬 방이 없습니다.')}${locked?'<p class="m3-muted" role="status">선택한 방 기록을 정리하는 중…</p>':''}`,foot:`<span class="m3-muted">${count}개 선택</span>${SP}${closeBtn(d)}${btn('선택한 로컬 방 삭제','localRoomRemove',{arg:d.id,cls:'danger mini',icon:'trash',dis:!count||locked})}`});
+      const items=d.rows.map(r=>`<label class="m3-cbx m3-local-room ${d.draft.pick[r.key]?'is-on':''}${r.current?' is-dis':''}" data-key="local-${esc(r.key)}"><input type="checkbox" data-bind="${D(d,'pick.'+r.key)}"${d.draft.pick[r.key]?' checked':''}${locked||r.current?' disabled':''}><span class="m3-box"></span><span class="m3-t"><b>${esc(r.label)}${r.deleted?tag('[삭제된 방]','warn'):''}${r.current?tag('현재 방','ok'):r.pending?tag('주입 중','warn'):''}</b><small title="${esc(r.id)}">${esc(r.detail)}</small></span></label>`).join('');
+      return sheet(d,{title:'로컬 Wish 데이터 정리',desc:'이 기기에 저장된 방 '+d.rows.length+'개',body:`<div class="m3-status m3-bottomgap">Wish의 로컬 방 기록을 고릅니다. Crack 대화는 그대로 남습니다. 현재 방은 기존 ‘현재 방 초기화’에서 관리하세요.</div><div class="m3-row m3-bottomgap">${btn('삭제 전 전체 백업 받기','fileBackup',{cls:'mini',dis:locked})}${btn('삭제된 방만 정리','localRoomDeletedRemove',{arg:d.id,cls:'danger mini',icon:'trash',dis:locked||!d.rows.some(r=>r.deleted&&!r.current)})}${btn('다른 방 전체 선택','localRoomPick',{arg:d.id+'|all',cls:'mini',dis:locked})}${btn('선택 해제','localRoomPick',{arg:d.id+'|none',cls:'quiet mini',dis:locked})}</div>${items||empty('저장된 로컬 방이 없습니다.')}${locked?'<p class="m3-muted" role="status">선택한 방 기록을 정리하는 중…</p>':''}`,foot:`<span class="m3-muted">${count}개 선택</span>${SP}${closeBtn(d)}${btn('선택한 로컬 방 삭제','localRoomRemove',{arg:d.id,cls:'danger mini',icon:'trash',dis:!count||locked})}`});
     },
 
     /* props: { draft:{ list:[{id,title,enabled,ret,content}] } } → act psLoad / psSave / psSaveApply(dlgId) */
@@ -24759,7 +24779,7 @@ Object.assign(WUI_ADAPTER.act,{
  aiGptDiscard:async id=>{const d=WUI.ui.dlg(id);if(!confirm('대기 중인 ChatGPT 구독 요청과 완료 결과를 폐기할까요? 기존 기억은 바뀌지 않습니다.'))return;try{await inspectChatGptSubscriptionPending(d,true);notify('대기 요청을 폐기했습니다.','success');}catch(error){notify('대기 요청 폐기 실패: '+String(error?.message||error),'error',7000);}},
  aiSave:id=>{const d=WUI.ui.dlg(id),cfg=WUIAIConfig(d);const kept=()=>notify('저장하지 않았습니다. 입력한 내용은 창에 남아 있습니다.','info');if(!cfg.deepSeekApiKey&&loadAiSettings().deepSeekApiKey&&!confirm('DeepSeek 주소의 서버가 바뀌어 저장된 DeepSeek 키를 새 주소로 보내지 않습니다. 키 없이 저장할까요?\n취소하면 창이 그대로 남으니 키를 다시 입력해 주세요.'))return kept();const gem=normalizeAiKey(d.draft.key),ds=normalizeAiKey(d.draft.dsKey);if(gem&&((gem.match(/AIza/g)||[]).length>1||!gem.startsWith('AIza')||gem.length!==39)&&!confirm('Gemini 키는 보통 AIza로 시작하는 39자입니다. 입력한 키('+gem.length+'자)는 모양이 달라, 다른 키나 비밀번호 뒤에 이어 붙었을 수 있습니다. 그대로 저장할까요?'))return kept();if(ds&&ds.indexOf('sk-',1)>=0&&!confirm(((ds.match(/sk-/g)||[]).length>1?'DeepSeek 키 안에 sk-가 두 번 들어 있습니다':'DeepSeek 키 앞에 다른 글자가 붙어 있습니다')+'('+ds.length+'자). 다른 키나 비밀번호 뒤에 이어 붙었을 수 있습니다. 그대로 저장할까요?'))return kept();saveAiSettings(cfg);WUIRefreshSettings();d.committed=true;WUI.closeSheet(d);notify('AI/API 설정을 저장했습니다.','success');const room=state.currentRoom,u=room?.unified,stop=String(u?.lastError||''),sv=d.saved||{},newAuth=[d.draft.key,d.draft.dsKey,d.draft.vx,d.draft.fbAppCheck,d.draft.anKey,d.draft.oaKey,...(Array.isArray(d.draft.gptConnectionEdits)?d.draft.gptConnectionEdits:[])].some(v=>String(v||'').trim())||cfg.provider!==sv.provider||cfg.firebaseConfig!==sv.firebaseConfig;if(u&&isAiProviderReady(cfg)&&(stop==='보조 AI 연결 설정이 필요합니다.'||newAuth&&/(?:Gemini(?: Interactions)?|DeepSeek|Claude|OpenAI|Vertex AI|Vertex 인증|Firebase App Check) API 오류 (?:401|403)\b|API 오류 400:.*(?:API key|API_KEY)|Firebase AI Logic 호출 실패:.*\[(?:401|403)\b|Firebase AI Logic 호출 실패:.*\[400\b.*(?:API key|API_KEY)|Vertex 인증 API 오류 400\b/i.test(stop))){u.lastError='';u.failedKind='';u.retry=null;void saveRoom(room).then(()=>{if(state.currentRoom===room){U3.invalidate(room);U3.schedule(room);}}).catch(e=>console.warn('[Wish] 키 저장 뒤 정리 재개 실패',e));}},aiTest:async id=>{const d=WUI.ui.dlg(id);d.draft.test='busy';WUI.paint();try{const cfg=WUIAIConfig(d);if(cfg.provider==='manual')throw Error('외부 AI 복붙은 연결 테스트가 필요 없습니다. 저장하면 바로 사용합니다.');if(!isAiProviderReady(cfg))throw Error('인증 정보를 입력해 주세요.');const result=await callAiProvider(cfg,'연결 테스트입니다. 다른 설명 없이 OK 두 글자만 출력하십시오.','OK라고 답하십시오.',{taskKind:'test',maxOutputTokens:512,operationLabel:'AI 연결 테스트'});await acknowledgeAiProviderResult(result);d.draft.test='ok';d.draft.testMsg=getAiSelectedModel(cfg)+' · '+cleanAiGeneratedText(result.text).slice(0,50);}catch(e){d.draft.test='err';d.draft.testMsg=WLOG.inline("AI 연결 테스트",e);}},aiClear:id=>{const d=WUI.ui.dlg(id),p=normalizeAiProvider(d.draft.provider);if(p==='manual'){notify('외부 AI 복붙은 저장된 인증 정보가 없습니다.','info');return;}if(!confirm(getAiProviderLabel(p)+'의 저장된 인증 정보를 삭제할까요?'))return;const next={...loadAiSettings()};next[p==='deepseek'?'deepSeekApiKey':p==='firebase'?'firebaseConfig':p==='vertex'?'vertexServiceAccount':p==='anthropic'?'anthropicApiKey':p==='openai'?'openAiApiKey':p==='chatgpt-subscription'?'chatGptSubscriptionConnection':'apiKey']='';if(p==='firebase')next.firebaseAppCheckDebugToken='';if(p==='chatgpt-subscription'){next.chatGptSubscriptionConnections=['','','','',''];next.chatGptSubscriptionConnectionNames=['','','','',''];next.chatGptSubscriptionConnectionPlatforms=['','','','',''];next.chatGptSubscriptionConnectionSlot=1;for(let slot=1;slot<=CHATGPT_SUBSCRIPTION_CONNECTION_SLOTS;slot++)GM_setValue(slot===1?'wish-chatgpt-subscription-pending-v1':`wish-chatgpt-subscription-pending-v1-slot-${slot}`,null);}saveAiSettings(next);WUIRefreshSettings();d.committed=true;WUI.closeSheet(d);},
 
- localRooms:()=>WishLocalRooms.open(),localRoomPick:arg=>{const [id,mode]=arg.split('|');WishLocalRooms.pick(id,mode);},localRoomRemove:id=>WishLocalRooms.remove(id),
+ localRooms:()=>WishLocalRooms.open(),localRoomDeletedRemove:id=>WishLocalRooms.removeDeleted(id),localRoomPick:arg=>{const [id,mode]=arg.split('|');WishLocalRooms.pick(id,mode);},localRoomRemove:id=>WishLocalRooms.remove(id),
 
  bkApply:id=>WUIBackupImportApply(id,false),
  bkApplyInjected:id=>WUIBackupImportApply(id,true)
@@ -24980,8 +25000,8 @@ WUIAutoSave.install();
     createBackup:()=>createManagerBackup(),
     selectBackupRooms:async()=>{
       const all=WishRoomNames.sort(await getAllRooms());
-      await WishRoomNames.checkRooms(all);
-      const rows=all.map((room,index)=>({key:'r'+index,id:String(room.chatId),label:WishRoomNames.label(room),detail:'ID '+room.chatId,current:room.chatId===state.currentRoom?.chatId}));
+      await WishLocalRooms.pruneDeleted();
+      const rows=all.map((room,index)=>({key:'r'+index,id:String(room.chatId),deleted:WishRoomNames.isDeleted(room),label:WishRoomNames.display(room),detail:'ID '+room.chatId,current:room.chatId===state.currentRoom?.chatId}));
       return WUIOpenPromise('kvRooms',{rows,draft:{pick:{},includeSettings:true}});
     },
     subsetBackup:(data,roomIds,includeSettings)=>WishKoofr.subset(data,roomIds,includeSettings),
@@ -25010,7 +25030,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.9-hap-gpt';
+  const PATCH_VERSION = '0.2.10-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';

@@ -1,8 +1,12 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.9
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.10
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.9이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.10이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+
+0.2.10은 백업 시 404가 재확인된 삭제 방을 선택할 수 없게 하고 해당 방의 로컬 기억·인지·전용 자료·작업 이력을 자동 정리한다. 다른 방이 참조하는 자료와 현재 열린 방은 기존 로컬 정리 보호 규칙을 따른다. 정리한 방 수를 알리며, 삭제한 자료는 이전에 받은 백업으로만 복구할 수 있다.
+
+백업·복원·로컬 정리 창은 `[삭제된 방]`을 칩으로 표시한다. 로컬 Wish 데이터 정리에서는 삭제된 방을 기본 선택하고 `삭제된 방만 정리` 버튼을 제공한다. 다른 방을 체크했어도 이 버튼은 삭제된 방만 확인 후 정리한다. 현재 열린 방은 기본 선택·삭제에서 제외한다.
 
 0.2.9는 백업·복원·로컬 데이터 정리 목록에서 서버 조회가 404인 방에 `[삭제된 방]`을 표시한다. 백업·복원 방 목록은 최근 업데이트순(시각이 없으면 생성일순)으로 표시한다. 복원 중 404로 처리할 수 없는 방은 전용 자료와 함께 건너뛰고 나머지만 복원하며 제외 개수를 알린다. 제외된 방의 기존 로컬 자료와 주입 복구 기록은 보존한다. 인증·권한·통신 오류는 삭제로 판정하지 않는다.
 
@@ -28,7 +32,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.9 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.10 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
