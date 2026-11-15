@@ -1,8 +1,10 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.8
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.9
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.8이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.9이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+
+0.2.9는 백업·복원·로컬 데이터 정리 목록에서 서버 조회가 404인 방에 `[삭제된 방]`을 표시한다. 백업·복원 방 목록은 최근 업데이트순(시각이 없으면 생성일순)으로 표시한다. 복원 중 404로 처리할 수 없는 방은 전용 자료와 함께 건너뛰고 나머지만 복원하며 제외 개수를 알린다. 제외된 방의 기존 로컬 자료와 주입 복구 기록은 보존한다. 인증·권한·통신 오류는 삭제로 판정하지 않는다.
 
 중요 내용은 남기고 오래되어 해결된 반복 과정부터 줄이는 보강 지침은 실행판과 분리해 [복사용 Markdown](API_MEMORY_GUIDE_IMPORTANCE_COMPRESSION.md)에 보관한다. 파일 본문 전체를 그대로 복사해 사용할 수 있다.
 
@@ -26,7 +28,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.8 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.9 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
