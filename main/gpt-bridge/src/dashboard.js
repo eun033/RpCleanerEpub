@@ -105,7 +105,7 @@ function jobTokenText(job){
   if(validTokens(reasoning))text+='\n출력 중 추론 '+formatTokens(reasoning)+' 토큰 (출력에 포함)';
   return text;
 }
-function statusLabel(value){return ({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
+function statusLabel(value,code){return code==='CANCELLED'?'종료':({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
 function renderAccount(){
   const connected=!!state?.connected,models=modelCache.models;
   el('accountState').textContent=connected?'연결됨':'연결 필요';el('accountState').classList.toggle('connected',connected);el('login').textContent=connected?'재연결':'계정 연결';el('models').disabled=!connected||modelChecking;el('models').replaceChildren(...(modelChecking?[icon('spinner')]:[]),document.createTextNode(modelChecking?'확인 중...':'모델 확인'));el('logout').hidden=!connected;
@@ -180,13 +180,13 @@ function renderJobs(){
       modelCell.className='model-column';const model=document.createElement('span'),effort=document.createElement('span');model.className='job-model';model.textContent=job.model||'—';model.title=job.model||'';effort.className='job-meta';effort.textContent=job.effort||'';modelCell.append(model,effort);
       statusCell.className='status-column';const status=document.createElement('span');status.className='job-status chip';
       if(job.status==='completed'){const dot=document.createElement('span');dot.className='status-dot';dot.setAttribute('aria-hidden','true');status.append(dot);}else status.append(icon(job.status==='running'?'spinner':job.status==='queued'?'clock':'alert'));
-      status.title=statusLabel(job.status);status.append(document.createTextNode(job.status==='blocked_budget'?'한도':statusLabel(job.status)));statusCell.append(status);
+      status.title=statusLabel(job.status,job.error_code);status.append(document.createTextNode(job.status==='blocked_budget'?'한도':status.title));statusCell.append(status);
       timeCell.className='time-column';const time=document.createElement('time');time.textContent=jobTime(job.created_at);if(job.created_at)time.dateTime=new Date(job.created_at).toISOString();time.title=formatDateTime(job.created_at);time.setAttribute('aria-label',time.title);timeCell.append(time);
       row.append(titleCell,modelCell,statusCell,timeCell);
       const detailRow=document.createElement('tr'),detailCell=document.createElement('td'),body=document.createElement('div');
       detailRow.className='job-detail';detailRow.hidden=true;detailCell.className='job-span';detailCell.colSpan=compactJobs.matches?3:4;body.className='job-body';body.id='job-detail-'+index++;toggle.setAttribute('aria-controls',body.id);
       const overview=document.createElement('p'),usage=document.createElement('p'),feedback=document.createElement('p');
-      overview.className='job-overview';overview.textContent=statusLabel(job.status)+' · '+(job.started_at?'소요 '+duration(job):'실행 전');
+      overview.className='job-overview';overview.textContent=statusLabel(job.status,job.error_code)+' · '+(job.started_at?'소요 '+duration(job):'실행 전');
       usage.className='job-usage';usage.textContent=jobTokenText(job);feedback.className='job-feedback';feedback.textContent='저장된 결과를 조회합니다.';
       const responseDetails=document.createElement('details'),responseTitle=document.createElement('summary'),responseText=document.createElement('pre');
       responseDetails.className='fold response-details';responseTitle.append(icon('chevron'),document.createTextNode('응답 내용'));responseText.textContent='조회 중입니다.';responseDetails.append(responseTitle,responseText);
@@ -200,11 +200,15 @@ function renderJobs(){
         if(loaded)return;loaded=true;
         api('/api/jobs/'+job.request_id).then(data=>{
           saved=data;feedback.textContent=data.message||'';feedback.hidden=!data.message;
-          const fresh={...job,...data};usage.textContent=jobTokenText(fresh);overview.textContent=statusLabel(fresh.status)+' · '+(fresh.started_at?'소요 '+duration(fresh):'실행 전');
+          const fresh={...job,...data};usage.textContent=jobTokenText(fresh);overview.textContent=statusLabel(fresh.status,fresh.error_code)+' · '+(fresh.started_at?'소요 '+duration(fresh):'실행 전');
           responseText.textContent=data.status==='completed'?(data.text||'응답 내용이 없습니다.'):data.partial_text?'미완료 부분 응답입니다. 원문에 적용하지 마세요.\n'+data.partial_text:data.message||'완료된 응답이 없습니다.';
           if(rawDetails.open)rawText.textContent=JSON.stringify(data,null,2);
           if(data.status==='blocked_budget'){
             const resume=document.createElement('button');resume.className='btn secondary';resume.textContent='설정 확인 후 작업 재개';resume.addEventListener('click',()=>run(async()=>{await api('/api/jobs/'+job.request_id+'/resume',{});await refresh();}));body.append(resume);
+          }
+          if(['queued','running','blocked_budget'].includes(data.status)){
+            const cancel=document.createElement('button');cancel.className='btn cancel-job';cancel.textContent='강제 종료';
+            cancel.addEventListener('click',()=>{if(busy)return;if(!confirm('이 작업을 강제 종료할까요? 진행 중인 요청의 사용량은 반환되지 않을 수 있습니다. 자동 재요청하지 않습니다.'))return;cancel.disabled=true;run(async()=>{try{await api('/api/jobs/'+job.request_id+'/cancel',{});await refresh(false);message('작업을 강제 종료했습니다.');}catch(error){cancel.disabled=false;feedback.hidden=false;feedback.textContent=error.message;throw error;}},'serverFeedback');});body.append(cancel);
           }
         }).catch(error=>{loaded=false;feedback.hidden=false;feedback.textContent=error.message;});
       };

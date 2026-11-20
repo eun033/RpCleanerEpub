@@ -1,4 +1,6 @@
-# GPT 브리지 0.2.29
+# GPT 브리지 0.2.30
+
+최근 작업에서 행을 펼친 뒤 **강제 종료**를 누르면 해당 대기·진행·한도 대기 작업을 중단한다. 종료 기록과 부분 응답은 남고 자동 재요청하지 않는다. 이미 사용된 사용량은 반환되지 않을 수 있다.
 
 기기 내부의 `127.0.0.1`에서만 실행되는 Node.js 표준 라이브러리 기반 브리지다. Android Termux, Windows Git 실행용 PowerShell 감독기와 iOS iSH 설치기를 제공한다. 공식 Sign in with ChatGPT 인증과 `/v1/responses` 스트림 처리를 맡는다. HAP-gpt userscript에는 OAuth 토큰을 전달하지 않는다.
 

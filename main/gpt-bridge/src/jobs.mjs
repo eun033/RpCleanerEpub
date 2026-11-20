@@ -40,7 +40,12 @@ export function normalizePayload(value){
   return {request_id:value.request_id,body:{...result,store:false,stream:true},chars,...(client?{client}:{})};
 }
 
-export async function readCompleted(body){
+async function abortable(promise,signal){
+  let abort;
+  const cancelled=new Promise((_,reject)=>{abort=()=>reject(signal.reason);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});});
+  try{return await Promise.race([promise,cancelled]);}finally{signal.removeEventListener('abort',abort);}
+}
+export async function readCompleted(body,signal){
   let buffer='',text='',completed=null,total=0;
   const decoder=new TextDecoder();
   const event=block=>{
@@ -56,8 +61,11 @@ export async function readCompleted(body){
       throw new BridgeError(code,'AI 요청이 완료되지 않았습니다. 자동 재요청하지 않았습니다.',502);
     }
   };
+  const reader=body.getReader(),abort=()=>{void reader.cancel().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
   try{
-    for await(const chunk of body){
+    signal?.throwIfAborted();
+    for(;;){
+      const {value:chunk,done}=await reader.read();signal?.throwIfAborted();if(done)break;
       total+=chunk.byteLength;check(total<=20000000,'STREAM_SIZE','응답 스트림이 너무 큽니다.',502);
       buffer+=decoder.decode(chunk,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');
       let at;while((at=buffer.indexOf('\n\n'))>=0){event(buffer.slice(0,at));buffer=buffer.slice(at+2);}
@@ -68,7 +76,8 @@ export async function readCompleted(body){
     const final=(completed.output||[]).filter(m=>m.type==='message').flatMap(m=>m.content||[]).filter(c=>c.type==='output_text').map(c=>c.text||'').join('');
     check((final||text).trim(),'EMPTY','완료 응답에 텍스트가 없습니다.',502);
     return {text:final||text,usage:completed.usage??null};
-  }catch(error){error.partial_text=text;throw error;}
+  }catch(error){if(signal?.aborted)error=signal.reason;error.partial_text=text;throw error;}
+  finally{signal?.removeEventListener('abort',abort);abort();reader.releaseLock();}
 }
 
 export class JobBridge {
@@ -87,7 +96,7 @@ export class JobBridge {
     }
     return this;
   }
-  save(job){return writeJSON(path.join(this.dir,'jobs',sha(job.request_id)+'.json'),job);}
+  save(job){const file=path.join(this.dir,'jobs',sha(job.request_id)+'.json'),snapshot=structuredClone(job),saved=(this.writes||Promise.resolve()).then(()=>writeJSON(file,snapshot));this.writes=saved.catch(()=>{});return saved;}
   publicJob(job){const {body,fingerprint,...publicFields}=job;return publicFields;}
   counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
   tokenUsage(){
@@ -119,7 +128,7 @@ export class JobBridge {
     const end=new Date(start);end.setDate(end.getDate()+7);
     return {five_hours:this.windowUsage(now-18000000,now+1),week:this.windowUsage(week_start_at??start.getTime(),week_end_at??end.getTime())};
   }
-  status(range){return {version:'0.2.29',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  status(range){return {version:'0.2.30',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};
@@ -144,6 +153,16 @@ export class JobBridge {
     const job=this.jobs.get(id);check(job&&job.status==='blocked_budget'&&job.attempts===0,'RESUME','실제 AI 호출 전 로컬 한도에 걸린 작업만 재개할 수 있습니다.',409);
     job.status='queued';delete job.message;await this.save(job);void this.drain();return this.publicJob(job);
   }
+  async cancel(id){
+    const job=this.jobs.get(id);check(job,'NOT_FOUND','해당 요청을 찾지 못했습니다.',404);
+    const active=this.active?.id===id?this.active:null;
+    if(job.error_code==='CANCELLED'){await (active?active.done:this.writes);return this.publicJob(job);}
+    check(['queued','running','blocked_budget'].includes(job.status),'CANCEL_UNAVAILABLE','이미 끝난 작업은 강제 종료할 수 없습니다.',409);
+    const reason=new BridgeError('CANCELLED','사용자가 작업을 강제 종료했습니다. 이미 사용된 사용량은 반환되지 않을 수 있으며 자동 재요청하지 않습니다.',409);
+    if(active){active.controller.abort(reason);await active.done;}
+    else{job.status='error';job.error_code=reason.code;job.message=reason.message;job.finished_at=this.now();await this.save(job);}
+    return this.publicJob(job);
+  }
   async drain(){
     if(this.running||this.closed||this.settings.paused)return;this.running=true;
     try{
@@ -151,25 +170,28 @@ export class JobBridge {
         if(this.closed||this.settings.paused)break;if(job.status!=='queued')continue;
         const count=this.counts();
         if(count.five_hours>=this.settings.max_calls_5h||count.seven_days>=this.settings.max_calls_7d){job.status='blocked_budget';job.message='브리지에 설정한 호출 횟수에 도달했습니다. 공식 구독 잔여량과는 별개입니다.';await this.save(job);continue;}
+        const controller=new AbortController(),signal=controller.signal;let finish,timeout;
+        this.active={id:job.request_id,controller,done:new Promise(resolve=>{finish=resolve;})};
         try{
-          const models=await this.auth.models(),selected=models.find(m=>m.slug===job.body.model);check(selected,'MODEL_UNAVAILABLE','이 계정의 구독 모델 목록에서 모델을 선택하세요.');
+          const models=await abortable(this.auth.models({signal}),signal),selected=models.find(m=>m.slug===job.body.model);check(selected,'MODEL_UNAVAILABLE','이 계정의 구독 모델 목록에서 모델을 선택하세요.');
           const effort=job.body.reasoning?.effort;if(effort&&selected.efforts?.length)check(selected.efforts.includes(effort),'MODEL_EFFORT','선택한 모델이 지원하는 추론 강도를 골라 주세요.');
-          const token=await this.auth.access();job.status='running';job.started_at=this.now();job.attempts=1;await this.save(job);
-          const controller=new AbortController();this.controller=controller;const timeout=setTimeout(()=>controller.abort(),900000);
-          try{
-            const response=await this.auth.fetch(API+'/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(job.body),signal:controller.signal});
-            if(!response.ok){let data={};try{data=await response.json();}catch{}throw new BridgeError(String(data.error?.code||'HTTP_'+response.status).replace(/[^A-Za-z0-9_.-]/g,'').slice(0,100),'AI 요청이 거절됐습니다 ('+response.status+'). 자동 재요청하지 않았습니다.',response.status);}
-            const result=await readCompleted(response.body);job.status='completed';job.text=result.text;job.usage=result.usage;job.finished_at=this.now();
-          }finally{clearTimeout(timeout);this.controller=null;}
+          const token=await abortable(this.auth.access(),signal);signal.throwIfAborted();job.status='running';job.started_at=this.now();job.attempts=1;await this.save(job);signal.throwIfAborted();
+          timeout=setTimeout(()=>controller.abort(),900000);
+          const response=await abortable(this.auth.fetch(API+'/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(job.body),signal}),signal);
+          if(!response.ok){let data={};try{data=await abortable(response.json(),signal);}catch{}throw new BridgeError(String(data.error?.code||'HTTP_'+response.status).replace(/[^A-Za-z0-9_.-]/g,'').slice(0,100),'AI 요청이 거절됐습니다 ('+response.status+'). 자동 재요청하지 않았습니다.',response.status);}
+          const result=await readCompleted(response.body,signal);signal.throwIfAborted();job.status='completed';job.text=result.text;job.usage=result.usage;job.finished_at=this.now();
         }catch(error){
+          if(signal.aborted&&signal.reason?.code==='CANCELLED')error=signal.reason;
           job.status='error';job.error_code=error instanceof BridgeError?error.code:'CONNECTION_UNCERTAIN';
           job.message=error instanceof BridgeError?error.message:'연결 결과가 불확실합니다. 자동 재요청하지 않았습니다.';
           if(error.partial_text)job.partial_text=error.partial_text;
+          if(job.error_code==='CANCELLED')job.finished_at=this.now();
           if(/usage_limit|usage_unavailable|429|PLAN_PERMISSION|LOGIN_REQUIRED|invalid_grant/.test(job.error_code))await this.settingsChange({paused:true});
+        }finally{
+          clearTimeout(timeout);try{await this.save(job);}finally{this.active=null;finish();}
         }
-        await this.save(job);
       }
     }finally{this.running=false;}
   }
-  close(){this.closed=true;this.controller?.abort();}
+  close(){this.closed=true;this.active?.controller.abort();}
 }

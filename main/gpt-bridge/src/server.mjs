@@ -157,9 +157,10 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
         updateBusy=true;try{const result=await onUpdate(method);send(res,200,{ok:true,...result});if(result.updated!==false)setImmediate(()=>onRestart({server,bridge}));}finally{updateBusy=false;}return;
       }
       if(req.method==='POST'&&url.pathname==='/api/jobs')return send(res,202,await bridge.add(await readBody(req)));
-      const match=url.pathname.match(/^\/api\/jobs\/([A-Za-z0-9_-]{16,100})(?:\/(resume))?$/);
+      const match=url.pathname.match(/^\/api\/jobs\/([A-Za-z0-9_-]{16,100})(?:\/(resume|cancel))?$/);
       if(match&&req.method==='GET'&&!match[2])return send(res,200,bridge.get(match[1]));
       if(match&&req.method==='POST'&&match[2]==='resume')return send(res,200,await bridge.resume(match[1]));
+      if(match&&req.method==='POST'&&match[2]==='cancel')return send(res,200,await bridge.cancel(match[1]));
       send(res,404,{code:'PATH',message:'없는 경로입니다.'});
     }catch(error){send(res,error instanceof BridgeError?error.status:500,{code:error instanceof BridgeError?error.code:'LOCAL_ERROR',message:error instanceof BridgeError?error.message:'로컬 처리 중 오류가 발생했습니다. 같은 요청을 자동으로 다시 보내지 마세요.'});}
   });

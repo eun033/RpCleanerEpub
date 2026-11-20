@@ -43,7 +43,8 @@ export class SubscriptionAuth {
     this.registration=await readJSON(this.file('registration.json'),null);return this;
   }
   async json(url,options={}){
-    const response=await this.fetch(url,{...options,signal:AbortSignal.timeout(30000)});
+    const timeout=AbortSignal.timeout(30000),signal=options.signal?AbortSignal.any([options.signal,timeout]):timeout;
+    const response=await this.fetch(url,{...options,signal});
     const raw=await response.text();check(raw.length<8000000,'UPSTREAM_SIZE','응답 크기를 확인해 주세요.',502);
     let data;try{data=JSON.parse(raw);}catch{throw new BridgeError('UPSTREAM_FORMAT','공식 서버 응답을 읽지 못했습니다.',502);}
     if(!response.ok){const code=String(data.error?.code||data.error||'HTTP_'+response.status).replace(/[^a-zA-Z0-9_.-]/g,'').slice(0,100);throw new BridgeError(code,'인증 또는 연결 요청이 거절됐습니다 ('+response.status+').',response.status===401?401:502);}
@@ -110,9 +111,10 @@ export class SubscriptionAuth {
     })().finally(()=>{this.refreshing=null;});
     return this.refreshing;
   }
-  async models(){
+  async models({signal}={}){
     const token=await this.access();
-    const data=await this.json(API+'/models',{headers:{Authorization:'Bearer '+token}});
+    signal?.throwIfAborted();
+    const data=await this.json(API+'/models',{headers:{Authorization:'Bearer '+token},signal});
     check(Array.isArray(data.models),'MODEL_CATALOG','구독 모델 목록을 읽지 못했습니다.',502);
     const allowed=new Set(['none','low','medium','high','xhigh','max']);
     return data.models.filter(m=>m.visibility==='list'&&typeof m.slug==='string').map(m=>{
