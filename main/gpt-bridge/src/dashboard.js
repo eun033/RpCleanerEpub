@@ -40,6 +40,7 @@ function feedback(id,text,tone=''){const node=el(id);node.textContent=text;node.
 function updateFailure(error=null){el('updateFailure').hidden=!error;el('updateFailure').open=false;el('updateFailureText').textContent=error?String(error.message||error):'';}
 function connectionState(connected,checked=false){
   const wasConnected=localConnected;localConnected=connected;
+  if(!connected)el('requestPause').hidden=true;
   if(checked){connectionTime=Date.now();storage.set(sessionStorage,'gpt-bridge-connection-time-v1',String(connectionTime));}
   if(!connected||!wasConnected)el('localDetails').open=!connected;
   renderLocal();
@@ -225,6 +226,7 @@ function render(){
   el('week_start').value=String(state.settings.week_start??1);
   el('week_start').disabled=!state.usage_windows?.week;
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
+  el('requestPause').hidden=!localConnected||!state.settings.paused;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy||!!pendingRecovery()||reconnecting;
   renderLocal();renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
   const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];
