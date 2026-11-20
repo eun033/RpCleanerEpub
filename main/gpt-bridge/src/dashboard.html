@@ -21,6 +21,7 @@ main{padding-top:12px}.card{margin-bottom:16px;padding:16px;border:1px solid var
 .chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:2px 6px;border:0;border-radius:4px;background:var(--surface-2);color:var(--muted);font-size:12px;line-height:18px;overflow-wrap:anywhere}.chip.connected,.chip.success{color:var(--accent)}.chip.warning,.inline-state.warning{color:var(--warning)}.status-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.copy-button{width:100%;margin-bottom:4px}.inline-state{margin:12px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;color:var(--muted)}.inline-state.error{color:var(--danger)}.job-status.chip{padding:0;background:none;line-height:18px}.token-scope{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;color:var(--muted);font-size:12px}.token-scope select{max-width:60%;min-height:44px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--surface-2);color:var(--text)}#usage7Remain{display:block}
 .job-meta-line{display:flex;align-items:baseline;gap:4px}.job-client-name,.job-meta-line>.mobile-model{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.job-client-name{flex:0 1 auto}.job-meta-line>.mobile-model{flex:1}.job-duration{flex:none;color:var(--muted);font-size:12px;line-height:20px;white-space:nowrap;font-variant-numeric:tabular-nums}.job-status.chip{padding:1px 4px;background:var(--surface-2);white-space:nowrap;gap:2px}.job-status .status-dot{margin-inline:2px}
 .cancel-job{margin-top:12px;color:var(--danger)}
+.jobs-paused{display:flex;align-items:center;gap:12px;margin-bottom:12px}.jobs-paused p{flex:1;margin:0;color:var(--warning)}.jobs-paused button{flex:none}
 .server-state.online>.check{color:#18835b;animation:serverPulse 2.6s ease-in-out infinite}
 @keyframes serverPulse{50%{opacity:.9}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}.ui-icon.spinner,.server-state.online>.check{animation:none}}
@@ -71,6 +72,7 @@ main{padding-top:12px}.card{margin-bottom:16px;padding:16px;border:1px solid var
     </section>
     <section id="jobsPanel" class="tab-panel" role="tabpanel" hidden>
       <p id="jobsFeedback" class="inline-state" role="status" hidden></p>
+      <div id="jobsPaused" class="jobs-paused" role="status" hidden><p class="sub">요청 일시정지 상태입니다. 서버 재실행 후에도 유지됩니다. 모델 확인은 가능하지만 대기 작업은 실행되지 않습니다.</p><button id="resumeJobs" class="btn secondary" type="button">요청 재개</button></div>
       <p class="jobs-help">저장된 결과만 조회합니다. 새 AI 요청을 보내지 않으며, 완료 표시는 브리지가 응답을 받은 상태입니다.</p>
       <div class="job-summary"><div class="job-counts"><span>진행 중 <b id="activeCount">0</b></span><span>완료 <b id="doneCount">0</b></span><span>오류 <b id="errorCount">0</b></span></div><button id="refreshJobs" class="icon-button" type="button" aria-label="최근 작업 상태 확인" title="최근 작업 상태 확인"></button></div><div id="jobs"></div>
     </section>

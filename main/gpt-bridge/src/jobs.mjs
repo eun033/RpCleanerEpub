@@ -97,7 +97,13 @@ export class JobBridge {
     return this;
   }
   save(job){const file=path.join(this.dir,'jobs',sha(job.request_id)+'.json'),snapshot=structuredClone(job),saved=(this.writes||Promise.resolve()).then(()=>writeJSON(file,snapshot));this.writes=saved.catch(()=>{});return saved;}
-  publicJob(job){const {body,fingerprint,...publicFields}=job;return publicFields;}
+  queueState(job){
+    if(job.status!=='queued')return {};
+    const wait_reason=this.active?.id===job.request_id?'preparing':this.settings.paused?'paused':this.running?'waiting_turn':'queued';
+    const wait_message=({preparing:'모델·인증을 확인하고 있습니다. 아직 AI 요청을 보내지 않았습니다.',paused:'요청이 일시정지되어 있습니다. 요청 재개를 누르면 대기 작업을 순서대로 실행합니다.',waiting_turn:'앞 작업이 끝나기를 기다리고 있습니다.',queued:'작업 실행 순서를 준비하고 있습니다.'})[wait_reason];
+    return {wait_reason,wait_message,...(wait_reason==='waiting_turn'&&this.active?{waiting_for:this.active.id}:{})};
+  }
+  publicJob(job){const {body,fingerprint,...publicFields}=job;return {...publicFields,...this.queueState(job)};}
   counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
   tokenUsage(){
     let input_tokens=0,output_tokens=0,recorded_jobs=0,unreported_calls=0;
@@ -128,7 +134,7 @@ export class JobBridge {
     const end=new Date(start);end.setDate(end.getDate()+7);
     return {five_hours:this.windowUsage(now-18000000,now+1),week:this.windowUsage(week_start_at??start.getTime(),week_end_at??end.getTime())};
   }
-  status(range){return {version:'0.2.30',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  status(range){return {version:'0.2.31',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',...this.queueState(j),model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};

@@ -146,6 +146,7 @@ async function refreshModels(announce=true){
 const compactJobs=matchMedia('(max-width:599px)');
 compactJobs.addEventListener('change',()=>{for(const cell of document.querySelectorAll('.job-span'))cell.colSpan=compactJobs.matches?3:4;const title=document.querySelector('.job-title-column');if(title)title.textContent=compactJobs.matches?'작업 / 모델':'작업명';});
 function renderJobs(){
+  el('jobsPaused').hidden=!state?.settings.paused;
   const recent=state?.recent||[],groups=[
     {name:'진행 중',jobs:recent.filter(job=>['running','queued'].includes(job.status))},
     {name:'완료',jobs:recent.filter(job=>job.status==='completed')},
@@ -199,7 +200,7 @@ function renderJobs(){
         if(openRow===detailRow){close();return;}close();detailRow.hidden=false;toggle.setAttribute('aria-expanded','true');openRow=detailRow;openButton=toggle;
         if(loaded)return;loaded=true;
         api('/api/jobs/'+job.request_id).then(data=>{
-          saved=data;feedback.textContent=data.message||'';feedback.hidden=!data.message;
+          saved=data;feedback.textContent=data.message||data.wait_message||'';feedback.hidden=!feedback.textContent;
           const fresh={...job,...data};usage.textContent=jobTokenText(fresh);overview.textContent=statusLabel(fresh.status,fresh.error_code)+' · '+(fresh.started_at?'소요 '+duration(fresh):'실행 전');
           responseText.textContent=data.status==='completed'?(data.text||'응답 내용이 없습니다.'):data.partial_text?'미완료 부분 응답입니다. 원문에 적용하지 마세요.\n'+data.partial_text:data.message||'완료된 응답이 없습니다.';
           if(rawDetails.open)rawText.textContent=JSON.stringify(data,null,2);
@@ -250,6 +251,7 @@ el('models').onclick=()=>run(async()=>{await refreshModels();el('modelDetails').
 el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={models:[],at:0};modelFresh=false;modelFailed=false;storage.set(localStorage,MODEL_CACHE,'');await refresh();message('계정 연결을 해제했습니다.');},'modelFeedback');
 el('save').onclick=()=>run(async()=>{if(!state||!localConnected)throw Error('로컬 연결을 먼저 확인해 주세요.');await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d','week_start'].map(key=>[key,Number(el(key).value)]).filter(([key,value])=>value!==(state.settings[key]??(key==='week_start'?1:undefined)))));await refresh();},'advancedFeedback');
 el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();},'advancedFeedback');
+el('resumeJobs').onclick=()=>run(async()=>{const button=el('resumeJobs');button.disabled=true;try{await api('/api/settings',{paused:false});await refresh(false);message('요청을 재개했습니다. 대기 작업을 순서대로 실행합니다.');}finally{button.disabled=false;}},'jobsFeedback');
 el('usageRefresh').onclick=()=>run(refresh);el('refreshJobs').onclick=()=>run(refresh,'jobsFeedback');
 el('checkUpdate').onclick=()=>run(()=>pendingRecovery()?reconnectAfterRestart(true,true):checkUpdates());
 function versionAtLeast(current,target){
