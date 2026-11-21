@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.10
+// @version      0.2.12
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -148,7 +148,7 @@
     name: '🪽 Wish RP Manager Core',
     version: SCRIPT_VERSION,
     dbName: 'WishRPManagerDB_v2',
-    dbVersion: 2,
+    dbVersion: 3,
     cognitionStoreName: 'cognitionRooms',
     runtimeStoreName: 'runtime',
     historyStoreName: 'autoHistory',
@@ -262,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.10';
+  const HAP_GPT_CLIENT_VERSION = '0.2.12';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -8942,6 +8942,61 @@ references는 다음 RP 본문에 그 낱말이 나오면 다시 불려 오는 �
   async function save(r,j){j.updatedAt=nowIso();await putRuntimeRecord(j);cache.set(r.chatId,j);keepRecent(r);paint();}
   const canonical=x=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x;
   function basis(r,c,p){const normalized=clone(r);normalizeRoomSlots(normalized);return JSON.stringify(canonical({slots:normalized.slots,speech:normalized.speechRelations.map(({updatedAt,...x})=>x),relationships:normalized.relationships,relationshipConfig:normalized.relationshipConfig,relationshipBaseline:normalized.relationshipBaseline,active:normalized.activeLorePackIds,settings:r.unified?.settings,cognition:[c.actors,c.facts,c.state,c.editRev,c.lastAnalysis],packs:p.map(x=>[x.scopeId,autoLoreContentFingerprint(x)]),threads:normalized.threads?.length?normalized.threads:undefined,timeline:normalized.timeline?.length?normalized.timeline:undefined}));}
+  // Show recovery choices only for a recorded data-basis conflict, including
+  // the exact error saved by 0.2.11. Source/branch errors never enable them.
+  function basisChoice(j){
+    if(!j?.draft||!j?.basis||!j.segments?.length||j.status==='applied')return null;
+    const legacy=j.status==='failed'&&/^기억·인물·자료·설정이 바뀌었습니다\. 대화를 다시 읽어 주세요\./.test(String(j.message||''));
+    if(j.basisConflict?.code!=='REBUILD_DATA_CHANGED'&&!legacy)return null;
+    return {areas:j.basisConflict?.areas||'기억·설정 등 (선택 시 다시 확인)',completed:j.segments.filter(s=>s.status==='complete').length};
+  }
+  async function noteBasisConflict(r,j,currentBasis){
+    const stored=get(r)||await load(r);
+    // External imports share commit(), but must not change an API rebuild job.
+    if(!stored||stored.id!==j.id||stored.createdAt!==j.createdAt||stored.anchor!==j.anchor)return;
+    const next={...stored,code:'REBUILD_DATA_CHANGED',basisConflict:{code:'REBUILD_DATA_CHANGED',areas:changedBasis(j.basis,currentBasis),at:nowIso()},message:'기억·인물·자료·설정이 바뀌었습니다. 변경 내역을 확인하고 재구축 기준을 선택해 주세요.'};
+    await save(r,next);
+  }
+  async function chooseBasis(r,mode){
+    if(!['current','previous'].includes(mode))throw Error('지원하지 않는 재구축 기준입니다.');
+    return guard(r,async check=>withRoomExclusive('ai:'+apiChatIdOf(r),async()=>{
+      check();const j=get(r)||await load(r),choice=basisChoice(j);
+      if(!choice)throw Error('기억·설정 변경 오류가 있는 재구축 작업에서만 선택할 수 있습니다.');
+      if(mode==='previous'&&!choice.completed)throw Error('완료 구간이 없습니다. 현재 기준으로 다시 준비해 주세요.');
+      const persisted=await getRuntimeRecord(id(r));check();
+      if(!persisted||persisted.updatedAt!==j.updatedAt||persisted.createdAt!==j.createdAt)throw Error('다른 창에서 재구축 작업이 바뀌었습니다. 창을 다시 열어 주세요.');
+      const s=await source(r,j.anchor);check();
+      if(s.anchorMessageId!==j.anchor||!sameStructure(j,s)||(j.sourceHash&&s.hash!==j.sourceHash)){
+        const failed={...j,status:'failed',code:'REBUILD_SOURCE_CHANGED',message:'대화 원문·메시지 순서 또는 갈래가 바뀌어 기준 선택을 적용하지 않았습니다. 대화를 다시 읽어 주세요.'};delete failed.basisConflict;await save(r,failed);
+        throw WLOG.tag(Error(failed.message),'REBUILD_SOURCE_CHANGED');
+      }
+      const c=await bridge().snapshotRaw(apiChatIdOf(r)),ps=packs(r);check();
+      const nextBasis=basis(r,c,ps),areas=changedBasis(j.basis,nextBasis)||'현재 값은 준비 당시와 같음';
+      const message='변경 항목: '+areas+'\n완료 구간: '+choice.completed+'/'+j.segments.length+'\n\n'+(mode==='current'
+        ?'대화 구간은 유지하고 현재 기억·인물·자료·설정으로 다시 준비합니다.'+(choice.completed?' 완료 구간은 다시 분석해야 합니다. 이전 작업은 로컬 복구 기록에 보관합니다.':'')
+        :'완료 구간과 기존 재구축 결과를 유지합니다. 현재 기억·인물·자료의 최근 수정(수동·보호 항목의 변경 포함)이 최종 적용 시 이전 기준 결과로 교체될 수 있습니다. 최종 결과를 확인하고 적용해야 하며, 적용 직전 현재 자료는 자동 보관합니다.')+'\n\n지금은 AI를 호출하거나 현재 기억을 교체하지 않습니다. 이 기준을 선택할까요?';
+      if(!confirm(message))return false;
+      check();
+      // Keep the old job before replacing its draft or acknowledging a conflict.
+      await putRuntimeRecord({id:runtimeRecordId('wish-rebuild-before-basis-change',r),kind:'wish-rebuild-before-basis-change',chatId:r.chatId,at:nowIso(),job:clone(j)});
+      check();const latestC=await bridge().snapshotRaw(apiChatIdOf(r));check();
+      if(basis(r,latestC,packs(r))!==nextBasis){await noteBasisConflict(r,j,basis(r,latestC,packs(r)));throw WLOG.tag(Error('선택 중 기억·설정이 다시 바뀌었습니다. 변경 항목을 다시 확인해 주세요.'),'REBUILD_DATA_CHANGED');}
+      const next=clone(j);next.basis=nextBasis;delete next.basisConflict;delete next.code;
+      if(mode==='current'){
+        next.draft=seed(r,latestC,packs(r));next.createdAt=nowIso();next.threadsSeeded=true;next.timelineSeeded=true;delete next.basisContinuation;delete next.heldPauseAt;
+        next.segments=next.segments.map(s=>{const seg={...s,status:'pending',error:''};delete seg.repairs;return seg;});next.status='pending';
+        next.message='기존 대화 구간 유지 · 현재 기준으로 준비 완료. 이어서 분석을 눌러 주세요.';
+      }else{
+        next.basisContinuation={at:nowIso(),areas,completed:choice.completed,previousBasis:j.basis};
+        next.draft.notices=[...new Set([...(next.draft.notices||[]),'사용자 선택으로 기존 재구축 결과를 이어갑니다. 변경 항목: '+areas+'. 최근 수정이 교체될 수 있으니 최종 적용 내용을 확인해 주세요.'])];
+        next.status=choice.completed===j.segments.length?'complete':'pending';
+        next.segments=next.segments.map(s=>s.status==='complete'?s:{...s,status:'pending',error:''});
+        next.message='변경 내역 확인 완료 · 기존 기준 '+choice.completed+'개 완료 구간 유지. '+(next.status==='complete'?'전체 결과 적용에서 내용을 확인해 주세요.':'이어서 분석을 눌러 주세요.');
+      }
+      await save(r,next);check();notify(next.message,'success',6500);return true;
+    }));
+  }
+
   function changedBasis(before,after){const a=JSON.parse(before),b=JSON.parse(after),labels={relationships:'관계',relationshipConfig:'관계 설정',slots:'기억',speech:'호칭',active:'사용 자료집',settings:'설정',cognition:'인지',packs:'자료 내용',threads:'서사 고리',timeline:'연표'};return [...new Set([...Object.keys(a),...Object.keys(b)])].filter(k=>JSON.stringify(a[k])!==JSON.stringify(b[k])).map(k=>labels[k]||k).join(', ');}
   const packs=r=>writableLorePacksForRoom(r);
   function units(source){
@@ -9046,7 +9101,7 @@ references는 다음 RP 본문에 그 낱말이 나오면 다시 불려 오는 �
     }
   }
   async function run(r){return await WLOG.run("전체 재구축 구간 분석 중",async task=>{return guard(r,async check=>{const j=get(r)||await load(r);if(!j?.segments?.length)throw Error('먼저 대화 읽기를 실행해 주세요.');const cfg=loadAiSettings();if(!isAiProviderReady(cfg))throw WLOG.tag(Error('보조 AI 연결 설정이 필요합니다.'),'AI_NO_CONFIG');
-    try{const s=await source(r,j.anchor);check();if(s.anchorMessageId!==j.anchor)throw WLOG.tag(Error('읽어 둔 대화가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');if(!sameStructure(j,s))throw WLOG.tag(Error('읽어 둔 대화에서 중간 메시지가 삭제·교체되었거나 순서가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');const currentBasis=basis(r,await bridge().snapshotRaw(apiChatIdOf(r)),packs(r));if(currentBasis!==j.basis)throw WLOG.tag(Error('기억·인물·자료·설정이 바뀌었습니다. 대화를 다시 읽어 주세요. ('+changedBasis(j.basis,currentBasis)+')'),'REBUILD_DATA_CHANGED');
+    try{delete j.basisConflict;if(j.code==='REBUILD_DATA_CHANGED')delete j.code;const s=await source(r,j.anchor);check();if(s.anchorMessageId!==j.anchor)throw WLOG.tag(Error('읽어 둔 대화가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');if(!sameStructure(j,s))throw WLOG.tag(Error('읽어 둔 대화에서 중간 메시지가 삭제·교체되었거나 순서가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');const currentBasis=basis(r,await bridge().snapshotRaw(apiChatIdOf(r)),packs(r));if(currentBasis!==j.basis){j.basisConflict={code:'REBUILD_DATA_CHANGED',areas:changedBasis(j.basis,currentBasis),at:nowIso()};j.code='REBUILD_DATA_CHANGED';throw WLOG.tag(Error('기억·인물·자료·설정이 바뀌었습니다. 변경 내역을 확인하고 재구축 기준을 선택해 주세요. ('+j.basisConflict.areas+')'),'REBUILD_DATA_CHANGED');}
       for(let pos=0;pos<j.segments.length;pos++){const seg=j.segments[pos];if(seg.status==='complete')continue;check();seg.status='running';seg.error='';j.status='running';j.message=`${seg.index}/${j.segments.length}구간 판독 중`;await save(r,j);
         try{const rows=s.rows.slice(seg.start,seg.end),p={memory:true,observe:true,mem:rows,obs:rows},req=U3.request(j.draft.room,j.draft.cog,j.draft.packs,p,{rebuild:true,...U3.continuityOptions(s.rows,rows,rows)});
           req.threadTurn=WishThreads.userCount(s.rows.slice(0,seg.end).flatMap(t=>t.relationshipSourceMessages||[]));req.holdContext={bundle:'rebuild',jobCreatedAt:j.createdAt,segmentIndex:seg.index,segmentCount:j.segments.length};req.storedSpeech=(r.speechRelations||[]).filter(x=>x.source==='unified-ai');
@@ -9065,7 +9120,7 @@ references는 다음 RP 본문에 그 낱말이 나오면 다시 불려 오는 �
         }}
       j.status='complete';j.message='전체 판독 완료 · 결과를 확인하고 적용해 주세요.'+(j.draft.notices?.length?' · 일부 보류 '+j.draft.notices.length+'건':'');await save(r,j);return true;
     }catch(e){j.status=control?.cancelled?'paused':'failed';j.message=String(e.message||e);await save(r,j);throw e;}});});}
-  async function commit(r,j,check){const s=await source(r,j.anchor);check();if(s.anchorMessageId!==j.anchor)throw WLOG.tag(Error('재구축 기준 메시지가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');if(!sameStructure(j,s))throw WLOG.tag(Error('읽어 둔 대화에서 중간 메시지가 삭제·교체되었거나 순서가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');const c=await bridge().snapshotRaw(apiChatIdOf(r)),ps=packs(r);if(basis(r,c,ps)!==j.basis)throw WLOG.tag(Error('원래 기억·인물·자료가 변경되어 덮어쓰지 않았습니다.'),'REBUILD_DATA_CHANGED');
+  async function commit(r,j,check){const s=await source(r,j.anchor);check();if(s.anchorMessageId!==j.anchor)throw WLOG.tag(Error('재구축 기준 메시지가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');if(!sameStructure(j,s))throw WLOG.tag(Error('읽어 둔 대화에서 중간 메시지가 삭제·교체되었거나 순서가 바뀌었습니다. 대화를 다시 읽어 주세요.'),'REBUILD_SOURCE_CHANGED');const c=await bridge().snapshotRaw(apiChatIdOf(r)),ps=packs(r);if(basis(r,c,ps)!==j.basis){await noteBasisConflict(r,j,basis(r,c,ps));throw WLOG.tag(Error('원래 기억·인물·자료가 변경되어 덮어쓰지 않았습니다. 재구축의 변경 내역을 확인해 주세요.'),'REBUILD_DATA_CHANGED');}
     const next=clone(j.draft),manifest=sourceManifestOf(s.messages.map(m=>m.raw));restoreRejectedQuotes(ps,next);U3.rebaseAfterImport(next.room,j.anchor,manifest);if(j.sourceHash&&s.hash!==j.sourceHash)next.notices=[...(next.notices||[]),'읽기 이후 과거 메시지 본문이 수정되었습니다. 이미 판독된 구간은 수정 전 본문 기준입니다. 필요하면 대화를 다시 읽어 재구축해 주세요.'];if(next.notices?.length)next.room.unified.status+=' · 확인 '+next.notices.length+'건 (실패·주의 기록)';next.room.memoryBranchBlocked=false;next.room.aiSourceManifests={currentState:manifest,logSummary:manifest};
     next.room.aiUpdateCursors={currentState:{messageId:j.anchor,updatedAt:nowIso()},logSummary:{messageId:j.anchor,updatedAt:nowIso()}};
     Object.assign(next.room.autoMemory,{lastProcessedMessageId:j.anchor,lastCommittedMessageId:j.anchor,committedTurns:0,lastError:'',dirtyScore:0});
@@ -9077,7 +9132,7 @@ references는 다음 RP 본문에 그 낱말이 나오면 다시 불려 오는 �
     // apply's locks are released it is refreshed with the applied data (refreshPendingAfterRebuild in applyRelationshipReview).
     // Everything above ran under the AI lock only, so a send or poll of this chat never waits for the conversation read; the
     // room lock they take is held for the last check and the save.
-    const cp=await saveMemoryCheckpoint(r,'rebuild-231-before-apply');try{check();await withRoomExclusive(apiChatIdOf(r),async()=>{if(basis(r,await bridge().snapshotRaw(apiChatIdOf(r)),packs(r))!==j.basis)throw WLOG.tag(Error('저장 직전 기억·인물·자료가 변경되어 적용하지 않았습니다.'),'REBUILD_DATA_CHANGED');check();await U3.atomicCommit(r,c,ps,next);});}catch(e){await dropMemoryCheckpoint(r,cp);throw e;}if(next.notices?.length)WishMemorySafety.reportNotices(next.notices,'전체 재구축 저장 완료 · 일부 항목 확인 필요');try{await bridge().refresh();state.v2Cognition=await bridge().getView?.(apiChatIdOf(r));}catch{}return true;
+    const cp=await saveMemoryCheckpoint(r,'rebuild-231-before-apply');try{check();await withRoomExclusive(apiChatIdOf(r),async()=>{const saveBasis=basis(r,await bridge().snapshotRaw(apiChatIdOf(r)),packs(r));if(saveBasis!==j.basis){await noteBasisConflict(r,j,saveBasis);throw WLOG.tag(Error('저장 직전 기억·인물·자료가 변경되어 적용하지 않았습니다. 재구축의 변경 내역을 확인해 주세요.'),'REBUILD_DATA_CHANGED');}check();await U3.atomicCommit(r,c,ps,next);});}catch(e){await dropMemoryCheckpoint(r,cp);throw e;}if(next.notices?.length)WishMemorySafety.reportNotices(next.notices,'전체 재구축 저장 완료 · 일부 항목 확인 필요');try{await bridge().refresh();state.v2Cognition=await bridge().getView?.(apiChatIdOf(r));}catch{}return true;
   }
   async function apply(r){const j=get(r)||await load(r);if(j?.status!=='complete')throw Error('판독을 먼저 완료해 주세요.');
     return guard(r,async check=>{const c=await bridge().snapshotRaw(apiChatIdOf(r));check();const draft=keepLoreRebuildCards(retainRelationshipScope(r,c,clone(j.draft)));
@@ -9546,7 +9601,7 @@ references는 다음 RP 본문에 그 낱말이 나오면 다시 불려 오는 �
     const epoch=localRestoreEpoch,input=document.createElement('input');input.type='file';input.accept='.json,.txt,application/json,text/plain';
     pickFile(input,async()=>{try{if(!input.files[0])return;if(state.currentRoom!==r||epoch!==localRestoreEpoch)throw Error('파일 선택 중 방·복원 상태가 바뀌었습니다.');const data=await readImportedJsonFile(input.files[0],{label:only?'관계 전용 재구축 JSON':'외부 전체 재구축 JSON',maxBytes:25*1024*1024});await importData(r,data,only);}catch(e){notify(e.message,'error',8000,{error:e,operation:'외부 재구축 JSON 가져오기',mode:'file',outcome:'not-applied'});}finally{input.value='';}});return true;
   }
-  return {get,load,waiting,read,run,apply,clear,exportText,importData,importFile,externalGuideDefault,relationshipOnlyGuideDefault,externalGuide,externalStage,relationshipOnlyGuide,onlyRelationshipStage,alignRelationActors,retainRelationshipScope,reviewEditFields,editedReviewJob,applyRelationshipReview,externalSchema,envelope,refuseNulled,nulledNotices,segments,FILE_LIMIT,units,text,seed,joinStage,commit,personContract,detailRows,schema:SCHEMA,schema3:SCHEMA3,relationshipSchema:RELATION_SCHEMA,busy:()=>!!task,stop:()=>{if(control)control.cancelled=true;AiAbort.abort('작업을 중단했어요. 다시 누르면 성공한 구간 다음부터 이어서 분석해요.');},guide:WISH_EXTERNAL_REBUILD_GUIDE};
+  return {basisChoice,chooseBasis,get,load,waiting,read,run,apply,clear,exportText,importData,importFile,externalGuideDefault,relationshipOnlyGuideDefault,externalGuide,externalStage,relationshipOnlyGuide,onlyRelationshipStage,alignRelationActors,retainRelationshipScope,reviewEditFields,editedReviewJob,applyRelationshipReview,externalSchema,envelope,refuseNulled,nulledNotices,segments,FILE_LIMIT,units,text,seed,joinStage,commit,personContract,detailRows,schema:SCHEMA,schema3:SCHEMA3,relationshipSchema:RELATION_SCHEMA,busy:()=>!!task,stop:()=>{if(control)control.cancelled=true;AiAbort.abort('작업을 중단했어요. 다시 누르면 성공한 구간 다음부터 이어서 분석해요.');},guide:WISH_EXTERNAL_REBUILD_GUIDE};
 })();
 
 // Resolve imported name references on a private copy before the normal result review.
@@ -11100,6 +11155,7 @@ function remapLogSelectionKeysByMatch(room,oldBlocks,newBlocks){
       const req = indexedDB.open(APP.dbName, APP.dbVersion);let settled=false;
       req.onupgradeneeded = () => {
         const db = req.result;
+        if (!db.objectStoreNames.contains('guideLibrary')) db.createObjectStore('guideLibrary',{keyPath:'id'});
         if (!db.objectStoreNames.contains(APP.storeName)) {
           db.createObjectStore(APP.storeName, { keyPath: 'chatId' });
         }
@@ -14639,7 +14695,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
       const out=coreBackupData(data,ids),set=new Set(ids),links=new Set(out.rooms.flatMap(r=>roomLinkedLibraryIds(r)).filter(Boolean));
       out.rooms=out.rooms.map(r=>({...r,pending:null}));out.characterLibraries=out.characterLibraries.filter(p=>set.has(String(p.ownerChatId))||links.has(p.scopeId));
       out.autoHistory=(out.autoHistory||[]).filter(x=>!x.backup&&set.has(String(x.chatId)));
-      if(!settings)for(const key of ['guides','defaultExtraPreset','defaultCharacterPreset','cognitionSettings'])delete out[key];
+      if(!settings)for(const key of ['guideLibrary','guides','defaultExtraPreset','defaultCharacterPreset','cognitionSettings'])delete out[key];
       return validateManagerBackup(out);
     }
     async function backup(){
@@ -14673,6 +14729,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
 
   async function createManagerBackup() {return await WLOG.run("백업 파일 구성 중",async task=>{
     await WishLocalRooms.pruneDeleted();
+    const guideLibrary=await WishGuideLibrary.exportData();
     await Promise.all([...storageWrites.values()].map(p=>p.catch(()=>{})));const names=[APP.storeName,APP.libraryStoreName,APP.cognitionStoreName,APP.runtimeStoreName,APP.historyStoreName];
     const data=await new Promise((resolve,reject)=>{
       const tx=state.db.transaction(names,'readonly'),out={};
@@ -14683,6 +14740,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
     return coreBackupData({_wishRpManagerBackup:true,backupSchema:3,version:APP.version,exportedAt:nowIso(),
       rooms:data[APP.storeName],characterLibraries:data[APP.libraryStoreName],cognitionRooms:data[APP.cognitionStoreName],
       runtime:data[APP.runtimeStoreName].filter(x=>x.kind!=='wish-lease'&&!(x.kind==='wish-native-bundle'&&x.status==='applied')&&x.kind!=='wish-copy-recovery'),autoHistory:data[APP.historyStoreName],
+      guideLibrary,
       guides:Object.fromEntries(Object.keys(GUIDE_DEFAULTS).map(id=>[id,guideBackupValue(id)])),
       defaultExtraPreset:loadDefaultExtraPreset(),
       ...(hasDefaultPreset('character')?{defaultCharacterPreset:loadDefaultExtraPreset('character')}:{}),
@@ -14696,6 +14754,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
 
     if(!data||typeof data!=='object'||Array.isArray(data)||data._wishRpManagerBackup!==true)throw new Error('Wish RP Manager Core 백업 표식이 올바르지 않습니다.');
     data=coreBackupData(data);
+    if(data.guideLibrary!==undefined)data.guideLibrary=WishGuideLibrary.validate(data.guideLibrary);
     const schema=Number(data.backupSchema??1);if(!Number.isInteger(schema)||schema<1||schema>3)throw WLOG.tag(new Error(`지원하지 않는 백업 schema입니다: ${data.backupSchema}`),Number.isInteger(schema)&&schema>3?'BACKUP_NEWER':'');
     const required=['rooms','characterLibraries'],optional=['cognitionRooms','runtime','autoHistory'];
     for(const key of required)if(!Array.isArray(data[key]))throw new Error(`백업의 ${key} 배열이 올바르지 않습니다.`);
@@ -17492,6 +17551,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
 
   async function restoreManagerBackup(data,choice) {
     data=validateManagerBackup(data);
+    if(choice.restoreGuideLibrary&&data.guideLibrary)await WishGuideLibrary.list();
     const selected=(data.rooms||[]).filter(r=>(choice.roomIds||[]).map(String).includes(String(r.chatId)));
     await WishRoomNames.checkRooms(selected,true);
     const skipped=new Set(selected.filter(WishRoomNames.isDeleted).map(r=>String(r.chatId)));
@@ -17534,9 +17594,10 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
       const runtime=(data.runtime||[]).filter(x=>x.kind!=='wish-lease'&&isCoreRuntimeRecord(x)&&(rids.has(String(x.chatId||''))||rooms.some(r=>x.id===bulkSessionId(r))));
       const history=(data.autoHistory||[]).filter(x=>rids.has(String(x.chatId||'')));
       await new Promise((resolve,reject)=>{
-        const tx=state.db.transaction([APP.storeName,APP.libraryStoreName,APP.cognitionStoreName,APP.runtimeStoreName,APP.historyStoreName],'readwrite');let failed=false;
+        const tx=state.db.transaction([APP.storeName,APP.libraryStoreName,APP.cognitionStoreName,APP.runtimeStoreName,APP.historyStoreName,...(choice.restoreGuideLibrary&&data.guideLibrary?['guideLibrary']:[])],'readwrite');let failed=false;
         const abort=error=>{if(failed)return;failed=true;try{tx.abort();}catch{}reject(error instanceof Error?error:new Error(String(error||'통합 백업 복원 실패')));};
         try{
+          if(choice.restoreGuideLibrary&&data.guideLibrary)WishGuideLibrary.restoreInTransaction(tx,data.guideLibrary,choice.guideLibraryMode||'merge');
           for(const r of rooms){const old=existing.find(x=>String(x.chatId)===String(r.chatId));r._epoch=crypto.randomUUID();r._rev=Number(old?._rev||0)+1;tx.objectStore(APP.storeName).put(r);}
           if(cognitionProvided){
             const st=tx.objectStore(APP.cognitionStoreName);
@@ -17547,8 +17608,9 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
           for(const x of libraries)libraryStore.put(x);
           for(const [name,items] of [[APP.runtimeStoreName,runtime],[APP.historyStoreName,history]]){const st=tx.objectStore(name),q=st.getAll();q.onsuccess=()=>{try{for(const x of q.result||[])if(x.kind!=='wish-lease'&&isCoreRuntimeRecord(x)&&(rids.has(String(x.chatId||''))||rooms.some(r=>x.id===bulkSessionId(r))))st.delete(x.id);for(const x of items)st.put(structuredClone(x));}catch(error){abort(error);}};q.onerror=()=>abort(q.error||WLOG.tag(new Error('백업 작업 기록 읽기 실패'),'STORE_TX_FAIL'));}
         }catch(error){abort(error);return;}
-        tx.oncomplete=()=>{if(!failed)resolve();};tx.onabort=tx.onerror=()=>{if(!failed){failed=true;reject(tx.error||WLOG.tag(new Error('통합 백업 복원 실패'),'STORE_TX_FAIL'));}};
+        tx.oncomplete=()=>{if(!failed)resolve();};tx.onabort=tx.onerror=()=>{if(!failed){failed=true;reject(tx._guideLibraryError||tx.error||WLOG.tag(new Error('통합 백업 복원 실패'),'STORE_TX_FAIL'));}};
       });
+      if(choice.restoreSettings||choice.restoreGuideLibrary)WishGuideLibrary.invalidate();
       const warnings=skipped.size?['404로 복원할 수 없는 방 '+skipped.size+'개 제외']:[];
       const currentRestored=rids.has(String(state.currentChatId||''));
       if(currentRestored){
@@ -17568,7 +17630,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
       try{await loadLorePackCache(true);}catch(error){warnings.push('자료 목록 갱신: '+error.message);}
       const currentId=state.currentChatId;
       if(rids.has(String(currentId))){try{const current=await getRoom(currentId);if(state.currentChatId===currentId)state.currentRoom=current;}catch(error){warnings.push('방 화면 갱신: '+error.message);}}
-      return {rooms:rooms.length,cognition:cognition.length,legacy:!cognitionProvided,warnings};
+      return {rooms:rooms.length,cognition:cognition.length,legacy:!cognitionProvided,guideLibraryRestored:!!(choice.restoreGuideLibrary&&data.guideLibrary),warnings};
     };
     function assertIdle(){
       if(aiUpdateRunning||automaticMemoryJob||automaticLoreJob||memoryImportRunning||apiIds.some(id=>generationPending(id)||bridge?.isBusy?.(id)||backgroundWorkPending(id)||ExternalReplay.pending(id)))throw Error('AI 생성·기억·인지·재전송 작업 완료 후 백업을 복원해 주세요.');
@@ -17587,6 +17649,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
     const warnings=[...(restored.warnings||[])];
     try{await ensureCurrentRoom(getChatIdFromPath(),true);}catch(error){warnings.push('화면 갱신: '+error.message);}
     if(warnings.length)notify('자료는 복원됐습니다. '+warnings.join(' · '),'warn',8000,{kind:'RESTORE_PARTIAL',operation:'백업 복원'});
+    else if(restored.guideLibraryRestored&&!restored.rooms)notify('지침 보관소 복원 완료','success',5000);
     else notify(restored.legacy?'백업 복원 완료 · 구형 백업에는 인지 기록이 없어 현재 인지 기록을 유지했습니다.':`백업 복원 완료 · 인지 ${restored.cognition}개 방 포함`,'success',5000);
   }
 
@@ -17599,7 +17662,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
     // device's). For display only: when this device's 인지 cannot be read, the room record's time stands alone.
     const cogApiIds=Array.isArray(data.cognitionRooms)?[...new Set((data.rooms||[]).map(r=>String(apiChatIdOf(r)||'')).filter(Boolean))]:[],backupCogTime=new Map((data.cognitionRooms||[]).map(c=>[String(c?.id||''),Number(c?.updated)||0]));
     const localCogTime=cogApiIds.length?await new Promise(resolve=>{const out=new Map();try{const tx=state.db.transaction(APP.cognitionStoreName,'readonly'),st=tx.objectStore(APP.cognitionStoreName);for(const id of cogApiIds){const q=st.get(id);q.onsuccess=()=>{if(q.result)out.set(id,Number(q.result.updated)||0);};}tx.oncomplete=()=>resolve(out);tx.onerror=tx.onabort=()=>resolve(out);}catch{resolve(out);}}):new Map();
-    const localLibraryIds=new Set((existingLibraries||[]).map(x=>String(x?.scopeId||''))),referencedLibraryIds=new Set((data.rooms||[]).flatMap(r=>[...(r.activeLorePackIds||[]),r.autoCharacterLibraryId,r.lastExtraLibraryId]).filter(Boolean).map(String)),sharedRestoreHint=l=>{const id=String(l.scopeId);if(l.autoManaged===true||(data.rooms||[]).some(r=>r.chatId&&String(r.chatId)===String(l.ownerChatId))||!referencedLibraryIds.has(id))return '';return localLibraryIds.has(id)?' · 이 기기에 있음: 체크해야 백업 버전으로 교체':' · 이 기기에 없음: 이 자료집을 쓰는 방을 고르면 같이 복원';};const localRooms=new Map((existingRooms||[]).map(x=>[String(x?.chatId||''),x])),blocked=new Set(existingRooms.filter(r=>r.pending).map(r=>String(r.chatId))),all=(data.rooms||[]).filter(r=>r.chatId),rooms=all.map(r=>{const local=localRooms.get(String(r.chatId)),api=String(apiChatIdOf(r)||''),saved=Math.max(Date.parse(String(r.updatedAt||''))||0,backupCogTime.get(api)||0),here=local?Math.max(Date.parse(String(local.updatedAt||''))||0,localCogTime.get(api)||0):0,at=t=>formatLocalRecordTime(new Date(t).toISOString());return {id:String(r.chatId),injected:blocked.has(String(r.chatId)),deleted:WishRoomNames.isDeleted(r),label:r.backupDisplayName||WishRoomNames.display(r)||r.label||'RP '+shortId(r.chatId),sum:'방 ID '+r.chatId+(saved?' · 백업 '+at(saved):'')+(here?' · 이 기기 '+at(here):''),current:String(r.chatId)===String(state.currentChatId),...(!local?{diff:'신규'}:saved&&here>saved?{diff:'변경 있음'}:{})};}),libs=(data.characterLibraries||[]).filter(l=>l.scopeId&&!(l.autoManaged&&blocked.has(String(l.ownerChatId)))).map(l=>({id:String(l.scopeId),label:l.name||l.title||l.scopeId,sum:sharedRestoreHint(l).replace(/^ · /,''),owner:all.some(r=>String(r.chatId)===String(l.ownerChatId))?String(l.ownerChatId):''}));const global=!!(data.guides||data.defaultExtraPreset||data.defaultCharacterPreset||data.cognitionSettings);if(global)libs.push({id:'wish-global-settings',label:'공용 지침·프리셋·인지 설정 복원',});return WUIOpenPromise('backupImport',{src:'파일 백업',note:rooms.some(r=>r.injected)?'주입 중인 '+rooms.filter(r=>r.injected).length+'개 방이 있습니다. 선택 항목 복원은 주입방을 건너뜁니다. 주입방 포함 복원은 선택한 방의 주입을 먼저 해제합니다. 복원할 방의 기존 데이터는 교체됩니다.':'선택한 방과 설정집의 데이터를 백업으로 교체합니다. API 연결 설정은 유지됩니다.',rooms,libs,blocked:[...blocked],draft:{pick:{}}});}
+    const localLibraryIds=new Set((existingLibraries||[]).map(x=>String(x?.scopeId||''))),referencedLibraryIds=new Set((data.rooms||[]).flatMap(r=>[...(r.activeLorePackIds||[]),r.autoCharacterLibraryId,r.lastExtraLibraryId]).filter(Boolean).map(String)),sharedRestoreHint=l=>{const id=String(l.scopeId);if(l.autoManaged===true||(data.rooms||[]).some(r=>r.chatId&&String(r.chatId)===String(l.ownerChatId))||!referencedLibraryIds.has(id))return '';return localLibraryIds.has(id)?' · 이 기기에 있음: 체크해야 백업 버전으로 교체':' · 이 기기에 없음: 이 자료집을 쓰는 방을 고르면 같이 복원';};const localRooms=new Map((existingRooms||[]).map(x=>[String(x?.chatId||''),x])),blocked=new Set(existingRooms.filter(r=>r.pending).map(r=>String(r.chatId))),all=(data.rooms||[]).filter(r=>r.chatId),rooms=all.map(r=>{const local=localRooms.get(String(r.chatId)),api=String(apiChatIdOf(r)||''),saved=Math.max(Date.parse(String(r.updatedAt||''))||0,backupCogTime.get(api)||0),here=local?Math.max(Date.parse(String(local.updatedAt||''))||0,localCogTime.get(api)||0):0,at=t=>formatLocalRecordTime(new Date(t).toISOString());return {id:String(r.chatId),injected:blocked.has(String(r.chatId)),deleted:WishRoomNames.isDeleted(r),label:r.backupDisplayName||WishRoomNames.display(r)||r.label||'RP '+shortId(r.chatId),sum:'방 ID '+r.chatId+(saved?' · 백업 '+at(saved):'')+(here?' · 이 기기 '+at(here):''),current:String(r.chatId)===String(state.currentChatId),...(!local?{diff:'신규'}:saved&&here>saved?{diff:'변경 있음'}:{})};}),libs=(data.characterLibraries||[]).filter(l=>l.scopeId&&!(l.autoManaged&&blocked.has(String(l.ownerChatId)))).map(l=>({id:String(l.scopeId),label:l.name||l.title||l.scopeId,sum:sharedRestoreHint(l).replace(/^ · /,''),owner:all.some(r=>String(r.chatId)===String(l.ownerChatId))?String(l.ownerChatId):''}));const global=!!(data.guides||data.defaultExtraPreset||data.defaultCharacterPreset||data.cognitionSettings);if(global)libs.push({id:'wish-global-settings',label:'공용 지침·프리셋·인지 설정 복원',});if(data.guideLibrary)libs.push({id:'wish-guide-library',label:'지침 보관소만 복원',sum:'사용 지침은 바꾸지 않음 · '+data.guideLibrary.items.length+'개 보관본'});return WUIOpenPromise('backupImport',{src:'파일 백업',note:rooms.some(r=>r.injected)?'주입 중인 '+rooms.filter(r=>r.injected).length+'개 방이 있습니다. 선택 항목 복원은 주입방을 건너뜁니다. 주입방 포함 복원은 선택한 방의 주입을 먼저 해제합니다. 복원할 방의 기존 데이터는 교체됩니다.':'선택한 방과 설정집의 데이터를 백업으로 교체합니다. API 연결 설정은 유지됩니다.',rooms,libs,hasGuideLibrary:!!data.guideLibrary,blocked:[...blocked],draft:{pick:{},guideLibraryMode:'merge'}});}
 
   // ---------------------------------------------------------------------------
   // Injection lifecycle
@@ -20130,6 +20193,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
       const req = indexedDB.open(APP.dbName, APP.dbVersion);let settled=false;
       req.onupgradeneeded = () => {
         const d=req.result;
+        if(!d.objectStoreNames.contains('guideLibrary'))d.createObjectStore('guideLibrary',{keyPath:'id'});
         if(!d.objectStoreNames.contains('rooms'))d.createObjectStore('rooms',{keyPath:'chatId'});
         if(!d.objectStoreNames.contains('characterLibraries'))d.createObjectStore('characterLibraries',{keyPath:'scopeId'});
         if(!d.objectStoreNames.contains(COG_STORE))d.createObjectStore(COG_STORE,{keyPath:'id'});
@@ -20577,6 +20641,7 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
       bindViewportMetrics();
       bindPerformanceVisibility();
       state.db = await openDb();
+      try{await WishGuideLibrary.list();}catch(error){notify('지침 보관소 초기화 실패: '+error.message,'error',8000);}
 
       installUnifiedAutomationBridge();
 
@@ -20601,6 +20666,20 @@ async function convertTextToLoreEntries(sourceText) {return await WLOG.run("텍�
    블록 A: 청묵 디자인 전체 (3.3.47 토큰 기반 · 크랙 body[data-theme] 연동)
    ===================================================================== */
 const WUI_CSS = `
+#wish-rp-root .gl-layout{display:grid;grid-template-columns:minmax(210px,32%) minmax(0,1fr);gap:18px;text-align:left}
+#wish-rp-root .gl-list,#wish-rp-root .gl-detail{min-width:0}
+#wish-rp-root .gl-rows{max-height:400px;overflow:auto;margin-top:12px;display:grid;gap:6px}
+#wish-rp-root .gl-item{width:100%;min-height:56px;justify-content:space-between;white-space:normal;text-align:left;align-items:flex-start}
+#wish-rp-root .gl-item .m3-t{display:block;min-width:0;overflow-wrap:anywhere}
+#wish-rp-root .gl-item b,#wish-rp-root .gl-item small{display:block}
+#wish-rp-root .gl-item small{font-size:11px;color:var(--m3-muted)}
+#wish-rp-root .gl-item .gl-memo{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--m3-fg2)}
+#wish-rp-root .gl-item.is-selected{border-color:var(--m3-accent);background:var(--m3-accent-soft)}
+#wish-rp-root .gl-actions{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+#wish-rp-root .gl-back{display:none}
+#wish-rp-root .gl-detail textarea{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:600px){#wish-rp-root .gl-layout{display:block}#wish-rp-root .gl-layout:not(.is-detail) .gl-detail,#wish-rp-root .gl-layout.is-detail .gl-list{display:none}#wish-rp-root .gl-back{display:flex;margin-bottom:8px}#wish-rp-root .gl-actions{width:100%;justify-content:flex-end}#wish-rp-root .gl-actions .m3-btn{flex:1 0 auto}#wish-rp-root .gl-rows{max-height:none}}
+
 .m3-held-row{border:1px solid var(--m3-line,#343c4c);border-radius:9px;margin:8px 0;padding:8px 11px;min-width:0}
 .m3-held-title{display:inline-flex;flex-direction:column;gap:3px;max-width:100%;vertical-align:top}
 .m3-held-title b,.m3-held-title small{overflow-wrap:anywhere}.m3-held-title small{font-size:11px;color:var(--m3-muted,#959eaf);font-weight:400}
@@ -22420,6 +22499,7 @@ function mRelationships() {
  return pageHead('자료 관리')+
  `<section class="m3-panel" data-key="memdiff-settings"><div class="m3-panel-head"><b>정리 전후 비교</b>${btn('정리 기록','memDiff',{cls:'mini',icon:'history'})}</div><p class="m3-muted">현재상태·날짜로그·서사 고리·연표·관계·인지·호칭·자료집 · 방마다 최근 10회 · 추가 API 호출 없음</p></section>`+
  '<section class="m3-panel '+(j?'m3-focus':'')+'" data-key="rebuild"><div class="m3-row m3-sp"><div class="m3-t"><b class="m3-title-help">과거 대화 전체 재구축 '+help(helpSections([['읽는 범위','확정 RP를 AI 답변 끝 기준 약 20만 자씩 나눕니다. 한 턴이 더 길면 통째로 유지합니다.'],['분석과 적용','대화 읽기는 원문을 준비합니다. 이어서 분석은 외부 AI API를 사용합니다. 성공한 구간을 저장하고 실패한 구간부터 이어갑니다.'],['기존 기억','전체 결과 적용을 누르기 전까지 유지합니다.']]))+'</b><div class="m3-muted">확정 RP를 읽고 현재상태·날짜별 사건·서사 고리·연표·인물·인지·자료·호칭·관계를 다시 구성합니다.</div></div>'+(run?btn('작업 중단','rebuildStop',{cls:'danger mini'}):j&&!['complete','applied'].includes(j.status)?btn('이어서 분석','rebuildRun',{cls:'primary mini',dis:!!V.ai.manual}):btn('대화 읽기','rebuildRead',{cls:'primary mini',dis:!!V.ai.manual}))+'</div><p class="m3-muted">지침을 제외한 원문 약 200,000자 · AI 답변 끝에서 분할 · 한 턴이 더 길면 해당 턴은 통째로 유지</p>'+
+ (j?.basisChoice?'<section class="m3-panel m3-alert m3-topgap" data-key="rebuild-basis-choice" role="alert"><b>재구축 기준 변경</b><p class="m3-muted">변경 항목: '+esc(j.basisChoice.areas)+'<br>현재 기준으로 다시 준비하거나, 완료 구간이 있으면 기존 기준으로 이어갈 수 있습니다. 대화 원문 변경은 별도로 검사합니다.</p><div class="m3-row m3-card-actions">'+btn('현재 기준으로 다시 준비','rebuildBasisCurrent',{cls:'mini',dis:run})+(j.basisChoice.completed?btn('변경 확인 후 기존 기준으로 계속','rebuildBasisPrevious',{cls:'mini',dis:run}):'')+'</div></section>':'')+
  (j?'<div class="m3-hbar m3-topgap"><i style="width:'+ (rows.length?done/rows.length*100:0)+'%"></i></div><p class="m3-muted">'+esc(j.message||'')+' · 판독 완료 '+done+'/'+rows.length+'</p>'+rows.map(s=>'<div class="m3-seg" data-key="segment-'+s.index+'"><span class="m3-n '+(s.status==='complete'?'m3-done':s.status==='running'?'m3-run':'')+'">'+s.index+'</span><span class="m3-t">'+s.messages+'메시지 · '+fmt(s.chars)+'자'+(s.error?'<br><small class="m3-error">'+esc(s.error)+'</small>':'')+'</span><span class="m3-s">'+esc(status[s.status]||s.status)+'</span></div>').join('')+'<div class="m3-row m3-card-actions">'+(j.status==='complete'&&j.ready?btn('전체 결과 적용','rebuildApply',{cls:'primary mini',dis:run}):'')+btn('대화 다시 읽기','rebuildRead',{cls:'quiet mini',dis:run||!!V.ai.manual})+btn('구간 목록 비우기','rebuildClear',{cls:'danger mini',dis:run})+'</div>':'')+'</section>'+
 vExternalRebuild(run||ExternalBundles.busy())+
  '<hr class="m3-secondary-divider"><div data-key="secondary-rebuild"><b>외부 AI로 2차 재구축</b><div class="m3-muted">현재 방 자료를 카드별 고밀도 기록체로 압축합니다. 사건·원문·팩 구분을 보존합니다.</div><div class="m3-row m3-card-actions">'+btn('지침 + TXT 받기','secondaryExport',{cls:'mini',dis:run})+btn('JSON 가져오기','secondaryImport',{cls:'mini',dis:run})+btn('지침','promptGuides',{arg:'externalSecondary',cls:'mini',icon:'doc'})+'</div>'+vSecondaryStatus(run)+'</div><hr class="m3-secondary-divider">'+vFreeCompression(run)+'</section>'+
@@ -22461,7 +22541,7 @@ vExternalRebuild(run||ExternalBundles.busy())+
       `<section class="m3-panel" data-key="economy-settings"><div class="m3-panel-head"><b class="m3-title-help">API 사용량 절약 ${help('실험 기능 · 저장하면 모든 방에 공통 적용합니다. 둘 다 OFF이면 현재상태를 매번 전체로 갱신하고 후보를 원문으로 선별하는 기본 방식입니다. OFF는 이미 갱신된 기억을 되돌리지는 않습니다. 처음 켜기 전 기억·인지·자료 백업을 보관하며, 복원용 파일은 기존 백업/복원 화면에서 가져올 수 있습니다. 적용 전 백업은 절약 설정을 켜서 저장하거나 이 방에서 절약 기능을 처음 사용하면 만들어집니다. RP 원문은 이 백업으로 되돌리지 않습니다.')}</b>${savedTag('apiEconomy')}</div><div class="m3-economy-scope m3-scope-hint"><span class="m3-muted">${V.ai.manual?manualOff:'모든 방 공통 · 확장 프로그램에 저장'}</span>${btn('절약 적용 전 백업 받기','economyBackup',{cls:'mini',dis:!!V.ai.manual})}</div>${apiOnly(helpToggle('현재상태 변경분 갱신','apiEconomy.delta',!V.ai.manual&&V.apiEconomy?.delta,'변경된 원문 구간만 수정하고 나머지 문구는 보존합니다. 수정·추가·종료에 신규 RP 근거와 요청 토큰을 검증합니다. 애매한 편집은 원본을 유지하고 오류를 표시합니다. 날짜별 사건·자료·인지는 기존 증분 방식을 유지합니다.'))}${apiOnly(helpToggle('색인으로 후보 선별','apiEconomy.index',!V.ai.manual&&V.apiEconomy?.index,'전체 후보가 50,000자를 초과할 때만 기존 선별 설정에 따라 사용합니다. 첫 선별에서 원문과 점수를 읽고 짧은 발췌 색인을 함께 준비하므로 첫 호출은 더 커질 수 있습니다. 다음 호출부터 같은 원문의 색인을 사용하며 실제 주입은 원문입니다. 자료 변경·색인 부적합·캐시 소실 때는 원문으로 돌아갑니다. 핵심 단서 누락 가능성은 실전 비교가 필요합니다.'))}<p class="m3-muted">${esc(V.apiEconomy?.status||'')}</p></section>`+
       `<section class="m3-panel" data-key="recall-settings"><div class="m3-panel-head"><b class="m3-title-help">선택된 기억 AI 재검토 ${help(recallHelp)}</b>${savedTag('recall')}</div><p class="m3-muted m3-scope-hint">${V.ai.manual?manualOff+' · 최근·키워드 검색만 사용':'모든 방 공통 · 확장 프로그램에 저장'}</p><div class="m3-setting-row m3-recall-mode"><label for="wish-recall-mode">재검토 방식</label>${selc('recall.mode',V.ai.manual?'local':mode,[['local','에리·키워드 결과만 사용'],['priority','AI로 후보 순서 재검토'],['both','AI로 관련성·순서 재검토'],['semantic','AI로 관련성만 재검토']],'m3-select',' id="wish-recall-mode" aria-label="선택된 기억 AI 재검토"'+(V.ai.manual?' disabled':''))}</div><p class="m3-muted">최근·관련 기억 검색은 유지 · 원문·서식 포함 전체 후보가 50,000자를 초과할 때만 AI 선별 · 관련 후보를 50,000자 안전선까지 포함 · AI 답 도착 뒤 미리 선별, 전송 때는 기다리지 않음 · 임베딩·자동 정리는 별도</p>${apiOnly(helpToggle('AI로 관련성 재확인','recall.semantic',!V.ai.manual&&q.semantic,'사용하도록 설정한 전체 후보가 원문·서식 포함 50,000자를 초과하면 AI 답이 도착한 뒤 보조 AI가 그 답과의 문맥 관련성을 미리 확인합니다. 제외 항목은 유지하며, 키워드가 일치하지 않는 후보도 상위 144개(색인으로 후보 선별을 켜면 384개)까지 평가할 수 있습니다. 이번 USER 입력으로 검색 점수가 오른 후보는 빼지 않습니다. 의미검색 색인이 있으면 전송 때 이번 입력의 검색 벡터를 요청하되 기다리지 않고, 미리 만든 직전 AI 답의 검색 벡터나 키워드로 순위를 정합니다.'))}${apiOnly(helpToggle('AI로 우선순위 정하기','recall.selector',!V.ai.manual&&q.selector,'직전 AI 답·미해결 약속·위험과 직접 연결된 후보부터 50,000자 안전선 안에 배치합니다. 이번 USER 입력으로 검색 점수가 오른 후보는 에리·키워드 자리를 지킵니다. 점수가 준비되지 않았거나 실패하면 에리·키워드 순위를 그대로 사용합니다.'))}</section>`+
       `<section class="m3-panel" data-key="rp-memo-settings"><div class="m3-panel-head"><b class="m3-title-help">RP 메모 ${help('전송할 때 RP AI에게 짧은 참고 표시 두 가지를 덧붙입니다. 끄면 지금과 같습니다. 바꾸면 다음 전송부터 적용됩니다.')}</b>${savedTag('rpMemo')}</div><p class="m3-muted m3-scope-hint">모든 방 공통 · 확장 프로그램에 저장</p>${helpToggle('묵은 떡밥 살리기','rpMemo.staleThreads',m.staleThreads,'제목만 보이는 오래된 서사 고리 가운데 지금 장면과 낱말이 겹치는 하나에 "(지금 장면과 이어질 수 있음)"을 붙입니다. 꺼내라는 지시가 아니라 참고 표시이며, 자리가 모자라면 표시가 먼저 빠집니다.')}${helpToggle('퇴장한 인물 챙기기','rpMemo.awayPeople',m.awayPeople,'인물 목록에 있지만 최근 사건 15개와 지금 장면에 나오지 않는 인물 1~2명을 현재상태 끝에 "이름(마지막 기록 머리줄)"로 덧붙입니다. 현재상태에 이미 있는 인물과 숨겨진 사실에 가까운 기록은 뺍니다. 등장시키라는 지시가 아닙니다.')}</section>`+
-      `<section class="m3-panel" data-key="api-guides"><div class="m3-panel-head"><b>API 추출 지침</b>${btn('지침','promptGuides',{arg:'apiCommon',cls:'mini',icon:'doc'})}</div><p class="m3-muted">기억·인물·후보 선별 등 지침을 선택해 편집합니다. 모든 방 공통 · 기본값 복원 가능</p></section>`+
+      `<section class="m3-panel" data-key="api-guides"><div class="m3-panel-head"><b>API 추출 지침</b><div class="m3-row">${btn('지침','promptGuides',{arg:'apiCommon',cls:'mini',icon:'doc'})}${btn('지침 보관소','glOpen',{cls:'mini',icon:'doc'})}</div></div><p class="m3-muted">기억·인물·후보 선별 등의 지침을 편집하거나 보관된 지침을 선택해 적용합니다.</p></section>`+
       `<section class="m3-panel" data-key="usage-settings"><div class="m3-panel-head"><b>AI 사용량 가계부</b>${btn('가계부','usageLedger',{cls:'mini',icon:'wallet'})}</div><p class="m3-muted">날짜별 호출 횟수와 예상 비용(USD) · 추가 API 호출 없음</p></section>`+advanced;
   }
   const NAV = [['check', '확인', 'inbox'], ['memory', '기억', 'memory'], ['lore', '자료집', 'book'], ['cognition', '인물', 'people'], ['tools', '자료 관리', 'tools'], ['settings', '설정', 'set']];
@@ -23464,7 +23544,7 @@ diff:`<div class="m3-shell">
     roomName:roomNameDialogView,
     loreSplit:loreSplitDialogView,
     kvSettings(d){const c=d.draft,busy=WishKoofr.view().busy;return sheet(d,{title:'Koofr 연결',body:`<section class="m3-grp"><div class="m3-gt">${ic('cloud')}개인 저장소</div>${field('이메일',inp(D(d,'email'),c.email,'Koofr 가입 이메일','text',NO_FILL))}${field('앱 비밀번호',secretInp(D(d,'password'),c.password,'저장된 비밀번호 유지'),'Koofr → Preferences → Password에서 Wish용 비밀번호를 만드세요. 로그인 비밀번호와 다릅니다.')}<p class="m3-muted">저장 위치: Koofr / Wish-Core-Backups<br>연결 정보는 이 확장 프로그램에만 저장하며 백업에 포함하지 않습니다.</p></section><div class="m3-status ${c.test==='ok'?'m3-ok':c.test==='err'?'m3-err':''}">${ic(c.test==='ok'?'check':'cloud')}<span>${esc(c.test==='busy'?'연결 확인 중…':c.testMsg||'버튼을 누를 때만 통신합니다. 백업은 암호화하지 않은 JSON 파일입니다.')}</span></div>`,foot:`${btn('연결 테스트','kvTest',{arg:d.id,cls:'mini',dis:busy})}${SP}${closeBtn(d,'취소')}${btn('저장','kvSave',{arg:d.id,cls:'primary',dis:busy})}`});},
-    kvRooms(d){const n=d.rows.filter(r=>!r.deleted&&d.draft.pick[r.key]).length;return sheet(d,{title:'백업할 방 선택',desc:'같은 이름이어도 방 ID로 구분합니다',body:`<div class="m3-row m3-bottomgap">${btn('현재 방만','kvRoomPick',{arg:d.id+'|current',cls:'mini'})}${btn('전체 선택','kvRoomPick',{arg:d.id+'|all',cls:'mini'})}${btn('선택 해제','kvRoomPick',{arg:d.id+'|none',cls:'quiet mini'})}</div>${d.rows.map(r=>`<label class="m3-cbx ${d.draft.pick[r.key]?'is-on':''}" data-key="kv-${r.key}"><input type="checkbox" data-bind="${D(d,'pick.'+r.key)}"${r.deleted?' disabled aria-label="삭제된 방 · 백업 불가"':''}${!r.deleted&&d.draft.pick[r.key]?' checked':''}><span class="m3-box"></span><span class="m3-t"><b>${esc(r.label)}${r.deleted?tag('[삭제된 방]','warn'):''}${r.current?tag('현재 방','ok'):''}</b><small>${esc(r.detail)}</small></span></label>`).join('')||empty('저장된 방이 없습니다.')}<section class="m3-grp m3-topgap">${tog('공용 지침·설정도 함께 저장',D(d,'includeSettings'),d.draft.includeSettings,'선택한 방의 기억·인지·관계·연결 자료집은 항상 함께 저장합니다. API 키는 포함하지 않습니다.')}</section>`,foot:`<span class="m3-muted">${n}개 방 선택</span>${SP}${closeBtn(d,'취소')}${btn('선택한 방 백업','kvRoomAccept',{arg:d.id,cls:'primary',dis:!n})}`});},
+    kvRooms(d){const n=d.rows.filter(r=>!r.deleted&&d.draft.pick[r.key]).length;return sheet(d,{title:'백업할 방 선택',desc:'같은 이름이어도 방 ID로 구분합니다',body:`<div class="m3-row m3-bottomgap">${btn('현재 방만','kvRoomPick',{arg:d.id+'|current',cls:'mini'})}${btn('전체 선택','kvRoomPick',{arg:d.id+'|all',cls:'mini'})}${btn('선택 해제','kvRoomPick',{arg:d.id+'|none',cls:'quiet mini'})}</div>${d.rows.map(r=>`<label class="m3-cbx ${d.draft.pick[r.key]?'is-on':''}" data-key="kv-${r.key}"><input type="checkbox" data-bind="${D(d,'pick.'+r.key)}"${r.deleted?' disabled aria-label="삭제된 방 · 백업 불가"':''}${!r.deleted&&d.draft.pick[r.key]?' checked':''}><span class="m3-box"></span><span class="m3-t"><b>${esc(r.label)}${r.deleted?tag('[삭제된 방]','warn'):''}${r.current?tag('현재 방','ok'):''}</b><small>${esc(r.detail)}</small></span></label>`).join('')||empty('저장된 방이 없습니다.')}<section class="m3-grp m3-topgap">${tog('공용 지침·지침 보관소·설정도 함께 저장',D(d,'includeSettings'),d.draft.includeSettings,'선택한 방의 기억·인지·관계·연결 자료집은 항상 함께 저장합니다. API 키는 포함하지 않습니다.')}</section>`,foot:`<span class="m3-muted">${n}개 방 선택</span>${SP}${closeBtn(d,'취소')}${btn('선택한 방 백업','kvRoomAccept',{arg:d.id,cls:'primary',dis:!n})}`});},
     kvList(d){const c=WishKoofr.view(),groups=new Map();d.draft.pick||={};const selecting=!!d.draft.selecting,pick=d.draft.pick,n=c.list.filter(b=>pick[b.id]).length;
       for(const b of c.list){const key=b.deviceId||b.dev||'unknown';if(!groups.has(key))groups.set(key,{id:key,name:b.dev||'이름 없는 기기',mine:b.mine,rows:[]});groups.get(key).rows.push(b);}
       const info=b=>`<b>${esc(b.when)}</b><small>${b.rooms}개 방 · ${esc(b.size)} · Core 백업 · ${b.auto?'자동':'수동'}${b.encrypted?' · 암호화':''}</small>${b.roomNames?'<small class="m3-cloud-names" title="'+esc(b.roomNames)+'">'+esc(b.roomNames)+'</small>':''}`;
@@ -23476,7 +23556,7 @@ diff:`<div class="m3-shell">
       const pk = d.draft.pick, onOf = x => !!(pk[x.id] || (x.owner && pk[x.owner]));
       const row = x => { const on = onOf(x), dis = !!(x.owner && pk[x.owner]); return `<label class="m3-cbx ${on ? 'is-on' : ''} ${dis ? 'is-dis' : ''}" data-key="bi-${esc(x.id)}"><input type="checkbox" data-bind="${D(d, 'pick.' + enc(x.id))}"${on ? ' checked' : ''}${dis ? ' disabled' : ''}><span class="m3-box"></span><span class="m3-t"><b>${esc(x.label)}${x.deleted ? tag('[삭제된 방]', 'warn') : ''}${x.injected ? tag('[주입중]', 'injected') : ''}${x.current ? tag('현재 방', 'ok') : ''}${x.diff ? tag(esc(x.diff), x.diff === '신규' ? 'ok' : x.diff === '변경 있음' ? 'warn' : '') : ''}</b><small>${esc(x.sum || '')}${x.owner ? ' · 방을 고르면 같이 복원' : ''}</small></span></label>`; };
       const all = [...(d.rooms || []), ...(d.libs || [])], n = all.filter(onOf).length;
-      return sheet(d, { title: '복원할 항목 선택', desc: esc(d.src || '백업'), body: `<div class="m3-status m3-bottomgap" role="status">${ic('alert')}<span>${esc(d.note || '복원할 방의 기존 데이터는 교체됩니다.')}</span></div><div class="m3-row m3-bottomgap">${btn('현재 방만', 'bkPick', { arg: d.id + '|cur', cls: 'mini' })}${btn('전체 선택', 'bkPick', { arg: d.id + '|all', cls: 'mini' })}${btn('선택 해제', 'bkPick', { arg: d.id + '|none', cls: 'quiet mini' })}</div>${(d.rooms || []).length ? `<div class="m3-sechead"><b>방</b></div>${d.rooms.map(row).join('')}` : ''}${(d.libs || []).length ? `<div class="m3-sechead"><b>자료집</b></div>${d.libs.map(row).join('')}` : ''}`, foot: `<span class="m3-muted">${n}개 선택</span>${SP}${closeBtn(d, '취소')}${btn('선택 항목 복원', 'bkApply', { arg: d.id, cls: 'primary', icon: 'check', dis: !n })}${btn('주입방 포함 복원', 'bkApplyInjected', { arg: d.id, dis: !n })}` });
+      return sheet(d, { title: '복원할 항목 선택', desc: esc(d.src || '백업'), body: `<div class="m3-status m3-bottomgap" role="status">${ic('alert')}<span>${esc(d.note || '복원할 방의 기존 데이터는 교체됩니다.')}</span></div><div class="m3-row m3-bottomgap">${btn('현재 방만', 'bkPick', { arg: d.id + '|cur', cls: 'mini' })}${btn('전체 선택', 'bkPick', { arg: d.id + '|all', cls: 'mini' })}${btn('선택 해제', 'bkPick', { arg: d.id + '|none', cls: 'quiet mini' })}</div>${(d.rooms || []).length ? `<div class="m3-sechead"><b>방</b></div>${d.rooms.map(row).join('')}` : ''}${(d.libs || []).length ? `<div class="m3-sechead"><b>자료집</b></div>${d.libs.map(row).join('')}` : ''}${d.hasGuideLibrary?field('지침 보관소 복원 방식',selc(D(d,'guideLibraryMode'),d.draft.guideLibraryMode||'merge',[['merge','기존 보관본과 합치기'],['replace','백업 보관본으로 교체']]),'지침 보관소만 따로 선택할 수 있습니다. 교체 시 기존 보관본이 삭제됩니다.'):''}`, foot: `<span class="m3-muted">${n}개 선택</span>${SP}${closeBtn(d, '취소')}${btn('선택 항목 복원', 'bkApply', { arg: d.id, cls: 'primary', icon: 'check', dis: !n })}${btn('주입방 포함 복원', 'bkApplyInjected', { arg: d.id, dis: !n })}` });
     },
     /* props: { draft:{ lr:{ [blockId]:{man,pin,ex} } } } — 블록 목록은 V.logs.blocks → act lrApply(dlgId) */
     logPick(d){
@@ -23548,6 +23628,7 @@ nativeBundle(d) {
       const list = d.draft.list, ch = d.group === 'character';
       return sheet(d, { title: ch ? '캐릭터 기본 프리셋' : '기타·OOC 기본 프리셋', desc: ch ? '새 방을 열면 캐릭터 슬롯에 자동으로 넣을 항목' : '새 방을 열면 기타 슬롯에 자동으로 넣을 항목', wide: true, body: `<div class="m3-row m3-bottomgap">${btn('프리셋 추가', 'psAdd', { arg: d.id, cls: 'mini', icon: 'plus' })}${btn(ch ? '이 방 캐릭터 불러오기' : '이 방 기타 불러오기', 'psLoad', { arg: d.id, cls: 'quiet mini', feat: 'psLoad' })}</div>${list.map((p, i) => `<div class="m3-preset" data-key="ps-${esc(p.id)}"><div class="m3-row"><input type="text" data-bind="${D(d, `list.${i}.title`)}" value="${esc(p.title)}" placeholder="이름" aria-label="프리셋 이름">${tog('', D(d, `list.${i}.enabled`), p.enabled, '', '새 방에서 켜기')}${btn('삭제', 'psDel', { arg: d.id + '|' + i, cls: 'danger mini' })}</div>${ch ? `<div class="m3-row"><input type="text" data-bind="${D(d, `list.${i}.aliases`)}" value="${esc(p.aliases || '')}" placeholder="별칭 · 쉼표로 구분" aria-label="별칭 · 쉼표로 구분"></div>` : ''}<textarea data-bind="${D(d, `list.${i}.content`)}" aria-label="내용">${esc(p.content)}</textarea></div>`).join('') || empty('프리셋이 없습니다.')}`, foot: `${SP}${closeBtn(d, '취소')}${btn('저장하고 이 방에도 적용', 'psSaveApply', { arg: d.id, cls: 'mini', feat: 'psSaveApply' })}${saveBtn(d, '저장', 'psSave')}` });
     },
+    guideLibrary(d){return WishGuideLibrary.view(d,{sheet,field,inp,ta,selc,btn,tag,esc,closeBtn});},
     promptGuide(d) {
       const rows=WishPromptGuides.catalog.filter(row=>row[2]===d.group),external=d.group==='external';
       const note='모든 방 공통 · 저장한 뒤 시작하는 요청'+(external?'·TXT 내보내기':'')+'부터 적용합니다. 진행 중인 요청과 이미 받은 TXT는 바뀌지 않습니다. JSON 스키마·메시지 ID 검증은 코드에서 유지합니다. 기본값을 누른 뒤 저장하면 원래 지침으로 돌아갑니다.';
@@ -23747,6 +23828,7 @@ nativeBundle(d) {
   function editorKey(type,p){return JSON.stringify([location.pathname,type,p.ref??'',p.kind??'',p.pack??'',p.group??'',p.parent??'',p.idx??'',p.wishSpeechParent??'']);}
   function openSheet(type, props = {}) {
     // One AI connection sheet at a time: a second, older copy could later save stale values over the new ones.
+    if(type==='guideLibrary'){const open=S.dialogs.find(x=>x.type==='guideLibrary'&&!x.leaving);if(open){S.dialogs=S.dialogs.filter(x=>x!==open).concat(open);S.wantFocus=true;paint();return open;}}
     if(type==='ai'){const open=S.dialogs.find(x=>x.type==='ai'&&!x.leaving);if(open){S.dialogs=S.dialogs.filter(x=>x!==open).concat(open);S.wantFocus=true;paint();return open;}}
     const key=isDraftEditor(type)?editorKey(type,props):'';
     const existing=key&&editorDrafts.get(key);
@@ -23773,6 +23855,7 @@ nativeBundle(d) {
   }
   function closeSheet(idOrD, instant, preserveDraft = false) {
     const d = typeof idOrD === 'string' ? findDlg(idOrD) : idOrD; if (!d || d.leaving) return;
+    if(d.type==='guideLibrary'&&!WishGuideLibrary.canLeave(d))return;
     if(d.type==='ai'&&!d.committed&&['key','dsKey','vx','fbAppCheck','anKey','oaKey','gptConnection'].some(k=>String(d.draft?.[k]||'').trim()))toast('입력한 키는 저장하지 않고 닫았습니다. 쓰려면 다시 열어 붙여 넣고 [저장]을 눌러 주세요.','warn');
     if(d.externalScope&&d.busy)return;
     if(d.type==='nativeBundle'&&d.draft?.busy)return;
@@ -23850,7 +23933,7 @@ ${open ? `<div class="wp-err-body"><div class="wp-err-row"><span>원인</span><p
   const paintLater = new Map();
   function schedulePaint(key){ clearTimeout(paintLater.get(key)); paintLater.set(key, setTimeout(() => { paintLater.delete(key); paint(false); }, 200)); }
   function setKey(key, v, lazy) {
-    if (key.startsWith('@')) { const dot = key.indexOf('.'), d = findDlg(key.slice(1, dot)); if (d&&!d.busy) {const field=key.slice(dot+1);if(d.type==='promptGuide'&&field==='selected')WishPromptGuides.select(d,v);else setDeep(d.draft,field,v);if(d.type==='relationshipReview'){if(field.startsWith('edit.'))d.draft.reviewed=false;if(field==='category')d.draft.limit=30;}if(['personDossier','search'].includes(d.type)&&['person','category'].includes(field))d.draft.limit=40;if(d.type==='roomCopy')d.preview=null;if(d.type==='secondaryReview'){if(field.startsWith('pick.')||field.startsWith('edit.'))d.draft.reviewed=false;if(['filter','category','query'].includes(field))d.draft.limit=30;}} const fld = key.slice(dot + 1); if (lazy === false && !['filter', 'category', 'query', 'person', 'selected', 'sourceQuery', 'group'].includes(fld) && !fld.startsWith('pick.')) schedulePaint(key); else paint(false); return; }
+    if (key.startsWith('@')) { const dot = key.indexOf('.'), d = findDlg(key.slice(1, dot)); if (d&&!d.busy) {const field=key.slice(dot+1);if(d.type==='guideLibrary'){WishGuideLibrary.bind(d,field,v);paint(false);return;}if(d.type==='promptGuide'&&field==='selected')WishPromptGuides.select(d,v);else setDeep(d.draft,field,v);if(d.type==='relationshipReview'){if(field.startsWith('edit.'))d.draft.reviewed=false;if(field==='category')d.draft.limit=30;}if(['personDossier','search'].includes(d.type)&&['person','category'].includes(field))d.draft.limit=40;if(d.type==='roomCopy')d.preview=null;if(d.type==='secondaryReview'){if(field.startsWith('pick.')||field.startsWith('edit.'))d.draft.reviewed=false;if(['filter','category','query'].includes(field))d.draft.limit=30;}} const fld = key.slice(dot + 1); if (lazy === false && !['filter', 'category', 'query', 'person', 'selected', 'sourceQuery', 'group'].includes(fld) && !fld.startsWith('pick.')) schedulePaint(key); else paint(false); return; }
     if (key === 'ui.search') { S.search = v; for(const d of S.dialogs)if(d.type==='search')d.draft.limit=40; if (lazy === false) schedulePaint('ui.search'); else paint(false); return; }
     const i = key.indexOf(':'), base = i < 0 ? key : key.slice(0, i), sub = i < 0 ? undefined : key.slice(i + 1), fn = AD.bind && AD.bind[base];
     if (typeof fn !== 'function') { console.warn('[WUI] 연결 안 된 값', base); toast(`아직 연결 안 된 설정: ${base}`, 'warn'); return; }
@@ -24479,7 +24562,7 @@ function model(r){
  S={tab:({check:'home',cognition:'cog'})[state.v2Tab]||state.v2Tab||'home',mem:['state','log','threads','timeline','speech','extra'].includes(state.v2MemoryView)?state.v2MemoryView:'state',cog:state.v2MemoryView==='character'?'char':state.v2MemoryView==='cog-reviews'?'review':'people',open:opened,job:automaticMemoryJob?{label:'현재상태·날짜별 사건 정리 중'}:automaticLoreJob?{label:'자료 카드 정리 중'}:aiUpdateRunning&&!U3.checking()?{label:'기억 작업 마무리 중'}:null};
 }
 if(!state.currentRoom||!WUICache.ai)return {};model(state.currentRoom);const r=state.currentRoom;const injection=r.pending||preview?WUIInjectionView(r,items):{legacyExclusions:0,armed:false,verified:false,total:0,max:allFitLimit(r),groups:{},items:[],hasCarrier:false,hasOriginal:false,matchesSaved:false,selection:null,review:r.lastLoreSearch?{method:r.lastLoreSearch.reviewMethod,reason:r.lastLoreSearch.reviewReason,total:r.lastLoreSearch.reviewBaseTotal,limit:r.lastLoreSearch.reviewLimit,at:r.lastLoreSearch.at}:null,...pendingSyncIssue(null)},plan=injection.items;
-const rebuild=R31.get(r);const vm={held:WishHeldUI.view(r),apiEconomy:{...WishEconomy.settings(r),status:WishEconomy.describe(r)},cogInclude:Number(r.injectionPolicy?.cognitionEvery)>0,recall:recallSelectionSettings(r),rpMemo:rpMemoSettings(),rebuild:rebuild?{status:rebuild.status,message:rebuild.message,segments:rebuild.segments,ready:!!rebuild.draft}:null,rebuildRunning:R31.busy(),unified:{...U3.view(r),pendingChars:U3.pendingChars(r)},room:{...WishRoomNames.describe(r),name:D.room},version:SCRIPT_VERSION,save:{saving:state.saveStatus==='saving',at:state.lastSavedAt?new Date(state.lastSavedAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}):''},job:S.job,features:{autoDefault:false,semantic:false,density:false},inj:injection,memory:D.memory,cog:{...D.cog,actors:D.actors,facts:D.facts.map(f=>({...f,included:f.sel}))},reviews:D.reviews.map(rv=>({...rv,acceptLabel:rv.accept})),state:{inject:D.pol.state,sections:D.state,raw:String(r.slots?.find(s=>s.id==='currentState')?.content||'')},logs:{inject:D.pol.log,blocks:D.logs.map(b=>({...b,undated:b.date==='날짜 미상',included:D.pol.log&&plan.some(i=>i.kind==='log'&&!i.off&&(i.sourceKey===b.key||i.key==='log:'+b.key))})),dupDates:logView.duplicateDates},threads:WishThreads.view(r),timeline:{...WishTimeline.view(r),people:(state.v2Cognition?.actors||[]).map(a=>({id:a.id,name:a.name,aliases:a.aliases||[],archived:!!a.archived}))},relationships:{held:Array.isArray(r.relationshipHeld)?r.relationshipHeld:[],on:r.relationshipConfig?.enabled!==false,rows:WishRelationships.normalize(r.relationships)},speech:{on:D.speechOn,rows:D.speech},chars:{autoDetect:D.autoChar,rows:D.chars},extras:{rows:D.extras},presets:D.presets.map(p=>({...p,ret:p.retentionTurns})),lore:D.lore,ai:{providerLabel: getAiProviderLabel(D.ai.provider),model:D.ai.provider==='manual'?'API 없이 · 요청문 TXT 받기 → 답 붙여넣기':D.ai.model,manual:D.ai.provider==='manual',ready:isAiProviderReady(D.ai),job:D.ai.provider==='manual'?manualJobView(r):null},pol:D.pol,autoChar:D.autoChar,quickCog:D.facts.map(f=>({id:f.id,label:f.label,mode:f.mode,included:state.quickCognitionDesired.has(f.id)?state.quickCognitionDesired.get(f.id):f.sel,brief:!state.quickCognitionDesired.has(f.id)&&f.brief})),recent:[D.memory.last,D.lore.auto.last].filter(Boolean),labels:{resetDesc:'현재 방의 기억·인지·이 방 전용 자동 자료를 초기화합니다. 일반 자료집은 유지됩니다.'}};
+const rebuild=R31.get(r);const vm={held:WishHeldUI.view(r),apiEconomy:{...WishEconomy.settings(r),status:WishEconomy.describe(r)},cogInclude:Number(r.injectionPolicy?.cognitionEvery)>0,recall:recallSelectionSettings(r),rpMemo:rpMemoSettings(),rebuild:rebuild?{status:rebuild.status,message:rebuild.message,segments:rebuild.segments,basisChoice:R31.basisChoice(rebuild),ready:!!rebuild.draft}:null,rebuildRunning:R31.busy(),unified:{...U3.view(r),pendingChars:U3.pendingChars(r)},room:{...WishRoomNames.describe(r),name:D.room},version:SCRIPT_VERSION,save:{saving:state.saveStatus==='saving',at:state.lastSavedAt?new Date(state.lastSavedAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}):''},job:S.job,features:{autoDefault:false,semantic:false,density:false},inj:injection,memory:D.memory,cog:{...D.cog,actors:D.actors,facts:D.facts.map(f=>({...f,included:f.sel}))},reviews:D.reviews.map(rv=>({...rv,acceptLabel:rv.accept})),state:{inject:D.pol.state,sections:D.state,raw:String(r.slots?.find(s=>s.id==='currentState')?.content||'')},logs:{inject:D.pol.log,blocks:D.logs.map(b=>({...b,undated:b.date==='날짜 미상',included:D.pol.log&&plan.some(i=>i.kind==='log'&&!i.off&&(i.sourceKey===b.key||i.key==='log:'+b.key))})),dupDates:logView.duplicateDates},threads:WishThreads.view(r),timeline:{...WishTimeline.view(r),people:(state.v2Cognition?.actors||[]).map(a=>({id:a.id,name:a.name,aliases:a.aliases||[],archived:!!a.archived}))},relationships:{held:Array.isArray(r.relationshipHeld)?r.relationshipHeld:[],on:r.relationshipConfig?.enabled!==false,rows:WishRelationships.normalize(r.relationships)},speech:{on:D.speechOn,rows:D.speech},chars:{autoDetect:D.autoChar,rows:D.chars},extras:{rows:D.extras},presets:D.presets.map(p=>({...p,ret:p.retentionTurns})),lore:D.lore,ai:{providerLabel: getAiProviderLabel(D.ai.provider),model:D.ai.provider==='manual'?'API 없이 · 요청문 TXT 받기 → 답 붙여넣기':D.ai.model,manual:D.ai.provider==='manual',ready:isAiProviderReady(D.ai),job:D.ai.provider==='manual'?manualJobView(r):null},pol:D.pol,autoChar:D.autoChar,quickCog:D.facts.map(f=>({id:f.id,label:f.label,mode:f.mode,included:state.quickCognitionDesired.has(f.id)?state.quickCognitionDesired.get(f.id):f.sel,brief:!state.quickCognitionDesired.has(f.id)&&f.brief})),recent:[D.memory.last,D.lore.auto.last].filter(Boolean),labels:{resetDesc:'현재 방의 기억·인지·이 방 전용 자동 자료를 초기화합니다. 일반 자료집은 유지됩니다.'}};
 Object.assign(vm.memory,{error:U3.monitor(r).error,enabled:vm.unified.enabled&&vm.unified.memoryEnabled,committed:vm.unified.memoryPending,target:vm.unified.memoryEvery,fixed:vm.unified.memoryEvery,running:vm.unified.running,status:vm.unified.error||vm.unified.status});Object.assign(vm.cog,{auto:vm.unified.enabled&&vm.unified.observeEnabled,every:vm.unified.observeEvery});vm.job=vm.unified.running?{label:vm.unified.jobLabel||'통합 결과 확인 중'}:vm.job;
 if(R31.busy())vm.job={label:rebuild?.message||'재구축 자료 준비 중'};
 for(const [path,value] of Object.entries(WUISettingsDraft()))WUISetPath(vm,path,value);vm.diagnostics=WLOG.list();const jobLock=WLOG.current()||vm.job;vm.job=WLOG.view()||vm.job;if(vm.job&&!jobLock)vm.job={...vm.job,quiet:true};return vm;}
@@ -24515,7 +24598,7 @@ const WishPromptGuides=(()=>{
   }
   function select(d,id){d.edits[d.draft.selected]=d.draft.text;load(d,id);}
   function defaults(id){const d=WUI.ui.dlg(id);if(!d||d.busy)return;d.draft.text=GUIDE_DEFAULTS[d.draft.selected];d.edits[d.draft.selected]=d.draft.text;notify('기본값을 불러왔습니다. 저장을 누르면 적용됩니다.','info');}
-  function save(d){
+  function save(d,{silent=false,baseVersion=API_GUIDE_BASE_VERSION}={}){
     d.edits[d.draft.selected]=d.draft.text;
     const changes=Object.entries(d.edits).filter(([id,text])=>text!==d.initial[id]||(text===GUIDE_DEFAULTS[id]&&d.before[id]!==null));
     for(const [id,text] of changes){
@@ -24525,7 +24608,7 @@ const WishPromptGuides=(()=>{
     }
     const written=[];
     try{for(const [id,text] of changes){
-      const key=API_GUIDE_STORAGE_KEYS[id],next=text===GUIDE_DEFAULTS[id]?null:JSON.stringify({format:'wish-rp-guide',baseVersion:API_GUIDE_BASE_VERSION,text});
+      const key=API_GUIDE_STORAGE_KEYS[id],next=text===GUIDE_DEFAULTS[id]?null:JSON.stringify({format:'wish-rp-guide',baseVersion,text});
       written.push([id,next]);if(next===null)localStorage.removeItem(key);else localStorage.setItem(key,next);
       if(raw(id)!==next)throw Error('지침 저장을 확인하지 못했습니다.');
     }}catch(error){
@@ -24533,7 +24616,7 @@ const WishPromptGuides=(()=>{
       throw WLOG.tag(Error('지침을 저장하지 못했습니다. 편집 내용은 창에 남아 있습니다. '+(failed?'일부 저장값을 확인해 주세요. ':'')+error.message),error?.name==='QuotaExceededError'?'STORE_LS_QUOTA':'');
     }
     if(changes.length){allFitRankCache.clear();recallScoreStoreClear();wishContextBuildCache=null;/* PRIVATE_DIRTY */}
-    notify(changes.length?'지침을 저장했습니다. 다음 요청·TXT 내보내기부터 적용됩니다.':'변경된 지침이 없습니다.','success');
+    if(!silent)notify(changes.length?'지침을 저장했습니다. 다음 요청·TXT 내보내기부터 적용됩니다.':'변경된 지침이 없습니다.','success');
     return true;
   }
   // Read the two small override records only; no timer or RP traversal is added.
@@ -24550,6 +24633,132 @@ const WishPromptGuides=(()=>{
   }
   return {catalog,open,select,defaults,save,selectorStamp,stale};
 })();
+
+// HAP-gpt guide library. Only explicit Apply writes the existing guide keys.
+const WishGuideLibrary=(()=>{
+  const STORE='guideLibrary',MARK='__guide_migration_v1',MAX_ITEMS=1000,MAX_BYTES=32*1024*1024;
+  const kinds=group=>[...new Map(WishPromptGuides.catalog.filter(r=>group==='all'||r[2]===group).map(r=>[r[0],r])).values()];
+  const title=id=>kinds('all').find(r=>r[0]===id)?.[1]||id;
+  const raw=id=>localStorage.getItem(API_GUIDE_STORAGE_KEYS[id]);
+  const identity=r=>JSON.stringify([r.guideId,r.name,r.memo,r.content,r.baseVersion]);
+  const token=r=>r?JSON.stringify(r):null;
+  function validate(value){
+    if(!value||value.version!==1||!Array.isArray(value.items)||value.items.length>MAX_ITEMS)throw Error('지원하지 않는 지침 보관소 형식·버전 또는 개수입니다.');
+    const ids=new Set(),allowed=new Set(kinds('all').map(r=>r[0]));
+    const items=value.items.map(r=>{
+      if(!r||typeof r!=='object'||Array.isArray(r)||typeof r.id!=='string'||!r.id||r.id.length>200||r.id===MARK||ids.has(r.id)||!allowed.has(r.guideId))throw Error('지침 보관본 ID 또는 지침 종류가 올바르지 않습니다.');
+      for(const [key,max,required] of [['name',200,true],['memo',10000,false],['content',120000,true],['baseVersion',100,true]])
+        if(typeof r[key]!=='string'||r[key].length>max||(required&&!r[key].trim()))throw Error('지침 보관본의 '+key+' 값이 비었거나 크기 제한을 넘습니다.');
+      for(const key of ['createdAt','updatedAt'])if(!Number.isSafeInteger(r[key])||r[key]<0)throw Error('지침 보관본 시각이 올바르지 않습니다.');
+      ids.add(r.id);return Object.fromEntries(['id','guideId','name','memo','content','baseVersion','createdAt','updatedAt'].map(k=>[k,r[k]]));
+    });
+    if(new Blob([JSON.stringify({version:1,items})]).size>MAX_BYTES)throw Error('지침 보관소는 32MB 이내로 보관해 주세요.');
+    return {version:1,items};
+  }
+  function merge(existing,incoming,mode='merge'){
+    if(!['merge','replace'].includes(mode))throw Error('지원하지 않는 보관소 복원 방식입니다.');
+    if(mode==='replace')return validate({version:1,items:incoming}).items;
+    const next=[...existing],fingerprints=new Set(next.map(identity)),ids=new Set(next.map(r=>r.id));
+    for(const item of incoming){if(fingerprints.has(identity(item)))continue;const r={...item};if(ids.has(r.id))r.id=crypto.randomUUID();ids.add(r.id);fingerprints.add(identity(r));next.push(r);}
+    return validate({version:1,items:next}).items;
+  }
+  function readAll(){return new Promise((resolve,reject)=>{
+    const tx=state.db.transaction(STORE,'readonly'),q=tx.objectStore(STORE).getAll();
+    tx.oncomplete=()=>resolve(q.result||[]);tx.onabort=tx.onerror=()=>reject(tx.error||Error('지침 보관소를 읽지 못했습니다.'));
+  });}
+  function change(fn){return new Promise((resolve,reject)=>{
+    const tx=state.db.transaction(STORE,'readwrite'),st=tx.objectStore(STORE),q=st.getAll();let result,issue;
+    q.onsuccess=()=>{try{const rows=q.result||[],items=rows.filter(r=>r.id!==MARK);result=fn(items,rows.some(r=>r.id===MARK));if(result===null)return;result=validate({version:1,items:result}).items;st.clear();st.put({id:MARK,migrated:true});for(const item of result)st.put(item);}catch(error){issue=error;tx.abort();}};
+    tx.oncomplete=()=>resolve(result);tx.onabort=tx.onerror=()=>reject(issue||tx.error||Error('지침 보관소를 저장하지 못했습니다. 편집 내용은 유지됩니다.'));
+  });}
+  async function migrate(){
+    await change((items,done)=>{
+      if(done)return null;
+      const now=Date.now(),initial=[];
+      for(const [guideId] of kinds('all')){raw(guideId);const saved=readGuideRecord(guideId);if(saved?.text?.trim())initial.push({id:crypto.randomUUID(),guideId,name:'기존 사용 지침',memo:'기존 편집 화면의 커스텀 지침을 최초 이관',content:saved.text,baseVersion:saved.baseVersion||'legacy',createdAt:now,updatedAt:now});}
+      return merge(items,initial);
+    });
+  }
+  async function list(){await migrate();return validate({version:1,items:(await readAll()).filter(r=>r.id!==MARK)}).items.sort((a,b)=>b.updatedAt-a.updatedAt||a.id.localeCompare(b.id));}
+  async function save(item,expected=null){
+    const row=validate({version:1,items:[item]}).items[0];
+    await change(items=>{const old=items.find(r=>r.id===row.id);if(token(old)!==expected)throw Error('다른 창에서 보관본이 변경되었습니다. 내용을 복사한 뒤 다시 열어 주세요.');return [...items.filter(r=>r.id!==row.id),row];});
+    return row;
+  }
+  const applied=r=>getGuideText(r.guideId)===r.content;
+  async function remove(item){await change(items=>{const old=items.find(r=>r.id===item.id);if(token(old)!==token(item))throw Error('다른 창에서 보관본이 변경되었습니다. 다시 열어 주세요.');if(applied(old))throw Error('적용 중인 보관본입니다. 다른 지침이나 기본 지침을 적용한 뒤 삭제해 주세요.');return items.filter(r=>r.id!==item.id);});}
+  function invalidate(){allFitRankCache.clear();recallScoreStoreClear();wishContextBuildCache=null;}
+  async function apply(item,builtin=false){
+    const guideId=item.guideId,before=raw(guideId),content=builtin?GUIDE_DEFAULTS[guideId]:item.content;let written;
+    try{await change(items=>{
+      if(!builtin&&token(items.find(r=>r.id===item.id))!==token(item))throw Error('다른 창에서 보관본이 변경되었습니다. 다시 선택해 주세요.');
+      if(raw(guideId)!==before)throw Error('다른 창에서 사용 지침이 바뀌었습니다. 다시 확인해 주세요.');
+      const now=Date.now(),saved=readGuideRecord(guideId);
+      const snapshot={id:crypto.randomUUID(),guideId,name:'적용 전 사용 지침',memo:'지침 교체 직전 자동 보관',content:getGuideText(guideId),baseVersion:saved?.baseVersion||API_GUIDE_BASE_VERSION,createdAt:now,updatedAt:now};
+      const next=merge(items,[snapshot]);
+      WishPromptGuides.save({edits:{[guideId]:content},initial:{[guideId]:getGuideText(guideId)},before:{[guideId]:before},draft:{selected:guideId,text:content}},{silent:true,baseVersion:builtin?API_GUIDE_BASE_VERSION:item.baseVersion});
+      written=raw(guideId);return next;
+    });}catch(error){
+      if(written!==undefined&&raw(guideId)===written){try{if(before===null)localStorage.removeItem(API_GUIDE_STORAGE_KEYS[guideId]);else localStorage.setItem(API_GUIDE_STORAGE_KEYS[guideId],before);}catch{throw Error('보관·적용 저장 실패. 이전 사용 지침 복구도 실패했습니다. 기존 편집 화면에서 확인해 주세요. '+error.message);}}
+      throw error;
+    }
+    invalidate();
+  }
+  async function exportData(){return {version:1,items:await list()};}
+  async function importData(data,mode='merge'){const incoming=validate(data);await migrate();await change(items=>merge(items,incoming.items,mode));}
+  // Called inside the same IDB transaction as the room restore. Any write error
+  // aborts all restored stores together, including this library.
+  function restoreInTransaction(tx,data,mode){
+    const incoming=validate(data),st=tx.objectStore(STORE),q=st.getAll();
+    q.onsuccess=()=>{try{const next=merge((q.result||[]).filter(r=>r.id!==MARK),incoming.items,mode);st.clear();st.put({id:MARK,migrated:true});for(const row of next)st.put(row);}catch(error){tx._guideLibraryError=error;tx.abort();}};
+  }
+  const editable=d=>({guideId:d.draft.kind,name:d.draft.name,memo:d.draft.memo,content:d.draft.content});
+  const dirty=d=>d.selected!=='builtin'&&JSON.stringify(editable(d))!==d.initial;
+  const canLeave=d=>!d.busy&&(!dirty(d)||confirm('보관하지 않은 변경 내용이 있습니다. 변경을 버릴까요?'));
+  function load(d,id){
+    const r=id==='builtin'?{guideId:d.draft.kind,name:'기본 지침',memo:'내장 기본 지침 · 읽기 전용',content:GUIDE_DEFAULTS[d.draft.kind],baseVersion:API_GUIDE_BASE_VERSION}:d.items.find(r=>r.id===id);
+    if(!r)throw Error('보관본이 없습니다. 목록을 새로 열어 주세요.');
+    d.selected=id;d.original=id==='builtin'?null:structuredClone(r);d.baseVersion=r.baseVersion;Object.assign(d.draft,{kind:r.guideId,name:r.name,memo:r.memo,content:r.content});d.initial=JSON.stringify(editable(d));d.error='';d.detail=true;d.appliedBefore=raw(r.guideId);
+  }
+  async function open(){
+    const items=await list(),props={items,selected:'builtin',detail:false,error:'',draft:{group:'all',kind:kinds('all')[0][0],query:''}},d=WUI.openSheet('guideLibrary',props);
+    if(d.draft!==props.draft)return d;
+    load(d,'builtin');d.detail=false;WUI.paint();return d;
+  }
+  function bind(d,field,value){
+    if(['group','kind'].includes(field)&&!(field==='kind'&&d.selected==='new')){
+      if(!canLeave(d))return;
+      d.draft[field]=value;const available=kinds(d.draft.group);if(!available.some(r=>r[0]===d.draft.kind))d.draft.kind=available[0][0];load(d,'builtin');d.detail=false;
+    }else{d.draft[field]=value;if(field==='kind'&&!kinds(d.draft.group).some(r=>r[0]===value))d.draft.group='all';}
+  }
+  async function run(id,fn){const d=WUI.ui.dlg(id);if(!d||d.busy)return;d.busy=true;d.error='';WUI.paint();try{await fn(d);}catch(error){d.error=String(error.message||error)+' · 편집 내용은 유지됩니다.';}finally{d.busy=false;WUI.paint();}}
+  function select(arg){const split=arg.indexOf('|'),d=WUI.ui.dlg(arg.slice(0,split));if(d&&canLeave(d)){load(d,arg.slice(split+1));WUI.paint();}}
+  function fresh(id,clone=false){const d=WUI.ui.dlg(id);if(!d||!canLeave(d))return;const current=editable(d);d.selected='new';d.original=null;d.baseVersion=clone?d.baseVersion:API_GUIDE_BASE_VERSION;Object.assign(d.draft,{name:clone?current.name+' (복제)':'',memo:clone?current.memo:'',content:clone?current.content:GUIDE_DEFAULTS[d.draft.kind]});d.initial='';d.error='';d.detail=true;WUI.paint();}
+  const store=id=>run(id,async d=>{
+    if(d.selected==='builtin')throw Error('기본 지침은 복제 후 보관해 주세요.');
+    const now=Date.now(),r={id:d.original?.id||crypto.randomUUID(),...editable(d),baseVersion:d.baseVersion,createdAt:d.original?.createdAt||now,updatedAt:now};
+    await save(r,token(d.original));d.items=await list();load(d,r.id);notify('보관했습니다. 사용 지침은 바뀌지 않습니다.','success');
+  });
+  const use=id=>run(id,async d=>{
+    if(d.selected==='new'||dirty(d))throw Error('변경한 지침을 먼저 보관한 뒤 적용해 주세요.');
+    if(!confirm(title(d.draft.kind)+' 지침을 '+(d.selected==='builtin'?'내장 기본 지침':d.draft.name)+'으로 적용할까요? 기존 사용 지침은 자동 보관하며 다음 요청부터 적용합니다.'))return;
+    await apply(d.selected==='builtin'?{guideId:d.draft.kind}:d.original,d.selected==='builtin');d.items=await list();d.appliedBefore=raw(d.draft.kind);notify('지침을 적용했습니다. 다음 요청·TXT 내보내기부터 사용합니다.','success');
+  });
+  const erase=id=>run(id,async d=>{if(!d.original)throw Error('보관된 사용자 지침만 삭제할 수 있습니다.');if(!confirm('이 보관본만 삭제할까요?\n'+d.original.name))return;await remove(d.original);d.items=await list();load(d,'builtin');notify('보관본을 삭제했습니다.','success');});
+  function readFile(id){const d=WUI.ui.dlg(id);if(!d||!canLeave(d))return;const input=document.createElement('input');input.type='file';input.accept='.json,application/json';pickFile(input,()=>run(id,async d=>{const file=input.files?.[0];if(!file)return;if(file.size>MAX_BYTES)throw Error('지침 보관소 JSON은 32MB 이내로 가져와 주세요.');let data;try{data=JSON.parse(await file.text());}catch{throw Error('지침 보관소 JSON을 읽을 수 없습니다.');}await importData(data);d.items=await list();load(d,'builtin');d.detail=false;notify('보관본을 추가했습니다. 사용 지침은 바뀌지 않습니다.','success');}));}
+  const exportFile=id=>run(id,async()=>{const data=await exportData();downloadText(JSON.stringify(data,null,2),'Wish_지침보관소_'+new Date().toISOString().slice(0,10)+'.json');});
+  const copy=id=>run(id,async d=>{if(!await copyPlainText(d.draft.content))throw Error('내용을 복사하지 못했습니다.');notify('지침 내용을 복사했습니다.','success');});
+  function view(d,h){
+    const {sheet,field,inp,ta,selc,btn,tag,esc,closeBtn}=h,x=d.draft,builtin=d.selected==='builtin',available=kinds(x.group),query=String(x.query||'').toLocaleLowerCase();
+    const rows=d.items.filter(r=>r.guideId===x.kind&&(!query||(r.name+'\n'+r.memo).toLocaleLowerCase().includes(query)));
+    const row=(r,id)=>`<button type="button" class="m3-btn gl-item ${d.selected===id?'is-selected':''}" data-act="glSelect" data-arg="${esc(d.id+'|'+id)}" aria-pressed="${d.selected===id}"${d.busy?' disabled':''}><span class="m3-t"><b>${esc(r.name)}</b>${r.memo?`<small class="gl-memo">${esc(r.memo)}</small>`:''}<small>${id==='builtin'?'내장 · '+esc(API_GUIDE_BASE_VERSION):esc(new Date(r.updatedAt).toLocaleString('ko-KR'))}</small></span>${getGuideText(x.kind)===r.content?tag('적용 중','ok'):''}</button>`;
+    const list=`<aside class="gl-list">${field('그룹',selc('@'+d.id+'.group',x.group,[['all','전체'],['api','API'],['external','외부 AI']]))}${field('지침 종류',selc('@'+d.id+'.kind',x.kind,available.map(r=>[r[0],r[1]])))}${field('보관본 검색',inp('@'+d.id+'.query',x.query||'','이름·메모 검색'))}<div class="m3-row">${btn('+ 새 지침','glNew',{arg:d.id,cls:'mini',dis:d.busy})}${btn('JSON 내보내기','glExport',{arg:d.id,cls:'mini',dis:d.busy})}${btn('JSON 가져오기','glImport',{arg:d.id,cls:'mini',dis:d.busy})}</div><div class="gl-rows">${row({name:'기본 지침',memo:'내장 원문 · 읽기 전용',content:GUIDE_DEFAULTS[x.kind]},'builtin')}${rows.map(r=>row(r,r.id)).join('')}</div><p class="m3-muted">보관과 적용은 별개입니다. 공통 설정을 포함한 백업에 보관소 전체가 함께 저장됩니다.</p></aside>`;
+    const detail=`<section class="gl-detail"><div class="m3-row gl-back">${btn('← 목록','glBack',{arg:d.id,cls:'mini',dis:d.busy})}</div>${field('지침 종류',d.selected==='new'?selc('@'+d.id+'.kind',x.kind,kinds('all').map(r=>[r[0],r[1]])):`<p>${esc(title(x.kind))}</p>`)}${field('이름',inp('@'+d.id+'.name',x.name||'','필수 입력').replace('<input','<input maxlength="200"'+(builtin?' readonly':'')))}${field('메모',ta('@'+d.id+'.memo',x.memo||'','','74').replace('<textarea','<textarea maxlength="10000"'+(builtin?' readonly':'')))}<p class="m3-muted">기준 버전 ${esc(d.baseVersion)}${d.baseVersion!==API_GUIDE_BASE_VERSION?' · 이전 기본 버전 기준 보관본':''} · ${x.content?.length||0} / 120,000자</p>${field('지침 내용',ta('@'+d.id+'.content',x.content||'','','320').replace('<textarea','<textarea maxlength="120000"'+(builtin?' readonly':'')))}${btn('내용 복사','glCopy',{arg:d.id,cls:'mini',icon:'copy',dis:d.busy})}</section>`;
+    return sheet(d,{title:'지침 보관소',desc:'지침을 종류별로 보관하고 원하는 버전을 선택해 사용할 수 있습니다.',wide:true,body:`<div class="gl-layout ${d.detail?'is-detail':''}" data-guide-library>${list}${detail}</div>${d.error?`<p role="alert" class="m3-error">${esc(d.error)}</p>`:''}`,foot:`${closeBtn(d)}<span class="gl-actions">${btn('복제','glClone',{arg:d.id,cls:'mini',dis:d.busy})}${btn('삭제','glDelete',{arg:d.id,cls:'danger mini',dis:d.busy||builtin||!d.original||applied(d.original)})}${btn('보관','glStore',{arg:d.id,dis:d.busy||builtin})}${btn(builtin?'기본 지침 적용':'이 지침 적용','glApply',{arg:d.id,cls:'primary',dis:d.busy||d.selected==='new'||dirty(d)})}</span>`});
+  }
+  return {STORE,MARK,kinds,validate,merge,list,save,remove,apply,applied,exportData,importData,restoreInTransaction,open,bind,canLeave,view,select,fresh,store,use,erase,readFile,exportFile,copy,invalidate};
+})();
+
 
 function WUIEditor(type,id='',extra={}){
  const r=state.currentRoom,v=WUI_ADAPTER.vm();let d,ed;
@@ -24732,9 +24941,10 @@ async function WUICogRelease(kind,id){const bridge=cogBridge(),room=state.curren
 function WUIBackupImportApply(id,includeInjected){
  const d=WUI.ui.dlg(id);if(!d)return;
  const pick=d.draft.pick,selected=d.rooms.filter(r=>pick[r.id]),rooms=selected.filter(r=>includeInjected||!r.injected),roomIds=new Set(rooms.map(r=>r.id));
- const result={includeInjected,restoreSettings:!!pick['wish-global-settings'],roomIds:[...roomIds],libraryIds:d.libs.filter(l=>l.id!=='wish-global-settings'&&(pick[l.id]||(l.owner&&roomIds.has(l.owner)))).map(l=>l.id)};
- if(!result.restoreSettings&&!result.roomIds.length&&!result.libraryIds.length){notify(selected.some(r=>r.injected)?'주입 중인 방을 복원하려면 [주입방 포함 복원]을 눌러 주세요.':'복원할 항목이 없습니다. 방이나 자료집을 선택해 주세요.','warn');return;}
+ const result={includeInjected,restoreSettings:!!pick['wish-global-settings'],restoreGuideLibrary:!!pick['wish-guide-library'],guideLibraryMode:d.draft.guideLibraryMode||'merge',roomIds:[...roomIds],libraryIds:d.libs.filter(l=>!['wish-global-settings','wish-guide-library'].includes(l.id)&&(pick[l.id]||(l.owner&&roomIds.has(l.owner)))).map(l=>l.id)};
+ if(!result.restoreGuideLibrary&&!result.restoreSettings&&!result.roomIds.length&&!result.libraryIds.length){notify(selected.some(r=>r.injected)?'주입 중인 방을 복원하려면 [주입방 포함 복원]을 눌러 주세요.':'복원할 항목이 없습니다. 방이나 자료집을 선택해 주세요.','warn');return;}
  if(includeInjected&&selected.some(r=>r.injected)&&!confirm('선택한 주입방의 주입을 먼저 해제하고 백업으로 교체합니다. 해제에 실패하면 복원하지 않습니다. 계속할까요?'))return;
+ if(result.restoreGuideLibrary&&result.guideLibraryMode==='replace'&&!confirm('지침 보관소를 백업 보관본으로 교체할까요? 현재 보관본은 삭제됩니다. 사용 지침은 별도로 선택한 경우에만 복원됩니다.'))return;
  WUIResolve(id,result);
 }
 const WUI_ACTION_MAP={arm:'arm',spDel:'speech-delete',packExport:'lore-pack-export',ftDel:'cog-fact-remove',rvClear:'cog-reviews-clear',rvAccept:'review-accept',rvDismiss:'review-dismiss',fileBackup:'backup',fileRestore:'restore',reset:'reset',};
@@ -24753,6 +24963,7 @@ Object.assign(WUI_ADAPTER.act,{
 
  viewer:()=>openContextPreviewDialog(state.currentRoom,v2CurrentItems(state.currentRoom)),api:()=>openAiSettingsDialog(),
 
+ glOpen:()=>WishGuideLibrary.open(),glSelect:arg=>WishGuideLibrary.select(arg),glNew:id=>WishGuideLibrary.fresh(id),glClone:id=>WishGuideLibrary.fresh(id,true),glStore:id=>WishGuideLibrary.store(id),glApply:id=>WishGuideLibrary.use(id),glDelete:id=>WishGuideLibrary.erase(id),glCopy:id=>WishGuideLibrary.copy(id),glImport:id=>WishGuideLibrary.readFile(id),glExport:id=>WishGuideLibrary.exportFile(id),glBack:id=>{const d=WUI.ui.dlg(id);if(d&&!d.busy){d.detail=false;WUI.paint();}},
  promptGuides:id=>WishPromptGuides.open(id||'apiCommon'),promptDefault:id=>WishPromptGuides.defaults(id),
  importPeopleContinue:id=>WishImportPeople.resume(id),
  raw:s=>WUIEditor('slot',s==='state'?'currentState':'logSummary'),stEdit:id=>WUIEditor('state',id),lgEdit:id=>WUIEditor('log',id),relNew:()=>WishRelationships.open(),relEdit:id=>WishRelationships.open(id),
@@ -24920,7 +25131,7 @@ WUI_ADAPTER.act.cogSelectMode=async mode=>{
 };
 Object.assign(WUI_ADAPTER.act,{
  secondaryExport:()=>SecondaryRebuild.openExport(),secondaryExportRun:id=>WLOG.show('자료 준비 중…',()=>SecondaryRebuild.exportFromDialog(id)),secondaryImport:()=>SecondaryRebuild.importFile(),secondaryApply:id=>WLOG.show('검증·저장 중…',()=>SecondaryRebuild.apply(id)),secondaryEdit:id=>SecondaryRebuild.editReview(id),secondaryToggleEdit:arg=>{const [id,key]=arg.split('|'),d=WUI.ui.dlg(id);if(d&&!d.busy){d.draft.editing||={};d.draft.editing[key]=!d.draft.editing[key];WUI.paint(false);}},secondaryManage:()=>SecondaryRebuild.openManage(),secondaryChange:arg=>{const [id,mode]=arg.split('|');return SecondaryRebuild.change(id,mode);},
- unifiedAll:()=>{const r=state.currentRoom;if(isManualAiProvider()&&loadManualJob(r)&&!confirm('기다리는 외부 AI 작업이 있습니다. 새 요청문으로 바꿀까요?\n이미 외부 AI에 보낸 이전 요청문의 답은 쓸 수 없게 됩니다.'))return;return U3.run(r,'all');},rebuildRead:()=>R31.read(state.currentRoom),rebuildRun:()=>R31.run(state.currentRoom),rebuildApply:()=>R31.apply(state.currentRoom),rebuildStop:()=>R31.stop(),rebuildClear:()=>R31.clear(state.currentRoom),
+ unifiedAll:()=>{const r=state.currentRoom;if(isManualAiProvider()&&loadManualJob(r)&&!confirm('기다리는 외부 AI 작업이 있습니다. 새 요청문으로 바꿀까요?\n이미 외부 AI에 보낸 이전 요청문의 답은 쓸 수 없게 됩니다.'))return;return U3.run(r,'all');},rebuildRead:()=>R31.read(state.currentRoom),rebuildRun:()=>R31.run(state.currentRoom),rebuildBasisCurrent:()=>R31.chooseBasis(state.currentRoom,'current'),rebuildBasisPrevious:()=>R31.chooseBasis(state.currentRoom,'previous'),rebuildApply:()=>R31.apply(state.currentRoom),rebuildStop:()=>R31.stop(),rebuildClear:()=>R31.clear(state.currentRoom),
 });
 for(const name of ['delta','index'])WUI_ADAPTER.bind['apiEconomy.'+name]=value=>{WUISettingsDraft()['apiEconomy.'+name]=!!value;};
 WUI_ADAPTER.act.economyBackup=()=>WishEconomy.exportBackup(state.currentRoom);
@@ -25030,7 +25241,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.10-hap-gpt';
+  const PATCH_VERSION = '0.2.12-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';

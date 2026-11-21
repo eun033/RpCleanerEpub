@@ -1,8 +1,12 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.10
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.12
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.10이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.12이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+
+0.2.12는 전체 대화 재구축 중 기억·설정 변경 오류가 발생한 경우에만 기준 선택 버튼을 표시한다. 읽어 둔 대화 구간을 유지하며 현재 자료로 다시 준비하거나, 완료 구간이 있으면 변경을 확인한 뒤 기존 결과로 이어갈 수 있다. 선택 자체로는 AI를 호출하거나 실제 기억을 교체하지 않는다. 원문·갈래 검사, 최종 검토와 적용 직전 자동 보관은 유지한다.
+
+0.2.11은 설정의 기존 `API 추출 지침` 카드에 `지침 보관소`를 추가한다. 같은 종류의 지침을 여러 개 보관·검색·복제할 수 있으며, 보관과 실제 적용은 분리된다. 적용 전 기존 사용 지침을 자동 보관한다. 보관소 JSON 내보내기·가져오기와 본문 복사, 파일·클라우드 백업, 보관소만 병합·교체하는 복원을 지원한다. 구버전 백업에 보관소가 없으면 현재 보관소를 유지한다.
 
 0.2.10은 백업 시 404가 재확인된 삭제 방을 선택할 수 없게 하고 해당 방의 로컬 기억·인지·전용 자료·작업 이력을 자동 정리한다. 다른 방이 참조하는 자료와 현재 열린 방은 기존 로컬 정리 보호 규칙을 따른다. 정리한 방 수를 알리며, 삭제한 자료는 이전에 받은 백업으로만 복구할 수 있다.
 
@@ -32,7 +36,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.10 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.12 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
