@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.12
+// @version      0.2.13
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -262,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.12';
+  const HAP_GPT_CLIENT_VERSION = '0.2.13';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -23493,7 +23493,7 @@ diff:`<div class="m3-shell">
       const gptModels=normalizeChatGptSubscriptionModels(d.subscriptionModels||sv.chatGptSubscriptionModels),gptEfforts=chatGptSubscriptionEfforts({chatGptSubscriptionModels:gptModels,chatGptSubscriptionModel:a.gptModel},a.gptModel).map(x=>[x,({none:'끄기',low:'낮음',medium:'보통',high:'높음',xhigh:'매우 높음',max:'최대'})[x]||x]);
       const gptSlot=normalizeChatGptSubscriptionConnectionSlot(a.gptSlot),gptSlotIndex=gptSlot-1,gptConnections=normalizeChatGptSubscriptionConnections(sv.chatGptSubscriptionConnections,sv.chatGptSubscriptionConnection),gptConnectionEdits=Array.isArray(a.gptConnectionEdits)?a.gptConnectionEdits:['','','','',''],gptNames=normalizeChatGptSubscriptionConnectionNames(a.gptNames,gptConnections),gptPlatforms=normalizeChatGptSubscriptionConnectionPlatforms(a.gptPlatforms,gptConnections,gptNames),gptProfiles=gptNames.map((name,index)=>({name,index})).filter(x=>x.name||gptConnections[x.index]);
       const gptProfileChips=`<div class="wish-gpt-profiles" role="group" aria-label="브리지 연결 프로필">${gptProfiles.length<CHATGPT_SUBSCRIPTION_CONNECTION_SLOTS?`<button type="button" class="wish-gpt-profile wish-gpt-profile-add" data-act="aiGptProfileAdd" data-arg="${d.id}" aria-label="연결 프로필 추가">+</button>`:''}${gptProfiles.map(x=>`<button type="button" class="wish-gpt-profile" data-wish-gpt-profile data-act="aiGptProfilePick" data-arg="${d.id}|${x.index+1}" aria-label="${esc(x.name||`기기 ${x.index+1}`)} · 길게 눌러 이름 변경" aria-pressed="${x.index===gptSlotIndex}">${chatGptSubscriptionPlatformIcon(gptPlatforms[x.index])}<span>${esc(x.name||`기기 ${x.index+1}`)}</span>${x.index===gptSlotIndex?'<i>✓</i>':''}</button>`).join('')}</div>`;
-      const gptPanel=gpt?`${gptProfileChips}${field('브리지 연결 주소',secretInp(D(d,`gptConnectionEdits.${gptSlotIndex}`),gptConnectionEdits[gptSlotIndex]||'',gptConnections[gptSlotIndex]?'저장됨 · 새 주소를 넣으면 교체':'http://127.0.0.1:17446/#pair=…'),'OAuth 토큰이 아닌 선택한 기기의 로컬 pair 주소만 저장합니다. 다른 사람에게 공유하지 마세요.')}<div class="m3-actions">${btn(a.gptModelsBusy?'확인 중':'모델 목록 새로고침','aiGptModels',{arg:d.id,cls:'mini',icon:'refresh',dis:a.gptModelsBusy})}${btn('대기 요청 확인','aiGptPending',{arg:d.id,cls:'mini',icon:'info'})}${btn('대기 요청 폐기','aiGptDiscard',{arg:d.id,cls:'mini danger',icon:'delete'})}</div>${a.gptModelsError?`<p class="m3-muted">${esc(a.gptModelsError)}</p>`:''}${a.gptPendingStatus?`<p class="m3-muted">${esc(a.gptPendingStatus)}</p>`:''}`:'';
+      const gptPanel=gpt?`${gptProfileChips}${field('브리지 연결 주소',secretInp(D(d,`gptConnectionEdits.${gptSlotIndex}`),gptConnectionEdits[gptSlotIndex]||'',gptConnections[gptSlotIndex]?'저장됨 · 새 주소를 넣으면 교체':'http://127.0.0.1:17446/#pair=…'),'OAuth 토큰이 아닌 선택한 기기의 로컬 pair 주소만 저장합니다. 다른 사람에게 공유하지 마세요.')}<div class="m3-actions">${btn(a.gptModelsBusy?'확인 중':'모델 목록 새로고침','aiGptModels',{arg:d.id,cls:'mini',icon:'refresh',dis:a.gptModelsBusy})}${btn('대기 요청 확인','aiGptPending',{arg:d.id,cls:'mini',icon:'info'})}${btn('대기 요청 폐기','aiGptDiscard',{arg:d.id,cls:'mini danger',icon:'trash'})}</div>${a.gptModelsError?`<p class="m3-muted">${esc(a.gptModelsError)}</p>`:''}${a.gptPendingStatus?`<p class="m3-muted">${esc(a.gptPendingStatus)}</p>`:''}`:'';
       const manualPanel = manual ? `<div class="m3-panel" data-key="manual-ai-intro"><b>API 키 없이 외부 AI로 진행합니다</b><p class="m3-muted">확인 탭의 [함께 정리]를 누르면 요청문이 TXT 파일 하나로 저장됩니다. ChatGPT·Gemini·Claude 같은 외부 AI 새 대화에 파일로 첨부해 보내고, 답을 복사한 뒤 [답 붙여넣기]를 누르면 API로 받을 때와 같은 검사를 거쳐 기존 기억에 합칩니다. 마지막 정리 이후의 새 대화만 보냅니다.</p><ul class="m3-muted"><li>답을 기다리는 동안 패널을 닫거나 새로고침하고, RP를 계속 진행해도 됩니다.</li><li>자동 정리는 차례가 되면 알림만 드립니다.</li><li>API를 쓰는 버튼·옵션(묶음 정리·다시 시도·텍스트 → 자료·API 전체 재구축·AI 재검토·API 사용량 절약·연결 테스트)은 회색으로 잠기고 [함께 정리]만 씁니다. 전체 재구축은 자료 관리의 [외부 AI로 재구축]을 쓰세요.</li><li>주입 후보는 최근·키워드 검색으로 고르며 에리 의미검색(임베딩)도 쓰지 않습니다.</li><li>저장된 API 키는 그대로 두므로 언제든 API 방식으로 돌아갈 수 있습니다.</li></ul><div class="m3-actions">${btn('복붙 안내 지침 편집', 'promptGuides', { arg: 'manualRelay', cls: 'mini', icon: 'doc' })}</div></div>` : '';
       if(!ds&&!an&&!oa&&!gpt&&a.model&&!models.some(([id])=>id===a.model))models.unshift([a.model,a.model+' · 기존 설정']);
       return sheet(d, { title: '보조 AI 연결', desc: '인지 · 기억 갱신 · 날짜로그 정리 · 자료집 · 전체 재구축이 같은 연결을 씁니다', body: `
@@ -25241,7 +25241,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.12-hap-gpt';
+  const PATCH_VERSION = '0.2.13-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
