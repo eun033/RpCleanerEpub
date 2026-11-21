@@ -23,8 +23,9 @@ main{padding-top:12px}.card{margin-bottom:16px;padding:16px;border:1px solid var
 .cancel-job{margin-top:12px;color:var(--danger)}
 .jobs-paused{display:flex;align-items:center;gap:12px;margin-bottom:12px}.jobs-paused p{flex:1;margin:0;color:var(--warning)}.jobs-paused button{flex:none}
 .server-state.paused{gap:4px;padding:2px 6px;border-radius:4px;background:var(--danger-soft);color:var(--danger)}
+.server-info{margin:-4px 0 16px;padding-inline:16px;overflow-wrap:anywhere}.server-info .inline-state,.server-info #updateResult{margin:0 0 8px}.server-info .fold{margin-top:0}#tokenUsageCard .token-summary{margin-top:0}#tokenUsageCard h2{color:var(--text)}
 .server-actions .btn{gap:6px;padding-inline:8px;font-size:13px;white-space:nowrap}.server-actions .ui-icon{width:18px;height:18px}
-.server-head{flex-wrap:wrap;gap:8px}.server-head h2{flex:none}.server-head .version-row{flex:1;min-width:0;gap:6px;margin:0;justify-content:flex-end}.server-head .chip{font-size:12px}.server-actions{margin-top:12px}.usage-actions{display:flex;align-items:center;gap:8px;flex:none}.usage-actions .btn{padding-inline:8px;font-size:12px}.usage-head{flex-wrap:wrap;gap:8px}.week-label{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px}.usage-line .week-label{font-size:14px}.usage-line #weekRange{font-size:12px}.latest-tokens{margin-top:8px;font-size:13px}.latest-token-bar{display:flex;height:8px;margin:8px 0;border-radius:4px;overflow:hidden;background:var(--line)}.token-segment{height:100%;min-width:0}.token-legend{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--muted);font-size:12px}.token-legend>span{display:inline-flex;align-items:center;gap:4px}.token-swatch{width:8px;height:8px;flex:none;border-radius:2px}.token-input{background:var(--accent)}.token-cache{background:var(--progress)}.token-output{background:var(--muted)}.token-reasoning{background:#9065aa}@media(prefers-color-scheme:dark){.token-reasoning{background:#c39cdd}}
+.server-head{flex-wrap:wrap;gap:8px}.server-head h2{flex:none}.server-head .version-row{flex:1;min-width:0;gap:6px;margin:0;justify-content:flex-end}.server-head .chip{font-size:12px}.server-head{margin-bottom:12px}.server-actions{margin-top:0}.usage-actions{display:flex;align-items:center;gap:8px;flex:none}.usage-actions .btn{padding-inline:8px;font-size:12px}.usage-head{flex-wrap:wrap;gap:8px}.week-label{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px}.usage-line .week-label{font-size:14px}.usage-line #weekRange{font-size:12px}.latest-tokens{margin-top:8px;font-size:13px}.latest-token-bar{display:flex;height:4px;margin:8px 0;border-radius:4px;overflow:hidden;background:var(--line)}.token-segment{height:100%;min-width:0}.token-legend{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--muted);font-size:12px}.token-legend>span{display:inline-flex;align-items:center;gap:4px}.token-swatch{width:12px;height:12px;flex:none;border-radius:2px}.token-input{background:#2563eb}.token-cache{background:#0891b2}.token-output{background:#d97706}.token-reasoning{background:#db2777}@media(prefers-color-scheme:dark){.token-input{background:#60a5fa}.token-cache{background:#22d3ee}.token-output{background:#fbbf24}.token-reasoning{background:#f472b6}}
 @media(min-width:768px) and (hover:hover) and (pointer:fine){.btn,.text-button{min-height:34px;padding:6px 10px;font-size:13px;line-height:20px}.btn{gap:6px}.icon-button{min-width:34px;width:34px;height:34px;min-height:34px;padding:6px}.button-row{display:flex;flex-wrap:wrap}.text-button{width:auto;padding-inline:0}.fold>summary,.advanced>summary{min-height:34px;padding-block:6px}}
 .server-state.online>.check{color:#18835b;animation:serverPulse 2.6s ease-in-out infinite}
 @keyframes serverPulse{50%{opacity:.9}}
@@ -52,25 +53,29 @@ main{padding-top:12px}.card{margin-bottom:16px;padding:16px;border:1px solid var
     <section id="serverPanel" class="tab-panel" role="tabpanel" hidden>
       <article id="serverManagement" class="card">
         <div class="card-head server-head"><h2>서버 관리</h2><div class="version-row"><span id="bridgeVersion" class="chip bridge-version">v—</span><span id="installMethod" class="chip">확인 중</span><span id="updateBadge" class="chip update-badge" hidden>확인 중</span></div></div>
-        <p id="serverHealth" class="sub">서버 상태 확인 중</p>
         <div class="button-row server-actions"><button id="restart" class="btn secondary" type="button" disabled aria-label="서버 재시작">재시작</button><button id="checkUpdate" class="btn secondary" type="button" disabled>업데이트 확인</button></div>
+      </article>
+      <aside id="serverInfo" class="server-info" aria-label="서버 안내">
+        <p id="serverHealth" class="sub" hidden></p>
         <p id="updateResult" class="sub" role="status" hidden></p>
         <p id="serverFeedback" class="inline-state" role="status" hidden></p>
         <details id="updateFailure" class="fold" hidden><summary>오류 상세</summary><p id="updateFailureText" class="help"></p></details>
         <details class="fold install-help"><summary>설치·업데이트 도움말</summary><p class="help">현재 설치 방식에 맞는 업데이트만 표시합니다. 확인은 버전 조회만 수행하며, 업데이트는 프로그램 파일을 받은 뒤 서버를 재시작합니다. 대기·진행 중인 요청이 있으면 재시작과 업데이트를 사용할 수 없습니다.</p></details>
-      </article>
-      <article class="card">
+      </aside>
+      <article id="localUsageCard" class="card">
         <div class="card-head usage-head"><h2>브리지 로컬 사용량</h2><div class="usage-actions"><button id="usageReset" class="btn secondary" type="button" title="브리지 로컬 사용량 초기화">초기화</button><button id="usageRefresh" class="icon-button" type="button" aria-label="사용량 상태 확인" title="사용량 상태 확인"></button></div></div>
         <p class="sub">이 브리지의 기록입니다. ChatGPT의 공식 잔여 한도가 아닙니다.<span id="usageResetInfo"></span></p>
         <div class="usage-rows">
           <div class="usage-row"><div class="usage-line"><strong>최근 5시간</strong><span id="usage5Text">0 / 0회</span></div><div id="usage5Meter" class="meter" role="progressbar" tabindex="0" aria-label="최근 5시간 로컬 보호 한도"><div class="meter-fill"></div></div></div>
-          <div class="usage-row"><div class="usage-line"><div class="week-label"><strong>이번 주</strong><span id="weekRange" class="chip">기간 확인 중</span></div><span id="weekCalls">집계 확인 중</span></div><p class="sub">최근 7일 보호 <span id="usage7Text">0 / 0회</span></p><div id="usage7Meter" class="meter" role="progressbar" tabindex="0" aria-label="최근 7일 로컬 보호 한도"><div class="meter-fill"></div></div></div>
+          <div class="usage-row"><div class="usage-line"><div class="week-label"><strong>이번 주</strong><span id="weekRange" class="chip">기간 확인 중</span></div><span id="weekCalls">집계 확인 중</span></div><div id="usage7Meter" class="meter" role="progressbar" tabindex="0" aria-label="이번 주 사용량"><div class="meter-fill"></div></div></div>
         </div>
-        <div class="token-summary" aria-label="구간별 토큰 사용량"><label class="token-scope">토큰 집계 구간<select id="tokenScope"><option value="week">이번 주</option><option value="five_hours">최근 5시간</option></select></label><div class="token-total"><span id="tokenScopeLabel" class="sr-only">이번 주 총 토큰</span><strong>총 <b id="tokenTotal">—</b> 토큰</strong><span class="token-breakdown">(입력 <b id="tokenInput">—</b> · 출력 <b id="tokenOutput">—</b>)</span></div></div>
+        <div class="usage-foot"><span id="lastRefresh">마지막 갱신 없음</span><a class="usage-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">ChatGPT 공식 한도 확인 ›</a></div>
+      </article>
+      <article id="tokenUsageCard" class="card">
+        <div class="card-head token-scope"><h2>토큰 집계 구간</h2><select id="tokenScope" aria-label="토큰 집계 구간"><option value="week">이번 주</option><option value="five_hours">최근 5시간</option></select></div><div class="token-summary" aria-label="구간별 토큰 사용량"><div class="token-total"><span id="tokenScopeLabel" class="sr-only">이번 주 총 토큰</span><strong>총 <b id="tokenTotal">—</b> 토큰</strong><span class="token-breakdown">(입력 <b id="tokenInput">—</b> · 출력 <b id="tokenOutput">—</b>)</span></div></div>
         <small id="tokenNote" class="token-note">완료 응답에 기록된 토큰 합계입니다.</small>
         <details class="fold"><summary>전체 누적 토큰</summary><p id="cumulativeTokens" class="sub"></p></details>
         <div class="latest-usage"><h3>최근 완료 응답</h3><p id="latestUsageMeta" class="sub"></p><div id="latestUsage" class="latest-tokens">아직 완료된 응답이 없습니다.</div></div>
-        <div class="usage-foot"><span id="lastRefresh">마지막 갱신 없음</span><a class="usage-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">ChatGPT 공식 한도 확인 ›</a></div>
       </article>
     </section>
     <section id="jobsPanel" class="tab-panel" role="tabpanel" hidden>

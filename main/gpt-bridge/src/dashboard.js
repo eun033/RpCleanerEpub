@@ -55,7 +55,7 @@ function serverState(label,kind=''){
   const paused=label==='정상'&&localConnected&&state?.settings.paused,node=el('serverState');
   node.className='server-state '+(paused?'paused':kind);node.querySelector('span').textContent=paused?'요청 일시정지':label;
   node.replaceChild(icon(paused?'triangle':kind==='online'?'check':kind==='busy'?'spinner':['error','warning'].includes(kind)?'alert':'clock'),node.firstElementChild);
-  el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'연결이 끊겼어요. 브리지 실행 화면을 확인해 주세요.':label;
+  el('serverHealth').hidden=label!=='중지';el('serverHealth').textContent=label==='중지'?'연결이 끊겼어요. 브리지 실행 화면을 확인해 주세요.':'';
 }
 function parsePair(value){
   const raw=value.trim();if(!raw.startsWith('http'))return raw;
@@ -81,7 +81,7 @@ function jobTime(value){if(!value)return '—';if(today(value))return formatTime
 function duration(job){const end=job.finished_at||Date.now(),start=job.started_at;if(!start)return '';const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60);return minutes?minutes+'분 '+String(seconds%60).padStart(2,'0')+'초':seconds+'초';}
 function updateMeter(prefix,used,limit){
   const safeLimit=Math.max(1,Number(limit)||1),percent=Math.min(100,Math.max(0,used/safeLimit*100)),meter=el(prefix+'Meter');
-  el(prefix+'Text').textContent=used+' / '+safeLimit+'회';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.setAttribute('aria-valuetext',used+'회 사용 / 로컬 보호 한도 '+safeLimit+'회');
+  const text=el(prefix+'Text');if(text)text.textContent=used+' / '+safeLimit+'회';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.setAttribute('aria-valuetext',used+'회 사용 / 기준 '+safeLimit+'회');
   requestAnimationFrame(()=>{meter.querySelector('.meter-fill').style.width=percent+'%';});
 }
 function updateTokens(tokens={}){
@@ -119,11 +119,11 @@ function renderLatestUsage(job){
   const parts=[['input',hasCache?'입력(캐시 제외)':'입력',input-(hasCache?cached:0)],...(hasCache?[['cache','캐시',cached]]:[]),['output',hasReasoning?'출력(추론 제외)':'출력',output-(hasReasoning?reasoning:0)],...(hasReasoning?[['reasoning','추론',reasoning]]:[])];
   const summary=document.createElement('p'),bar=document.createElement('div'),legend=document.createElement('div');summary.className='sub';summary.textContent='총 '+formatTokens(input+output)+' 토큰 · 입력 '+formatTokens(input)+' · 출력 '+formatTokens(output);bar.className='latest-token-bar';bar.setAttribute('role','img');bar.setAttribute('aria-label',summary.textContent+' · '+parts.map(([,label,value])=>label+' '+formatTokens(value)).join(' · '));legend.className='token-legend';
   for(const [kind,label,value] of parts){
-    const segment=document.createElement('span'),item=document.createElement('span'),swatch=document.createElement('span');segment.className='token-segment token-'+kind;segment.style.width=(input+output?value/(input+output)*100:0)+'%';segment.setAttribute('aria-hidden','true');segment.title=label+' '+formatTokens(value);bar.append(segment);
+    const segment=document.createElement('span'),item=document.createElement('span'),swatch=document.createElement('span');segment.className='token-segment token-'+kind;segment.style.width=(input+output?value/(input+output)*100:0)+'%';segment.style.minWidth=value?'3px':'0px';segment.setAttribute('aria-hidden','true');segment.title=label+' '+formatTokens(value);bar.append(segment);
     swatch.className='token-swatch token-'+kind;swatch.setAttribute('aria-hidden','true');item.append(swatch,document.createTextNode(label+' '+formatTokens(value)));legend.append(item);
   }
   root.append(summary,bar,legend);
-  if(hasCache||hasReasoning){const note=document.createElement('p');note.className='sub';note.textContent='캐시는 입력, 추론은 출력에 포함됩니다.';root.append(note);}
+  const note=document.createElement('p');note.className='sub';note.textContent=(hasCache||hasReasoning?'캐시는 입력, 추론은 출력에 포함됩니다. ':'')+'작은 구간은 확대 표시합니다.';root.append(note);
 }
 function statusLabel(value,code){return code==='CANCELLED'?'종료':({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
 function renderAccount(){
@@ -251,7 +251,7 @@ function render(){
   el('week_start').disabled=!state.usage_windows?.week;
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy||!!pendingRecovery()||reconnecting;
-  renderLocal();renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
+  renderLocal();renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);el('usage7Meter').hidden=!state.usage_windows?.week;if(state.usage_windows?.week)updateMeter('usage7',state.usage_windows.week.calls,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
   el('usageReset').disabled=usageResetDisabled();
   el('usageResetInfo').textContent=state.usage_reset_at?' · '+formatDateTime(state.usage_reset_at)+' 초기화 이후 집계':'';
   const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];
