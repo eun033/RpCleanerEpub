@@ -1,6 +1,6 @@
 'use strict';
 const el=id=>document.getElementById(id);
-const ICON_PATHS={close:'m6 6 12 12 M18 6 6 18',refresh:'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',restart:'M3 10a9 9 0 1 1 2.6 8.4 M3 4v6h6',chevron:'m9 6 6 6-6 6',download:'M12 3v12 m-5-5 5 5 5-5 M5 16v5h14v-5',spinner:'M21 12a9 9 0 1 1-9-9',check:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M8 12l3 3 5-6',alert:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v6 M12 17h.01',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2',external:'M14 3h7v7 M21 3l-9 9 M10 3H3v18h18v-7'};
+const ICON_PATHS={close:'m6 6 12 12 M18 6 6 18',refresh:'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',restart:'M3 10a9 9 0 1 1 2.6 8.4 M3 4v6h6',chevron:'m9 6 6 6-6 6',download:'M12 3v12 m-5-5 5 5 5-5 M5 16v5h14v-5',spinner:'M21 12a9 9 0 1 1-9-9',check:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M8 12l3 3 5-6',triangle:'M12 3 2 21h20L12 3Z M12 9v5 M12 17h.01',alert:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v6 M12 17h.01',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2',external:'M14 3h7v7 M21 3l-9 9 M10 3H3v18h18v-7'};
 function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [key,value] of Object.entries({viewBox:'0 0 24 24',width:'20',height:'20',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false',class:'ui-icon '+name}))svg.setAttribute(key,value);const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',ICON_PATHS[name]);if(name==='check'){const circle=document.createElementNS(svg.namespaceURI,'circle');for(const [key,value] of Object.entries({cx:'12',cy:'12',r:'10',fill:'currentColor',stroke:'none'}))circle.setAttribute(key,value);svg.append(circle);path.setAttribute('d','m7.5 12 3 3 6-6');path.setAttribute('stroke','#fff');path.setAttribute('stroke-width','2.25');}svg.append(path);return svg;}
 for(const [id,name] of [['restart','restart'],['updateGit','download'],['updateZip','download']])el(id).prepend(icon(name));
 for(const id of ['usageRefresh','refreshJobs'])el(id).replaceChildren(icon('refresh'));
@@ -40,7 +40,6 @@ function feedback(id,text,tone=''){const node=el(id);node.textContent=text;node.
 function updateFailure(error=null){el('updateFailure').hidden=!error;el('updateFailure').open=false;el('updateFailureText').textContent=error?String(error.message||error):'';}
 function connectionState(connected,checked=false){
   const wasConnected=localConnected;localConnected=connected;
-  if(!connected)el('requestPause').hidden=true;
   if(checked){connectionTime=Date.now();storage.set(sessionStorage,'gpt-bridge-connection-time-v1',String(connectionTime));}
   if(!connected||!wasConnected)el('localDetails').open=!connected;
   renderLocal();
@@ -52,7 +51,12 @@ function renderLocal(){
 }
 function weekBounds(day=state?.settings?.week_start??1){const start=new Date();start.setHours(0,0,0,0);start.setDate(start.getDate()-(start.getDay()-day+7)%7);const end=new Date(start);end.setDate(end.getDate()+7);return {start_at:start.getTime(),end_at:end.getTime()};}
 function statusRoute(day){const range=weekBounds(day);return '/api/status?week_start_at='+range.start_at+'&week_end_at='+range.end_at;}
-function serverState(label,kind=''){el('serverState').className='server-state '+kind;el('serverState').querySelector('span').textContent=label;el('serverState').replaceChild(icon(kind==='online'?'check':kind==='busy'?'spinner':['error','warning'].includes(kind)?'alert':'clock'),el('serverState').firstElementChild);el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'연결이 끊겼어요. 브리지 실행 화면을 확인해 주세요.':label;}
+function serverState(label,kind=''){
+  const paused=label==='정상'&&localConnected&&state?.settings.paused,node=el('serverState');
+  node.className='server-state '+(paused?'paused':kind);node.querySelector('span').textContent=paused?'요청 일시정지':label;
+  node.replaceChild(icon(paused?'triangle':kind==='online'?'check':kind==='busy'?'spinner':['error','warning'].includes(kind)?'alert':'clock'),node.firstElementChild);
+  el('serverHealth').textContent=label==='정상'?(state?.settings.paused?'정상 · 요청 일시정지':'정상 실행 중'):label==='중지'?'연결이 끊겼어요. 브리지 실행 화면을 확인해 주세요.':label;
+}
 function parsePair(value){
   const raw=value.trim();if(!raw.startsWith('http'))return raw;
   const url=new URL(raw);if(url.origin!==location.origin||url.hostname!=='127.0.0.1')throw Error('현재 관리 화면과 같은 주소의 코드를 넣으세요.');
@@ -226,7 +230,6 @@ function render(){
   el('week_start').value=String(state.settings.week_start??1);
   el('week_start').disabled=!state.usage_windows?.week;
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
-  el('requestPause').hidden=!localConnected||!state.settings.paused;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy||!!pendingRecovery()||reconnecting;
   renderLocal();renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
   const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];

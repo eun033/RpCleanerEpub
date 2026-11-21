@@ -22,7 +22,7 @@ main{padding-top:12px}.card{margin-bottom:16px;padding:16px;border:1px solid var
 .job-meta-line{display:flex;align-items:baseline;gap:4px}.job-client-name,.job-meta-line>.mobile-model{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.job-client-name{flex:0 1 auto}.job-meta-line>.mobile-model{flex:1}.job-duration{flex:none;color:var(--muted);font-size:12px;line-height:20px;white-space:nowrap;font-variant-numeric:tabular-nums}.job-status.chip{padding:1px 4px;background:var(--surface-2);white-space:nowrap;gap:2px}.job-status .status-dot{margin-inline:2px}
 .cancel-job{margin-top:12px;color:var(--danger)}
 .jobs-paused{display:flex;align-items:center;gap:12px;margin-bottom:12px}.jobs-paused p{flex:1;margin:0;color:var(--warning)}.jobs-paused button{flex:none}
-.header-status{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:none}.request-pause{background:var(--danger-soft);color:var(--danger);white-space:nowrap}
+.server-state.paused{gap:4px;padding:2px 6px;border-radius:4px;background:var(--danger-soft);color:var(--danger)}
 .server-state.online>.check{color:#18835b;animation:serverPulse 2.6s ease-in-out infinite}
 @keyframes serverPulse{50%{opacity:.9}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}.ui-icon.spinner,.server-state.online>.check{animation:none}}
@@ -41,7 +41,7 @@ main{padding-top:12px}.card{margin-bottom:16px;padding:16px;border:1px solid var
   <g fill="currentColor" aria-hidden="true"><circle cx="28.85" cy="10" r="0.82"/><circle cx="28.85" cy="14" r="0.82"/></g>
   <!-- Crack: full angular contour including the right-side notch and lower right terminal -->
   <path d="M42.95 4.65 L52.3 4.65 L49.85 9.35 L54.00 9.35 L51.7 14.50 L53.90 19.2 L39.25 19.2 L42.25 14.10 L38.50 14.10 Z" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"/>
-</svg><span>GPT 브리지</span></h1><div class="header-status"><span id="serverState" class="server-state" role="status"><i aria-hidden="true"></i><span>확인 중</span></span><span id="requestPause" class="chip request-pause" role="status" hidden>요청 일시정지</span></div></div>
+</svg><span>GPT 브리지</span></h1><span id="serverState" class="server-state" role="status"><i aria-hidden="true"></i><span>확인 중</span></span></div>
     <nav class="tabs" role="tablist" aria-label="브리지 화면"><button class="tab" type="button" role="tab" aria-selected="false" aria-controls="serverPanel" data-tab="server">서버</button><button class="tab" type="button" role="tab" aria-selected="false" aria-controls="jobsPanel" data-tab="jobs">최근 작업</button><button class="tab" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel" data-tab="settings">설정</button></nav>
   </header>
   <main>
