@@ -2,7 +2,7 @@
 const el=id=>document.getElementById(id);
 const ICON_PATHS={close:'m6 6 12 12 M18 6 6 18',refresh:'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5',restart:'M3 10a9 9 0 1 1 2.6 8.4 M3 4v6h6',chevron:'m9 6 6 6-6 6',download:'M12 3v12 m-5-5 5 5 5-5 M5 16v5h14v-5',spinner:'M21 12a9 9 0 1 1-9-9',check:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M8 12l3 3 5-6',triangle:'M12 3 2 21h20L12 3Z M12 9v5 M12 17h.01',alert:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v6 M12 17h.01',clock:'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z M12 7v5l3 2',external:'M14 3h7v7 M21 3l-9 9 M10 3H3v18h18v-7'};
 function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');for(const [key,value] of Object.entries({viewBox:'0 0 24 24',width:'20',height:'20',fill:'none',stroke:'currentColor','stroke-width':'2','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false',class:'ui-icon '+name}))svg.setAttribute(key,value);const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',ICON_PATHS[name]);if(name==='check'){const circle=document.createElementNS(svg.namespaceURI,'circle');for(const [key,value] of Object.entries({cx:'12',cy:'12',r:'10',fill:'currentColor',stroke:'none'}))circle.setAttribute(key,value);svg.append(circle);path.setAttribute('d','m7.5 12 3 3 6-6');path.setAttribute('stroke','#fff');path.setAttribute('stroke-width','2.25');}svg.append(path);return svg;}
-for(const [id,name] of [['restart','restart'],['updateGit','download'],['updateZip','download']])el(id).prepend(icon(name));
+el('restart').prepend(icon('restart'));
 for(const id of ['usageRefresh','refreshJobs'])el(id).replaceChildren(icon('refresh'));
 for(const summary of document.querySelectorAll('.fold>summary,.advanced>summary'))summary.prepend(icon('chevron'));
 document.querySelector('.usage-link').replaceChildren(document.createTextNode('ChatGPT 공식 한도 확인'),icon('external'));
@@ -81,15 +81,15 @@ function jobTime(value){if(!value)return '—';if(today(value))return formatTime
 function duration(job){const end=job.finished_at||Date.now(),start=job.started_at;if(!start)return '';const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60);return minutes?minutes+'분 '+String(seconds%60).padStart(2,'0')+'초':seconds+'초';}
 function updateMeter(prefix,used,limit){
   const safeLimit=Math.max(1,Number(limit)||1),percent=Math.min(100,Math.max(0,used/safeLimit*100)),meter=el(prefix+'Meter');
-  el(prefix+'Text').textContent=used+' / '+safeLimit+'회';el(prefix+'Remain').textContent='로컬 보호 한도 '+Math.max(0,safeLimit-used)+'회 남음';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.setAttribute('aria-valuetext',used+'회 사용 / 로컬 보호 한도 '+safeLimit+'회');
+  el(prefix+'Text').textContent=used+' / '+safeLimit+'회';meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(safeLimit));meter.setAttribute('aria-valuenow',String(used));meter.setAttribute('aria-valuetext',used+'회 사용 / 로컬 보호 한도 '+safeLimit+'회');
   requestAnimationFrame(()=>{meter.querySelector('.meter-fill').style.width=percent+'%';});
 }
 function updateTokens(tokens={}){
   const range=state?.usage_windows?.[el('tokenScope').value],scope=el('tokenScope').value==='week'?'이번 주':'최근 5시간';
-  el('cumulativeTokens').textContent='전체 기록 · 총 '+(Number(tokens.total_tokens)||0).toLocaleString('ko-KR')+' 토큰 · 입력 '+(Number(tokens.input_tokens)||0).toLocaleString('ko-KR')+' · 출력 '+(Number(tokens.output_tokens)||0).toLocaleString('ko-KR');
+  el('cumulativeTokens').textContent=(state?.usage_reset_at?'초기화 이후':'전체 기록')+' · 총 '+(Number(tokens.total_tokens)||0).toLocaleString('ko-KR')+' 토큰 · 입력 '+(Number(tokens.input_tokens)||0).toLocaleString('ko-KR')+' · 출력 '+(Number(tokens.output_tokens)||0).toLocaleString('ko-KR');
   const week=state?.usage_windows?.week;
-  el('weekCalls').textContent=week?week.calls.toLocaleString('ko-KR')+'회':'집계 미지원';
-  el('weekRange').textContent=week?new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).format(week.start_at)+' ~ '+new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).format(week.end_at-1):'고정 주간 집계는 브리지 업데이트 후 표시됩니다.';
+  el('weekCalls').textContent=week?week.calls.toLocaleString('ko-KR')+' / '+Math.max(1,Number(state.settings.max_calls_7d)||1)+'회':'집계 미지원';
+  const dates=week?[new Date(week.start_at),new Date(week.end_at-1)]:[];el('weekRange').textContent=week?dates.map(date=>String(date.getMonth()+1).padStart(2,'0')+'.'+String(date.getDate()).padStart(2,'0')).join(' ~ '):'집계 미지원';el('weekRange').title=dates.map(date=>new Intl.DateTimeFormat('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'}).format(date)).join(' ~ ');
   el('tokenScopeLabel').textContent=scope+' 총 토큰';
   if(!range){for(const id of ['tokenInput','tokenOutput','tokenTotal'])el(id).textContent='—';el('tokenNote').textContent='구간별 토큰 집계 미지원 · 전체 누적 기록은 아래에서 확인할 수 있어요.';return;}
   tokens=range;
@@ -110,6 +110,21 @@ function jobTokenText(job){
   if(validTokens(reasoning))text+='\n출력 중 추론 '+formatTokens(reasoning)+' 토큰 (출력에 포함)';
   return text;
 }
+function renderLatestUsage(job){
+  const root=el('latestUsage');root.replaceChildren();
+  if(!job){root.textContent='아직 완료된 응답이 없습니다.';return;}
+  const usage=job.usage,input=usage?.input_tokens,output=usage?.output_tokens;
+  if(!validTokens(input)||!validTokens(output)){root.textContent=jobTokenText(job);return;}
+  const cached=usage.input_tokens_details?.cached_tokens,reasoning=usage.output_tokens_details?.reasoning_tokens,hasCache=validTokens(cached)&&cached<=input,hasReasoning=validTokens(reasoning)&&reasoning<=output;
+  const parts=[['input',hasCache?'입력(캐시 제외)':'입력',input-(hasCache?cached:0)],...(hasCache?[['cache','캐시',cached]]:[]),['output',hasReasoning?'출력(추론 제외)':'출력',output-(hasReasoning?reasoning:0)],...(hasReasoning?[['reasoning','추론',reasoning]]:[])];
+  const summary=document.createElement('p'),bar=document.createElement('div'),legend=document.createElement('div');summary.className='sub';summary.textContent='총 '+formatTokens(input+output)+' 토큰 · 입력 '+formatTokens(input)+' · 출력 '+formatTokens(output);bar.className='latest-token-bar';bar.setAttribute('role','img');bar.setAttribute('aria-label',summary.textContent+' · '+parts.map(([,label,value])=>label+' '+formatTokens(value)).join(' · '));legend.className='token-legend';
+  for(const [kind,label,value] of parts){
+    const segment=document.createElement('span'),item=document.createElement('span'),swatch=document.createElement('span');segment.className='token-segment token-'+kind;segment.style.width=(input+output?value/(input+output)*100:0)+'%';segment.setAttribute('aria-hidden','true');segment.title=label+' '+formatTokens(value);bar.append(segment);
+    swatch.className='token-swatch token-'+kind;swatch.setAttribute('aria-hidden','true');item.append(swatch,document.createTextNode(label+' '+formatTokens(value)));legend.append(item);
+  }
+  root.append(summary,bar,legend);
+  if(hasCache||hasReasoning){const note=document.createElement('p');note.className='sub';note.textContent='캐시는 입력, 추론은 출력에 포함됩니다.';root.append(note);}
+}
 function statusLabel(value,code){return code==='CANCELLED'?'종료':({completed:'완료',running:'진행 중',queued:'대기',error:'오류',blocked_budget:'한도 대기'})[value]||value;}
 function renderAccount(){
   const connected=!!state?.connected,models=modelCache.models;
@@ -122,17 +137,21 @@ function renderAccount(){
   el('modelState').textContent=modelChecking?'확인 중':modelFailed?'확인 실패':modelCache.at?(modelFresh?'새로 확인함':'저장된 목록'):'모델 미확인';el('modelState').className='chip'+(modelFailed?' warning':modelFresh?' success':'');
   el('modelSummary').textContent=connected?'연결됨 · '+(modelCache.at?'사용 가능 모델 '+models.length+'개':'모델 확인 필요'):'계정 연결이 필요합니다.';
 }
+function availableUpdate(){const method=state?.install_method,item=updateStates[method];return !updateCheckFailed&&state?.update_methods?.includes(method)&&item?.status==='available'?method:'';}
 function renderUpdate(){
-  const labels={current:'최신 버전',available:'업데이트 있음',local_changes:'로컬 수정이 있어 자동 업데이트할 수 없습니다.',local_ahead:'설치본이 더 새롭습니다.',diverged:'저장소 기록을 확인하세요.'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',item=updateStates[installed];
-  el('installMethod').textContent=state?'설치 방식 · '+({git:'Git',zip:'ZIP',unknown:'확인 불가'}[installed]||installed):'설치 방식 확인 중';
-  for(const method of ['git','zip']){const button=el('update'+(method==='git'?'Git':'Zip')),available=method===installed&&methods.has(method)&&updateStates[method]?.status==='available';button.hidden=!available||updateCheckFailed;button.disabled=!available||updateChecking||!!state?.restart_busy||!!state?.update_busy||!!pendingRecovery()||reconnecting;}
+  const labels={current:'최신 버전',available:'업데이트 있음',local_changes:'로컬 수정이 있어 자동 업데이트할 수 없습니다.',local_ahead:'설치본이 더 새롭습니다.',diverged:'저장소 기록을 확인하세요.'},methods=new Set(state?.update_methods||[]),installed=state?.install_method||'unknown',item=updateStates[installed],available=availableUpdate(),pending=pendingRecovery();
+  el('installMethod').textContent=state?({git:'Git',zip:'ZIP',unknown:'확인 불가'}[installed]||installed):'확인 중';
   el('updateResult').textContent=methods.size?item?(labels[item.status]||'확인하지 못했습니다.'):'업데이트를 확인해 주세요.':['git','zip'].includes(installed)?'관리 화면에서 업데이트하려면 감독 실행이 필요합니다.':'설치 상태를 확인하세요.';
   if(recovery?.kind==='update')el('updateResult').textContent=({applying:'업데이트 적용 중',restarting:'브리지 재시작 중',verifying:'업데이트 결과 확인 중',unknown:'업데이트 결과 미확인',complete:'업데이트 완료'})[recovery.phase]||'업데이트 결과 확인 중';
   else if(updateChecking)el('updateResult').textContent='업데이트 확인 중';else if(updateCheckFailed)el('updateResult').textContent='업데이트 확인 불가';
-  el('checkUpdate').disabled=updateChecking||reconnecting||(!pendingRecovery()&&(!methods.size||!!state?.update_busy));el('checkUpdate').replaceChildren(icon(updateChecking||reconnecting?'spinner':'refresh'),document.createTextNode(updateChecking?'확인 중...':pendingRecovery()?(recovery.kind==='restart'?'연결 다시 확인':'결과 다시 확인'):'업데이트 확인'));
-  const available=[...methods].map(method=>updateStates[method]).find(value=>value?.status==='available'),badge=el('updateBadge');badge.hidden=!state||!methods.size;badge.className='chip update-badge';
-  badge.textContent=pendingRecovery()?(recovery.phase==='unknown'?'결과 미확인':'진행 중'):updateChecking?'확인 중':updateCheckFailed?'확인 불가':available?'v'+available.latest_version+' 업데이트 가능':item?.status==='current'?'최신 버전':'미확인';
-  if(!updateChecking&&!updateCheckFailed&&!pendingRecovery()&&(available||item?.status==='current'))badge.classList.add('success');
+  el('updateResult').hidden=!state||!!methods.size&&!updateCheckFailed&&(!item||['current','available'].includes(item.status));
+  const button=el('checkUpdate');button.dataset.action=pending?'recover':available?'apply':'check';button.className='btn '+(available&&!pending?'primary':'secondary');
+  button.disabled=updateChecking||reconnecting||(!pending&&(!methods.size||!!state?.update_busy||!!available&&!!state?.restart_busy));
+  button.replaceChildren(icon(updateChecking||reconnecting?'spinner':available&&!pending?'download':'refresh'),document.createTextNode(updateChecking?'확인 중...':pending?(recovery.kind==='restart'?'연결 다시 확인':'결과 다시 확인'):available?'업데이트':'업데이트 확인'));
+  const badge=el('updateBadge');badge.hidden=!state||!methods.size;badge.className='chip update-badge';
+  badge.textContent=pending?(recovery.phase==='unknown'?'결과 미확인':'진행 중'):updateChecking?'확인 중':updateCheckFailed?'확인 불가':available?'v'+item.latest_version+' 업데이트 가능':item&&(['current','available'].includes(item.status))?'최신 버전':'미확인';
+  if(!updateChecking&&!updateCheckFailed&&!pending&&(available||item&&['current','available'].includes(item.status)))badge.classList.add('success');
+  el('usageReset').disabled=usageResetDisabled();
 }
 async function checkUpdates(announce=true){
   if(updateChecking||reconnecting||pendingRecovery()||state?.update_busy)return;
@@ -225,6 +244,7 @@ function renderJobs(){
   }
   el('jobs').append(table);
 }
+function usageResetDisabled(){return !Number.isFinite(state?.usage_reset_at)||!!state.running||!!state.usage_resetting||!!state.update_busy||!!pendingRecovery()||reconnecting||updateChecking;}
 function render(){
   for(const key of ['max_chars','max_calls_5h','max_calls_7d'])el(key).value=state.settings[key];
   el('week_start').value=String(state.settings.week_start??1);
@@ -232,9 +252,11 @@ function render(){
   el('bridgeVersion').textContent='v'+state.version;document.title='GPT 브리지 '+state.version;
   el('pause').textContent=state.settings.paused?'요청 재개':'요청 일시정지';el('restart').disabled=!state.can_restart||state.restart_busy||!!pendingRecovery()||reconnecting;
   renderLocal();renderAccount();renderUpdate();serverState('정상','online');updateMeter('usage5',state.calls.five_hours,state.settings.max_calls_5h);updateMeter('usage7',state.calls.seven_days,state.settings.max_calls_7d);updateTokens(state.tokens);renderJobs();
+  el('usageReset').disabled=usageResetDisabled();
+  el('usageResetInfo').textContent=state.usage_reset_at?' · '+formatDateTime(state.usage_reset_at)+' 초기화 이후 집계':'';
   const latest=(state.recent||[]).filter(job=>job.status==='completed').sort((a,b)=>(b.finished_at||b.created_at)-(a.finished_at||a.created_at))[0];
-  el('latestUsage').textContent=latest?jobTokenText(latest):'아직 완료된 응답이 없습니다.';
-  el('latestUsageMeta').textContent=latest?[latest.client?.task_name,latest.model,formatDateTime(latest.finished_at||latest.created_at)].filter(Boolean).join(' · '):'';
+  renderLatestUsage(latest);
+  el('latestUsageMeta').textContent=latest?[latest.client?.task_name,latest.model,formatDateTime(latest.finished_at||latest.created_at),state.usage_reset_at&&latest.finished_at&&latest.finished_at<state.usage_reset_at?'초기화 이전 기록':''].filter(Boolean).join(' · '):'';
 }
 function saveRefreshTime(){const now=Date.now();storage.set(localStorage,LAST_REFRESH,String(now));el('lastRefresh').textContent='마지막 갱신 '+formatTime(now);}
 async function refresh(announce=true){try{state=await api('/api/status');render();saveRefreshTime();if(pendingRecovery()&&!reconnecting){if(recoveryConfirmed(state))recoveryComplete(state,true);else recoveryUnknown(state);}else if(announce)message('서버 상태와 로컬 사용량을 갱신했습니다.');return state;}catch(error){serverState(error.status===401?'연결 필요':error.status?'오류':'중지',error.status?'error':'warning');throw error;}}
@@ -257,8 +279,9 @@ el('logout').onclick=()=>run(async()=>{await api('/api/logout',{});modelCache={m
 el('save').onclick=()=>run(async()=>{if(!state||!localConnected)throw Error('로컬 연결을 먼저 확인해 주세요.');await api('/api/settings',Object.fromEntries(['max_chars','max_calls_5h','max_calls_7d','week_start'].map(key=>[key,Number(el(key).value)]).filter(([key,value])=>value!==(state.settings[key]??(key==='week_start'?1:undefined)))));await refresh();},'advancedFeedback');
 el('pause').onclick=()=>run(async()=>{if(!state)await refresh();await api('/api/settings',{paused:!state.settings.paused});await refresh();},'advancedFeedback');
 el('resumeJobs').onclick=()=>run(async()=>{const button=el('resumeJobs');button.disabled=true;try{await api('/api/settings',{paused:false});await refresh(false);message('요청을 재개했습니다. 대기 작업을 순서대로 실행합니다.');}finally{button.disabled=false;}},'jobsFeedback');
+el('usageReset').onclick=()=>run(async()=>{if(!confirm('브리지의 로컬 사용량과 보호 횟수를 0으로 초기화할까요? 작업 기록·최근 완료 응답·계정과 ChatGPT 공식 한도는 유지됩니다.'))return;const button=el('usageReset');button.disabled=true;try{await api('/api/usage/reset',{});await refresh(false);message('브리지 로컬 사용량을 초기화했습니다.');}finally{button.disabled=usageResetDisabled();}});
 el('usageRefresh').onclick=()=>run(refresh);el('refreshJobs').onclick=()=>run(refresh,'jobsFeedback');
-el('checkUpdate').onclick=()=>run(()=>pendingRecovery()?reconnectAfterRestart(true,true):checkUpdates());
+el('checkUpdate').onclick=()=>run(()=>pendingRecovery()?reconnectAfterRestart(true,true):availableUpdate()?startControl('update',availableUpdate()):checkUpdates());
 function versionAtLeast(current,target){
   if(!/^\d+\.\d+\.\d+$/.test(current||'')||!/^\d+\.\d+\.\d+$/.test(target||''))return false;
   const a=current.split('.').map(Number),b=target.split('.').map(Number);
@@ -280,7 +303,7 @@ async function timedApi(route,body,timeout=4000){
 }
 function recoveryComplete(next,reload){
   updateFailure();
-  state=next;reconnecting=false;saveRecovery({...recovery,phase:'complete'});render();saveRefreshTime();
+  state=next;reconnecting=false;if(recovery.kind==='update'&&next.install_method)updateStates[next.install_method]={status:'current',current_version:next.version,latest_version:next.version};saveRecovery({...recovery,phase:'complete'});render();saveRefreshTime();
   message(recovery.kind==='update'?'v'+next.version+' 새 버전으로 업데이트했어요.':'브리지를 다시 시작했어요.');
   feedback('serverFeedback',el('status').textContent);
   if(!reload){saveRecovery(null);return;}
@@ -332,7 +355,6 @@ async function startControl(kind,method){
   if(result?.updated===false){reconnecting=false;saveRecovery(null);await refresh(false);await checkUpdates(false);message('적용할 업데이트가 없어요.',false,false,false,'info');return;}
   recoveryProgress('restarting');await reconnectAfterRestart();
 }
-el('updateGit').onclick=()=>run(()=>startControl('update','git'));el('updateZip').onclick=()=>run(()=>startControl('update','zip'));
 el('restart').onclick=()=>run(()=>startControl('restart'));
 const last=Number(storage.get(localStorage,LAST_REFRESH));if(Number.isFinite(last)&&last>0)el('lastRefresh').textContent='마지막 갱신 '+formatTime(last);
 if(pair){storage.set(sessionStorage,PAIR_SESSION,pair);run(async()=>{try{

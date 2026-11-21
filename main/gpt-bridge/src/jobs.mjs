@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {API,SubscriptionAuth,BridgeError,check,sha,readJSON,writeJSON} from './auth.mjs';
+import {API,SubscriptionAuth,BridgeError,check,sha,random,readJSON,writeJSON} from './auth.mjs';
 
 export const DEFAULT_SETTINGS={paused:false,max_chars:240000,max_calls_5h:20,max_calls_7d:200,week_start:1};
 export function bridgePlatform(platform=process.platform,env=process.env){
@@ -84,6 +84,8 @@ export class JobBridge {
   constructor(dir,options={}){this.dir=dir;this.auth=new SubscriptionAuth(dir,options);this.now=options.clock||Date.now;this.jobs=new Map();this.running=false;this.closed=false;this.changes=Promise.resolve();}
   async init(){
     await this.auth.init();await fs.mkdir(path.join(this.dir,'jobs'),{recursive:true,mode:0o700});
+    this.usageState=await readJSON(path.join(this.dir,'usage-reset.json'),{epoch:null,reset_at:0});
+    check(this.usageState&&((this.usageState.epoch===null&&this.usageState.reset_at===0)||(typeof this.usageState.epoch==='string'&&/^[A-Za-z0-9_-]{32,}$/.test(this.usageState.epoch)&&Number.isSafeInteger(this.usageState.reset_at)&&this.usageState.reset_at>=0)),'USAGE_STATE','로컬 사용량 초기화 기록을 확인해 주세요. 기존 기록은 보존합니다.');
     const saved=await readJSON(path.join(this.dir,'settings.json'),{});
     this.settings=Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map(key=>[key,Object.hasOwn(saved,key)?saved[key]:DEFAULT_SETTINGS[key]]));
     if(!Number.isInteger(this.settings.week_start)||this.settings.week_start<0||this.settings.week_start>6)this.settings.week_start=1;
@@ -103,11 +105,18 @@ export class JobBridge {
     const wait_message=({preparing:'모델·인증을 확인하고 있습니다. 아직 AI 요청을 보내지 않았습니다.',paused:'요청이 일시정지되어 있습니다. 요청 재개를 누르면 대기 작업을 순서대로 실행합니다.',waiting_turn:'앞 작업이 끝나기를 기다리고 있습니다.',queued:'작업 실행 순서를 준비하고 있습니다.'})[wait_reason];
     return {wait_reason,wait_message,...(wait_reason==='waiting_turn'&&this.active?{waiting_for:this.active.id}:{})};
   }
-  publicJob(job){const {body,fingerprint,...publicFields}=job;return {...publicFields,...this.queueState(job)};}
-  counts(){const times=[...this.jobs.values()].map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
+  publicJob(job){const {body,fingerprint,usage_epoch,...publicFields}=job;return {...publicFields,...this.queueState(job)};}
+  usageJobs(){return [...this.jobs.values()].filter(job=>!this.usageState.epoch||job.usage_epoch===this.usageState.epoch);}
+  async resetUsage(){
+    check(!this.closed&&!this.running&&!this.resettingUsage,'BUSY','실행 중인 작업을 완료하거나 종료한 뒤 사용량을 초기화하세요.',409);
+    this.resettingUsage=true;
+    try{const next={epoch:random(),reset_at:this.now()};await writeJSON(path.join(this.dir,'usage-reset.json'),next);this.usageState=next;return {reset_at:next.reset_at};}
+    finally{this.resettingUsage=false;void this.drain();}
+  }
+  counts(){const times=this.usageJobs().map(j=>j.started_at).filter(Number.isFinite);return {five_hours:times.filter(t=>t>this.now()-18000000).length,seven_days:times.filter(t=>t>this.now()-604800000).length};}
   tokenUsage(){
     let input_tokens=0,output_tokens=0,recorded_jobs=0,unreported_calls=0;
-    for(const job of this.jobs.values()){
+    for(const job of this.usageJobs()){
       const input=job.usage?.input_tokens,output=job.usage?.output_tokens;
       if(!Number.isSafeInteger(input)||input<0||!Number.isSafeInteger(output)||output<0){if(Number.isFinite(job.started_at))unreported_calls++;continue;}
       input_tokens+=input;output_tokens+=output;recorded_jobs++;
@@ -117,7 +126,7 @@ export class JobBridge {
   windowUsage(start_at,end_at){
     const out={start_at,end_at,calls:0,completed_jobs:0,recorded_jobs:0,unreported_completed:0,unplaced_completed:0,input_tokens:0,output_tokens:0,total_tokens:0};
     const includes=value=>Number.isFinite(value)&&value>=start_at&&value<end_at;
-    for(const job of this.jobs.values()){
+    for(const job of this.usageJobs()){
       if(includes(job.started_at))out.calls++;
       if(job.status!=='completed')continue;
       if(!Number.isFinite(job.finished_at)){out.unplaced_completed++;continue;}
@@ -134,7 +143,7 @@ export class JobBridge {
     const end=new Date(start);end.setDate(end.getDate()+7);
     return {five_hours:this.windowUsage(now-18000000,now+1),week:this.windowUsage(week_start_at??start.getTime(),week_end_at??end.getTime())};
   }
-  status(range){return {version:'0.2.34',platform:bridgePlatform(),connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',...this.queueState(j),model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
+  status(range){return {version:'0.2.35',platform:bridgePlatform(),usage_reset_at:this.usageState.reset_at,usage_resetting:this.resettingUsage===true,connected:!!this.auth.tokens,running:this.running,settings:this.settings,calls:this.counts(),tokens:this.tokenUsage(),usage_windows:this.usageWindows(range),recent:[...this.jobs.values()].sort((a,b)=>b.created_at-a.created_at).slice(0,20).map(j=>({request_id:j.request_id,status:j.status,created_at:j.created_at,started_at:j.started_at||null,finished_at:j.finished_at||null,error_code:j.error_code||'',...this.queueState(j),model:j.body?.model||'',effort:j.body?.reasoning?.effort||'',usage:j.usage||null,client:j.client||null}))};}
   async settingsChange(value){
     check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(k=>Object.hasOwn(DEFAULT_SETTINGS,k)),'SETTINGS','설정 항목을 확인해 주세요.');
     const next={...this.settings,...value};
@@ -170,7 +179,7 @@ export class JobBridge {
     return this.publicJob(job);
   }
   async drain(){
-    if(this.running||this.closed||this.settings.paused)return;this.running=true;
+    if(this.running||this.closed||this.settings.paused||this.resettingUsage)return;this.running=true;
     try{
       for(const job of this.jobs.values()){
         if(this.closed||this.settings.paused)break;if(job.status!=='queued')continue;
@@ -181,7 +190,7 @@ export class JobBridge {
         try{
           const models=await abortable(this.auth.models({signal}),signal),selected=models.find(m=>m.slug===job.body.model);check(selected,'MODEL_UNAVAILABLE','이 계정의 구독 모델 목록에서 모델을 선택하세요.');
           const effort=job.body.reasoning?.effort;if(effort&&selected.efforts?.length)check(selected.efforts.includes(effort),'MODEL_EFFORT','선택한 모델이 지원하는 추론 강도를 골라 주세요.');
-          const token=await abortable(this.auth.access(),signal);signal.throwIfAborted();job.status='running';job.started_at=this.now();job.attempts=1;await this.save(job);signal.throwIfAborted();
+          const token=await abortable(this.auth.access(),signal);signal.throwIfAborted();job.status='running';job.started_at=this.now();job.attempts=1;job.usage_epoch=this.usageState.epoch;await this.save(job);signal.throwIfAborted();
           timeout=setTimeout(()=>controller.abort(),900000);
           const response=await abortable(this.auth.fetch(API+'/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(job.body),signal}),signal);
           if(!response.ok){let data={};try{data=await abortable(response.json(),signal);}catch{}throw new BridgeError(String(data.error?.code||'HTTP_'+response.status).replace(/[^A-Za-z0-9_.-]/g,'').slice(0,100),'AI 요청이 거절됐습니다 ('+response.status+'). 자동 재요청하지 않았습니다.',response.status);}

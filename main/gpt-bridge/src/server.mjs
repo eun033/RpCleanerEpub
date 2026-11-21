@@ -105,7 +105,7 @@ export function restartServer({server,bridge},exit=code=>process.exit(code)){
 export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subscription-bridge'),fetchImpl=globalThis.fetch,clock=Date.now,appName='Local GPT Subscription Bridge',onRestart=null,onUpdateCheck=null,onUpdate=null,updateMethods=[],installMethod=''}={}){
   const bridge=await new JobBridge(dir,{fetchImpl,clock,appName}).init();
   const instanceId=randomUUID();
-  let updateBusy=false;const restartBusy=()=>updateBusy||bridge.running||[...bridge.jobs.values()].some(job=>['queued','running'].includes(job.status));
+  let updateBusy=false;const restartBusy=()=>updateBusy||bridge.running||bridge.resettingUsage===true||[...bridge.jobs.values()].some(job=>['queued','running'].includes(job.status));
   const server=http.createServer(async(req,res)=>{
     const port=server.address()?.port,base='http://127.0.0.1:'+port;
     res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('X-Frame-Options','DENY');
@@ -145,6 +145,7 @@ export async function createServer({dir=path.join(os.homedir(),'.local-gpt-subsc
       if(req.method==='POST'&&url.pathname==='/api/login'){check(!bridge.running,'BUSY','진행 중인 작업이 끝난 뒤 로그인하세요.',409);return send(res,200,{url:bridge.auth.startLogin(port)});}
       if(req.method==='POST'&&url.pathname==='/api/logout'){check(!bridge.running,'BUSY','진행 중인 작업이 끝난 뒤 연결을 해제하세요.',409);await bridge.auth.logout();await bridge.settingsChange({paused:true});return send(res,200,{ok:true});}
       if(req.method==='POST'&&url.pathname==='/api/settings')return send(res,200,await bridge.settingsChange(await readBody(req)));
+      if(req.method==='POST'&&url.pathname==='/api/usage/reset'){check(!updateBusy,'BUSY','업데이트 작업이 끝난 뒤 사용량을 초기화하세요.',409);return send(res,200,await bridge.resetUsage());}
       if(req.method==='POST'&&url.pathname==='/api/restart'){
         check(typeof onRestart==='function','RESTART_UNAVAILABLE','start.sh 또는 start-windows.ps1로 서버를 실행한 경우에만 관리 화면에서 재시작할 수 있습니다.',409);
         check(!restartBusy(),'BUSY','대기·진행 중인 작업이 끝난 뒤 재시작하세요.',409);
