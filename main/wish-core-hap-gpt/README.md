@@ -1,8 +1,10 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.14
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.15
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.14이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.15이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+
+0.2.15는 일반 `외부 AI로 2차 재구축`의 **GPT 브리지로 보내기** 버튼만 일시적으로 주석 처리해 숨긴다. 기존 TXT 내보내기와 JSON 가져오기는 유지한다. `40% 이상` 영역의 가져오기 문구는 **JSON 가져오기**로 통일했다. GPT 전송 버튼은 외부 AI 재구축과 40% 이상 축소에서 계속 제공한다.
 
 0.2.14는 현재 AI 공급자가 `ChatGPT 구독`일 때만 외부 AI 재구축·2차 재구축·40% 이상 축소의 세 영역에 **GPT 브리지로 보내기** 버튼을 추가한다. 기존 TXT와 같은 지침·자료로 입력을 준비하고, 모델·글자 수·대략적인 요청 크기를 확인한 뒤 전송한다. 외부 재구축은 전체·기억·자료집·인물 중 하나를, 축소 작업은 40%·50%와 기타/OOC 포함 여부를 선택할 수 있다.
 
@@ -42,7 +44,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.14 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.15 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 

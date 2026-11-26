@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.14
+// @version      0.2.15
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -262,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.14';
+  const HAP_GPT_CLIENT_VERSION = '0.2.15';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -22435,7 +22435,7 @@ function mRelationships() {
     const info=state.currentRoom?.freeCompression;
     return '<div data-key="free-compression"><b>외부 AI로 2차 재구축 (40% 이상)</b>'+
       '<p class="m3-muted">먼저 원문을 최대한 살려 줄이고, 부족하면 중복·서사 중요도가 낮은 내용을 덜어 냅니다. 결과를 확인한 뒤 저장 본문을 실제로 교체합니다.</p>'+
-      '<div class="m3-row m3-card-actions">'+btn('지침 + TXT 받기','freeCompressionExport',{cls:'mini',icon:'down',dis})+btn('결과 JSON 가져오기','freeCompressionImport',{cls:'mini',icon:'up',dis})+(ExternalGpt.enabled()?btn('GPT 브리지로 보내기','externalGptOpen',{arg:'free',cls:'mini',icon:'spark',dis:dis}):'')+btn('지침','promptGuides',{arg:'externalFreeCompression',cls:'mini',icon:'doc',dis})+'</div>'+
+      '<div class="m3-row m3-card-actions">'+btn('지침 + TXT 받기','freeCompressionExport',{cls:'mini',icon:'down',dis})+btn('JSON 가져오기','freeCompressionImport',{cls:'mini',icon:'up',dis})+(ExternalGpt.enabled()?btn('GPT 브리지로 보내기','externalGptOpen',{arg:'free',cls:'mini',icon:'spark',dis:dis}):'')+btn('지침','promptGuides',{arg:'externalFreeCompression',cls:'mini',icon:'doc',dis})+'</div>'+
       '<div class="m3-row m3-card-actions">'+btn('현재 원문 JSON 저장','freeCompressionOriginal',{cls:'mini',icon:'down',dis})+btn('교체 전 원본 보관함','freeCompressionBackups',{cls:'mini',icon:'history',dis})+'</div>'+
       (info?'<p class="m3-muted">최근 교체: 본문 '+fmt(info.before)+' → '+fmt(info.after)+'자 · '+esc(info.percent)+'% 축소 · 삭제 '+fmt(info.deleted||0)+'항목</p>':'')+'</div>';
   }
@@ -22504,7 +22504,7 @@ function mRelationships() {
  (j?.basisChoice?'<section class="m3-panel m3-alert m3-topgap" data-key="rebuild-basis-choice" role="alert"><b>재구축 기준 변경</b><p class="m3-muted">변경 항목: '+esc(j.basisChoice.areas)+'<br>현재 기준으로 다시 준비하거나, 완료 구간이 있으면 기존 기준으로 이어갈 수 있습니다. 대화 원문 변경은 별도로 검사합니다.</p><div class="m3-row m3-card-actions">'+btn('현재 기준으로 다시 준비','rebuildBasisCurrent',{cls:'mini',dis:run})+(j.basisChoice.completed?btn('변경 확인 후 기존 기준으로 계속','rebuildBasisPrevious',{cls:'mini',dis:run}):'')+'</div></section>':'')+
  (j?'<div class="m3-hbar m3-topgap"><i style="width:'+ (rows.length?done/rows.length*100:0)+'%"></i></div><p class="m3-muted">'+esc(j.message||'')+' · 판독 완료 '+done+'/'+rows.length+'</p>'+rows.map(s=>'<div class="m3-seg" data-key="segment-'+s.index+'"><span class="m3-n '+(s.status==='complete'?'m3-done':s.status==='running'?'m3-run':'')+'">'+s.index+'</span><span class="m3-t">'+s.messages+'메시지 · '+fmt(s.chars)+'자'+(s.error?'<br><small class="m3-error">'+esc(s.error)+'</small>':'')+'</span><span class="m3-s">'+esc(status[s.status]||s.status)+'</span></div>').join('')+'<div class="m3-row m3-card-actions">'+(j.status==='complete'&&j.ready?btn('전체 결과 적용','rebuildApply',{cls:'primary mini',dis:run}):'')+btn('대화 다시 읽기','rebuildRead',{cls:'quiet mini',dis:run||!!V.ai.manual})+btn('구간 목록 비우기','rebuildClear',{cls:'danger mini',dis:run})+'</div>':'')+'</section>'+
 vExternalRebuild(run||ExternalBundles.busy())+
- '<hr class="m3-secondary-divider"><div data-key="secondary-rebuild"><b>외부 AI로 2차 재구축</b><div class="m3-muted">현재 방 자료를 카드별 고밀도 기록체로 압축합니다. 사건·원문·팩 구분을 보존합니다.</div><div class="m3-row m3-card-actions">'+btn('지침 + TXT 받기','secondaryExport',{cls:'mini',dis:run})+btn('JSON 가져오기','secondaryImport',{cls:'mini',dis:run})+(ExternalGpt.enabled()?btn('GPT 브리지로 보내기','externalGptOpen',{arg:'secondary',cls:'mini',icon:'spark',dis:run}):'')+btn('지침','promptGuides',{arg:'externalSecondary',cls:'mini',icon:'doc'})+'</div>'+vSecondaryStatus(run)+'</div><hr class="m3-secondary-divider">'+vFreeCompression(run)+'</section>'+
+ '<hr class="m3-secondary-divider"><div data-key="secondary-rebuild"><b>외부 AI로 2차 재구축</b><div class="m3-muted">현재 방 자료를 카드별 고밀도 기록체로 압축합니다. 사건·원문·팩 구분을 보존합니다.</div><div class="m3-row m3-card-actions">'+btn('지침 + TXT 받기','secondaryExport',{cls:'mini',dis:run})+btn('JSON 가져오기','secondaryImport',{cls:'mini',dis:run})/* 일반 2차 재구축 전송 버튼 일시 숨김: +(ExternalGpt.enabled()?btn('GPT 브리지로 보내기','externalGptOpen',{arg:'secondary',cls:'mini',icon:'spark',dis:run}):'') */+btn('지침','promptGuides',{arg:'externalSecondary',cls:'mini',icon:'doc'})+'</div>'+vSecondaryStatus(run)+'</div><hr class="m3-secondary-divider">'+vFreeCompression(run)+'</section>'+
  '<section class="m3-panel" data-key="room-copy"><b class="m3-title-help">다른 방 자료 복사하기 '+help(helpSections([['독립 사본','원본 방과 연결하지 않고 현재 방 안에 독립 복사합니다. 이후 어느 한쪽이 자동 갱신돼도 다른 방은 바뀌지 않습니다.'],['선택 복사','현재상태·날짜로그·서사 고리·연표·캐릭터/OOC·자료집·인물인지·은폐·호칭말투·관계감정선을 필요한 것만 체크해 복사합니다.'],['안전 범위','주입 중 상태, AI cursor·근거 manifest, 재구축 staging, 자동화 실행상태는 방 사이에 이식하지 않습니다.']]))+'</b><div class="m3-muted">분기·새 방으로 기존 정사 자료를 옮길 때 사용합니다. 내용을 펼쳐 확인하고 섹션·사건·카드를 개별 선택합니다. 자료집은 별도 참고 팩으로 보관합니다.</div><div class="m3-row m3-card-actions">'+btn('다른 방에서 선택 복사','roomCopy',{cls:'mini',icon:'copy',dis:run})+'</div></section>'+
  '<section class="m3-panel" data-key="backup"><div class="m3-row m3-sp"><div class="m3-t"><b class="m3-title-help">백업 · 복원 '+help(helpSections([['파일 백업','이 기기의 Wish 자료를 파일로 저장하고, 복원할 방과 자료를 선택합니다.'],['재구축과의 차이','백업 복원은 저장본을 되돌립니다. 전체 재구축은 과거 대화를 AI로 다시 읽습니다.']]))+'</b><div class="m3-muted">필요한 자료를 로컬 백업 파일로 보관합니다.</div></div></div><div class="m3-row m3-card-actions">'+btn('클라우드 백업','kvOpen',{cls:'mini',icon:'cloud'})+btn('백업 저장','fileBackup',{cls:'mini'})+btn('백업 복원','fileRestore',{cls:'mini'})+btn('로컬 데이터 정리','localRooms',{cls:'mini',icon:'database'})+'</div></section>'+
  '<section class="m3-panel" data-key="room-reset"><b class="m3-title-help">이 방 데이터 초기화</b><p class="m3-muted">현재 방의 기억·인지·설정·작업 이력과 방 전용 자동 자료를 초기화합니다. 크랙 대화는 유지하며 실행 전에 확인합니다.</p><div class="m3-actions m3-topgap">'+btn('이 방 데이터 초기화','reset',{cls:'mini m3-reset-action',icon:'trash'})+'</div></section>';
@@ -25346,7 +25346,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.14-hap-gpt';
+  const PATCH_VERSION = '0.2.15-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
