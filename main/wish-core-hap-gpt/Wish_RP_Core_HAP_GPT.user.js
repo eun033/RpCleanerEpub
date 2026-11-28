@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.15
+// @version      0.2.16
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -262,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.15';
+  const HAP_GPT_CLIENT_VERSION = '0.2.16';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -14729,17 +14729,60 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
     return {view,open,settings,test,save,disconnect,refresh,backup,restore,select,pick,remove,roomPick,roomAccept,subset};
   })();
 
-  async function createManagerBackup() {return await WLOG.run("백업 파일 구성 중",async task=>{
+  // Cloud selection already excludes checkpoint backup envelopes. Read only
+  // selected room records, filtering other stores before retaining their values.
+  async function readSelectedBackupStores(ids,progress){
+    const selected=new Set(ids.map(String));
+    const rooms=await new Promise((resolve,reject)=>{
+      const tx=state.db.transaction(APP.storeName,'readonly'),out=[];
+      for(const id of selected){const q=tx.objectStore(APP.storeName).get(id);q.onsuccess=()=>{if(q.result)out.push(q.result);};}
+      tx.oncomplete=()=>resolve(out);tx.onabort=tx.onerror=()=>reject(tx.error||Error('선택 방 읽기 실패'));
+    });
+    const apis=new Set(rooms.map(r=>String(apiChatIdOf(r)))),links=new Set(rooms.flatMap(roomLinkedLibraryIds).map(String));
+    const ranges=rooms.map(memoryCheckpointRange),names=[APP.libraryStoreName,APP.cognitionStoreName,APP.runtimeStoreName,APP.historyStoreName];
+    return new Promise((resolve,reject)=>{
+      const tx=state.db.transaction(names,'readonly'),out={[APP.storeName]:rooms};let issue,count=0;
+      for(const name of names)out[name]=[];
+      const fail=e=>{issue=e;try{tx.abort();}catch{}};
+      for(const id of apis){const q=tx.objectStore(APP.cognitionStoreName).get(id);q.onsuccess=()=>{if(q.result)out[APP.cognitionStoreName].push(q.result);};}
+      for(const name of [APP.libraryStoreName,APP.runtimeStoreName,APP.historyStoreName]){
+        const store=tx.objectStore(name),q=store.openKeyCursor();
+        q.onsuccess=()=>{const cursor=q.result;if(!cursor)return;const key=String(cursor.primaryKey);
+          // These keys identify ordinary memory history, including branch IDs.
+          if(name===APP.historyStoreName&&key.startsWith('memory:')&&!ranges.some(r=>r.includes(cursor.primaryKey))){cursor.continue();return;}
+          const read=store.get(cursor.primaryKey);
+          read.onsuccess=()=>{try{
+            const v=read.result;
+            if(v&&(name===APP.libraryStoreName?(selected.has(String(v.ownerChatId))||links.has(String(v.scopeId))):selected.has(String(v.chatId))&&(name!==APP.historyStoreName||!v.backup)))out[name].push(v);
+            if(++count%100===0)progress?.('선택 자료 읽는 중 · '+count+'개 기록 확인');
+            cursor.continue();
+          }catch(e){fail(e);}};
+          read.onerror=()=>fail(read.error||Error('백업 기록 읽기 실패'));
+        };
+        q.onerror=()=>fail(q.error||Error('백업 목록 읽기 실패'));
+      }
+      tx.oncomplete=()=>resolve(out);tx.onabort=tx.onerror=()=>reject(issue||tx.error||Error('선택 백업 읽기 실패'));
+    });
+  }
+
+  async function createManagerBackup(options={}) {return await WLOG.run("백업 파일 구성 중",async task=>{
+    const selected=Array.isArray(options.roomIds)?options.roomIds.map(String):null;
+    const stage=label=>{task.stage(label);options.progress?.(label);};
+    stage('삭제된 방 확인 중');
     await WishLocalRooms.pruneDeleted();
-    const guideLibrary=await WishGuideLibrary.exportData();
+    stage('공용 지침 읽는 중');
+    const guideLibrary=selected&&options.includeSettings===false?undefined:await WishGuideLibrary.exportData();
+    stage('진행 중인 로컬 저장 완료 대기');
     await Promise.all([...storageWrites.values()].map(p=>p.catch(()=>{})));const names=[APP.storeName,APP.libraryStoreName,APP.cognitionStoreName,APP.runtimeStoreName,APP.historyStoreName];
-    const data=await new Promise((resolve,reject)=>{
+    stage('백업 자료 읽는 중');
+    const data=selected?await readSelectedBackupStores(selected,stage):await new Promise((resolve,reject)=>{
       const tx=state.db.transaction(names,'readonly'),out={};
       for(const name of names){const q=tx.objectStore(name).getAll();q.onsuccess=()=>{out[name]=q.result||[];};}
       tx.oncomplete=()=>resolve(out);tx.onerror=tx.onabort=()=>reject(tx.error||WLOG.tag(new Error('백업 읽기 실패'),'STORE_TX_FAIL'));
     });
     const bridge=cogBridge();
-    return coreBackupData({_wishRpManagerBackup:true,backupSchema:3,version:APP.version,exportedAt:nowIso(),
+    stage('백업 구조 구성 중');
+    const result=coreBackupData({_wishRpManagerBackup:true,backupSchema:3,version:APP.version,exportedAt:nowIso(),
       rooms:data[APP.storeName],characterLibraries:data[APP.libraryStoreName],cognitionRooms:data[APP.cognitionStoreName],
       runtime:data[APP.runtimeStoreName].filter(x=>x.kind!=='wish-lease'&&!(x.kind==='wish-native-bundle'&&x.status==='applied')&&x.kind!=='wish-copy-recovery'),autoHistory:data[APP.historyStoreName],
       guideLibrary,
@@ -14747,6 +14790,7 @@ function openDefaultExtraPresetDialog(room,group='extra'){const ch=group==='char
       defaultExtraPreset:loadDefaultExtraPreset(),
       ...(hasDefaultPreset('character')?{defaultCharacterPreset:loadDefaultExtraPreset('character')}:{}),
       cognitionSettings:bridge?.getSettings?.()||null},data[APP.storeName].filter(r=>!WishRoomNames.isDeleted(r)).map(r=>String(r.chatId)));
+    return selected?WishKoofr.subset(result,selected,options.includeSettings!==false):result;
   });}
 
   // G-49 b5 (design 6-4 ST-08): a backup file that fails these checks is one failure kind, BACKUP_BAD (a newer schema keeps its own
@@ -25221,7 +25265,7 @@ WUIAutoSave.install();
   HAP_CORE_BRIDGE = Object.freeze({
     version:APP.version,
     onUiChange:listener=>{if(typeof listener!=='function')throw TypeError('UI listener must be a function');HAP_UI_LISTENERS.add(listener);return ()=>HAP_UI_LISTENERS.delete(listener);},
-    createBackup:()=>createManagerBackup(),
+    createBackup:options=>createManagerBackup(options),
     selectBackupRooms:async()=>{
       const all=WishRoomNames.sort(await getAllRooms());
       await WishLocalRooms.pruneDeleted();
@@ -25346,7 +25390,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.15-hap-gpt';
+  const PATCH_VERSION = '0.2.16-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
@@ -26486,28 +26530,38 @@ WUIAutoSave.install();
     if (/permission.?denied/i.test(raw)) return labels.PERMISSION_DENIED;
     return raw ? `${fallback} (${raw})` : `${fallback}${status ? ` (HTTP ${status})` : ''}`;
   }
-  function http({ method = 'GET', url, headers = {}, data, timeout = 120000, label = 'Firebase 요청' }) {
-    return new Promise((resolve, reject) => GM_xmlhttpRequest({
-      method, url, headers, data, timeout,
-      onload: response => {
-        const text = String(response.responseText || '');
-        if (!(response.status >= 200 && response.status < 300)) {
-          const error = new Error(firebaseError(text, response.status, `${label} 실패`));
-          error.status = Number(response.status || 0);
-          reject(error);
-          return;
-        }
-        let parsed = null;
-        if (text.trim()) {
-          try { parsed = JSON.parse(text); }
-          catch (_) { reject(new Error(`${label} 응답 JSON을 읽지 못했습니다.`)); return; }
-        }
-        resolve(parsed);
-      },
-      ontimeout: () => reject(new Error(`${label} 시간이 초과되었습니다.`)),
-      onerror: () => reject(new Error(`${label} 네트워크 연결에 실패했습니다.`)),
-    }));
+  const backupPaint=()=>new Promise(resolve=>setTimeout(resolve,0));
+  async function backupWait(label,work,timeout=120000){
+    const started=Date.now();let timer,tick;
+    const text=()=>typeof label==='function'?label():label;
+    notify(text(), 'info',0,'cloud-backup');await backupPaint();
+    try{return await Promise.race([Promise.resolve().then(work),new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Error(text()+' · '+Math.round(timeout/1000)+'초 동안 완료를 확인하지 못했습니다.')),timeout);
+      tick=setInterval(()=>notify(text()+' · '+Math.round((Date.now()-started)/1000)+'초 경과','info',0,'cloud-backup'),5000);
+    })]);}finally{clearTimeout(timer);clearInterval(tick);}
   }
+  function backupUploadTimeout(bytes){return Math.max(120000,Math.min(900000,Math.ceil(bytes/125000)*1000+60000));}
+  function backupHttp({method='GET',url,headers={},data,timeout=120000,label='Firebase 요청'}){
+    return new Promise((resolve,reject)=>{
+      let request,timer,settled=false;
+      const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):resolve(value);};
+      const interrupted=message=>{const error=Error(message);error.uncertain=method.toUpperCase()!=='GET';return error;};
+      timer=setTimeout(()=>{finish(interrupted(label+' 응답 대기 시간이 초과되었습니다.'));try{request?.abort?.();}catch{}},timeout+1000);
+      try{request=GM_xmlhttpRequest({method,url,headers,data,timeout,
+        onload:response=>{
+          const text=String(response.responseText||'');
+          if(response.status<200||response.status>=300){const error=Error(firebaseError(text,response.status,label+' 실패'));error.status=Number(response.status||0);finish(error);return;}
+          if(!text.trim()){finish(null,null);return;}
+          try{finish(null,JSON.parse(text));}catch{finish(interrupted(label+' 응답 JSON을 읽지 못했습니다.'));}
+        },
+        onerror:()=>finish(interrupted(label+' 네트워크 연결에 실패했습니다.')),
+        ontimeout:()=>finish(interrupted(label+' 시간이 초과되었습니다.')),
+        onabort:()=>finish(interrupted(label+' 전송이 중단되었습니다.')),
+      });}catch(e){finish(e);}
+    });
+  }
+
+  function http(options) { return backupHttp(options); }
   async function signIn(settings, password) {
     validateSettings(settings);
     if (!password) throw new Error('Firebase 계정 비밀번호를 입력해 주세요.');
@@ -26560,26 +26614,27 @@ WUIAutoSave.install();
     try { return await refreshSession(settings, session); }
     catch (_) { clearSession(); return null; }
   }
-  async function databaseRequest(settings, method, path, body, retry = true) {
+  async function databaseRequest(settings, method, path, body, retry = true, options = {}) {
     let session = await getSession(settings);
     if (!session) throw new Error('Firebase 로그인이 필요합니다. 클라우드 백업에서 Firebase를 선택하고 연결해 주세요.');
     const safePath = String(path || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
     const silent = String(method).toUpperCase() === 'GET' ? '' : '&print=silent';
     try {
-      const appCheckToken = await getFirebaseAppCheckToken(settings);
+      const appCheckToken = options.serializedBody===undefined?await getFirebaseAppCheckToken(settings):await backupWait('Firebase 인증 확인 중',()=>getFirebaseAppCheckToken(settings),45000);
+      options.onReady?.();
       return await http({
         method,
         url:`${settings.databaseURL}/${safePath}.json?auth=${encodeURIComponent(session.idToken)}${silent}`,
         headers:{ 'Content-Type':'application/json', ...(appCheckToken ? { 'X-Firebase-AppCheck':appCheckToken } : {}) },
-        data:body === undefined ? undefined : JSON.stringify(body),
-        timeout:120000,
+        data:options.serializedBody ?? (body === undefined ? undefined : JSON.stringify(body)),
+        timeout:options.timeout || 120000,
         label:'Firebase Database',
       });
     } catch (error) {
       if (retry && [401, 403].includes(Number(error.status))) {
-        if (settings.appCheckDebugToken) await getFirebaseAppCheckToken(settings, true);
+        if (settings.appCheckDebugToken) await backupWait('Firebase 인증 갱신 중',()=>getFirebaseAppCheckToken(settings,true),45000);
         session = await getSession(settings, true);
-        if (session) return databaseRequest(settings, method, path, body, false);
+        if (session) return databaseRequest(settings, method, path, body, false, options);
       }
       throw error;
     }
@@ -26923,9 +26978,9 @@ WUIAutoSave.install();
       const cloudName=provider==='drive'?'Google Drive':'Firebase';
       notify(`${cloudName} 백업 파일 준비 중… · 선택 ${choice.ids.length}개 방`, 'info', 0, 'cloud-backup');
       assertPatchRoute(route);
-      const snapshot=await bridge.createBackup();
+      let preparingStep=`${cloudName} 백업 파일 준비 중 · 선택 ${choice.ids.length}개 방`;
+      const payload=await backupWait(()=>preparingStep,()=>bridge.createBackup({roomIds:choice.ids,includeSettings:choice.settings,progress:step=>{preparingStep=`${cloudName} · ${step}`;notify(preparingStep,'info',0,'cloud-backup');}}));
       assertPatchRoute(route);
-      const payload=bridge.subsetBackup(snapshot,choice.ids,choice.settings);
       if(!payload.rooms.length)throw Error('선택한 방이 없습니다.');
       notify(`${cloudName} 백업 파일 준비 완료 · 방 ${payload.rooms.length}개 · 이름 입력 대기`, 'info', 0, 'cloud-backup');
       const label=await askCloudBackupLabel(provider);
@@ -26943,10 +26998,11 @@ WUIAutoSave.install();
     async function uploadBackup({ payload, label } = {}) {
     if (busy) return;
     busy = true;
+    let uploadStarted=false;
     try {
       payload ||= await createCoreBackupThroughNative();
       notify(`Firebase 백업 업로드 중… · 방 ${payload.rooms.length}개 · 자료집 ${payload.characterLibraries.length}개`, 'info', 0, 'cloud-backup');
-      const ready = await ensureReady();
+      const ready = await backupWait('Firebase 로그인 확인 중',()=>ensureReady(),45000);
       const id = `W${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       const meta = {
         id,
@@ -26959,12 +27015,19 @@ WUIAutoSave.install();
         roomCount:payload.rooms.length,
         libraryCount:payload.characterLibraries.length,
       };
-      await databaseRequest(ready.settings, 'PATCH', '', {
+      const body=await backupWait('Firebase 백업 JSON 구성 중',()=>JSON.stringify({
         [`${META_ROOT}/${ready.session.localId}/${id}`]:meta,
         [`${DATA_ROOT}/${ready.session.localId}/${id}`]:payload,
-      });
+      }));
+      const bytes=new Blob([body]).size;
+      if(bytes>=256*1024*1024)throw Error('Firebase REST 단일 요청 한도 256MB를 넘습니다: '+cloudBytes(bytes)+'. 방을 나누어 백업하거나 Google Drive를 사용해 주세요.');
+      const timeout=backupUploadTimeout(bytes),started=Date.now();
+      const progress=()=>notify(`Firebase 백업 업로드·응답 대기 · ${cloudBytes(bytes)} · ${Math.round((Date.now()-started)/1000)}초 경과 · 최대 ${Math.ceil(timeout/60000)}분`,'info',0,'cloud-backup');
+      let tick;
+      try{await databaseRequest(ready.settings,'PATCH','',undefined,true,{serializedBody:body,timeout,onReady:()=>{uploadStarted=true;progress();clearInterval(tick);tick=setInterval(progress,5000);}});}
+      finally{clearInterval(tick);}
       notify(`Firebase 백업 완료 · ${meta.label} · 방 ${meta.roomCount}개`, 'success', 5600, 'cloud-backup');
-    } catch (error) { notify(`Firebase 백업 실패: ${error.message}`, 'error', 7600, 'cloud-backup'); }
+    } catch (error) { notify(`Firebase 백업 실패: ${error.message}${uploadStarted&&error.uncertain?' · 서버에 저장됐을 수도 있습니다. 백업 목록을 확인한 뒤 다시 시도해 주세요.':''}`, 'error', 0, 'cloud-backup'); }
     finally { busy = false; }
   }
   async function fetchBackups() {

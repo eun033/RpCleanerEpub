@@ -1,8 +1,14 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.15
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.16
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.15이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.16이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+
+0.2.16은 Firebase·Drive의 선택 백업 준비에서 선택 방과 인지 자료를 먼저 조회하고, 이력·런타임·자료집은 순회하며 필요한 기록만 보관하도록 개선했다. 기존 선택 백업의 포함 범위와 JSON 형식은 유지한다.
+
+Firebase 업로드는 기존 2분 고정 대기에서 용량에 따라 2~15분 대기로 바뀐다. 75MB는 약 11~12분까지 기다리며, 하단에 준비 단계·전체 용량·경과 시간·최대 대기를 표시한다. 전송 중단이나 응답 누락도 오류로 처리한다. 전송 후 저장 여부가 불확실하면 새 백업을 자동 재전송하지 않고 목록 확인을 안내한다. ZIP 업로드는 구현하지 않았다.
+
+44개 방·75MB 모의 자료와 기존 백업·복원 회귀 검사를 사용했다. 실제 Firebase 계정·모바일 실기기 업로드는 미검증이다. 총 75MB는 REST의 요청당 256MB 이내지만, 개별 문자열 10MB·서버 쓰기 처리 제한·네트워크 상태 등은 별도다.
 
 0.2.15는 일반 `외부 AI로 2차 재구축`의 **GPT 브리지로 보내기** 버튼만 일시적으로 주석 처리해 숨긴다. 기존 TXT 내보내기와 JSON 가져오기는 유지한다. `40% 이상` 영역의 가져오기 문구는 **JSON 가져오기**로 통일했다. GPT 전송 버튼은 외부 AI 재구축과 40% 이상 축소에서 계속 제공한다.
 
@@ -44,7 +50,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.15 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.16 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 
