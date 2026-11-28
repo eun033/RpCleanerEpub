@@ -1,8 +1,10 @@
-# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.16
+# 🪽🐡🪨 Wish RP Core HAP-gpt 0.2.17
 
 Wish Core 2.0.5와 HAP 기능에 `ChatGPT 구독` 공급자를 추가한 단일 userscript다. ChatGPT 구독 호출은 같은 기기에서 실행하는 GPT 브리지가 담당한다. Android Termux를 기본 설치 경로로 사용하며 Windows Git 실행도 지원한다.
 
-현재 userscript 배포 버전은 HAP-gpt 0.2.16이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+현재 userscript 배포 버전은 HAP-gpt 0.2.17이다. GPT 브리지는 별도 `main/gpt-bridge` 배포를 사용한다.
+
+0.2.17은 Firebase 전송을 시작한 뒤 3분 이상 완료 응답이 없으면 하단 알림을 경고색으로 바꾸고 `3분째 업로드 완료를 확인하지 못했습니다 · 75 MB · 계속 확인 중`처럼 용량과 경과 시간을 함께 표시한다. 실패로 확정하거나 전송을 취소하지 않고 기존 제한 안에서 확인을 계속한다. 완료 응답을 받으면 같은 알림이 완료 메시지로 바뀐다.
 
 0.2.16은 Firebase·Drive의 선택 백업 준비에서 선택 방과 인지 자료를 먼저 조회하고, 이력·런타임·자료집은 순회하며 필요한 기록만 보관하도록 개선했다. 기존 선택 백업의 포함 범위와 JSON 형식은 유지한다.
 
@@ -50,7 +52,7 @@ Firebase와 Google Drive 백업 복원 창 하단에 중복으로 붙던 기존 
 
 ## 1. HAP-gpt 설치
 
-[HAP-gpt 0.2.16 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
+[HAP-gpt 0.2.17 설치 파일](https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js)을 Tampermonkey로 연다.
 
 설치 파일의 `@updateURL`과 `@downloadURL`도 위 공개 주소를 사용한다.
 

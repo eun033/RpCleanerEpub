@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         🪽🐡🪨 Wish RP Core HAP-gpt
 // @namespace    local.rp.context.manager.hap.gpt
-// @version      0.2.16
+// @version      0.2.17
 // @updateURL    https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @downloadURL  https://raw.githubusercontent.com/eun033/RpCleanerEpub/refs/heads/main/main/wish-core-hap-gpt/Wish_RP_Core_HAP_GPT.user.js
 // @description  HAP 0.0.9에 로컬 ChatGPT 구독 연결을 병렬 추가한 별도 userscript
@@ -262,7 +262,7 @@
   // extract request 112~130 s at 250~267 output tokens/s, the time set by the output tokens (max_tokens, reasoning included).
   // 600 s holds the setting's 65536-token ceiling at half that speed. Only this request uses it (callAiProvider).
   const AI_DEEPSEEK_THINKING_TIMEOUT_MS = 600000;
-  const HAP_GPT_CLIENT_VERSION = '0.2.16';
+  const HAP_GPT_CLIENT_VERSION = '0.2.17';
   // HAP-gpt local bridge client. OAuth tokens never enter this userscript.
   class WishChatGptSubscriptionClient {
     constructor({ connection, storageKey = 'wish-chatgpt-subscription-pending-v1', getValue = GM_getValue, setValue = GM_setValue, request = GM_xmlhttpRequest, lock = globalThis.navigator?.locks, statusRetryDelays = [250,750,1500,3000] } = {}) {
@@ -25390,7 +25390,7 @@ WUIAutoSave.install();
 (function () {
   'use strict';
 
-  const PATCH_VERSION = '0.2.16-hap-gpt';
+  const PATCH_VERSION = '0.2.17-hap-gpt';
   const SUPPORTED_CORE_MAJOR = 2;
   const VERIFIED_CORE_VERSION = '2.0.5';
   const BACKUP_ENGINE = 'native';
@@ -27021,11 +27021,14 @@ WUIAutoSave.install();
       }));
       const bytes=new Blob([body]).size;
       if(bytes>=256*1024*1024)throw Error('Firebase REST 단일 요청 한도 256MB를 넘습니다: '+cloudBytes(bytes)+'. 방을 나누어 백업하거나 Google Drive를 사용해 주세요.');
-      const timeout=backupUploadTimeout(bytes),started=Date.now();
-      const progress=()=>notify(`Firebase 백업 업로드·응답 대기 · ${cloudBytes(bytes)} · ${Math.round((Date.now()-started)/1000)}초 경과 · 최대 ${Math.ceil(timeout/60000)}분`,'info',0,'cloud-backup');
-      let tick;
-      try{await databaseRequest(ready.settings,'PATCH','',undefined,true,{serializedBody:body,timeout,onReady:()=>{uploadStarted=true;progress();clearInterval(tick);tick=setInterval(progress,5000);}});}
-      finally{clearInterval(tick);}
+      const timeout=backupUploadTimeout(bytes);let started=null,tick,finished=false;
+      const progress=()=>{
+        if(finished)return;
+        const elapsed=Date.now()-started,late=elapsed>=180000;
+        notify(late?`Firebase 백업 · 3분째 업로드 완료를 확인하지 못했습니다 · ${cloudBytes(bytes)} · ${Math.round(elapsed/1000)}초 경과 · 계속 확인 중 (요청당 최대 ${Math.ceil(timeout/60000)}분)`:`Firebase 백업 업로드·응답 대기 · ${cloudBytes(bytes)} · ${Math.round(elapsed/1000)}초 경과 · 요청당 최대 ${Math.ceil(timeout/60000)}분`,late?'warn':'info',0,'cloud-backup');
+      };
+      try{await databaseRequest(ready.settings,'PATCH','',undefined,true,{serializedBody:body,timeout,onReady:()=>{uploadStarted=true;if(started===null)started=Date.now();progress();clearInterval(tick);tick=setInterval(progress,5000);}});}
+      finally{finished=true;clearInterval(tick);}
       notify(`Firebase 백업 완료 · ${meta.label} · 방 ${meta.roomCount}개`, 'success', 5600, 'cloud-backup');
     } catch (error) { notify(`Firebase 백업 실패: ${error.message}${uploadStarted&&error.uncertain?' · 서버에 저장됐을 수도 있습니다. 백업 목록을 확인한 뒤 다시 시도해 주세요.':''}`, 'error', 0, 'cloud-backup'); }
     finally { busy = false; }
